@@ -1,0 +1,49 @@
+[package]
+name = "lightstream"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+keywords = [
+    "arrow",
+    "apache-arrow",
+    "polars",
+    "streaming",
+    "simd",
+]
+categories = [
+    "asynchronous",
+    "data-structures",
+    "encoding",
+    "filesystem",
+    "network-programming",
+]
+description = "Composable, zero-copy Arrow IPC and native data streaming for Rust with SIMD-aligned I/O, async support, and memory-mapping."
+[dependencies]
+tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros"] } # "macros", "time"
+futures-core = "0.3"
+futures-util = { version = "0.3", features = ["sink"] }
+flatbuffers = "25.2.10"
+libc = { version = "0.2.174", optional = true }
+futures-sink = "0.3.31"
+minarrow = { version = "0.2.1", features = ["chunked"] , default-features = false }
+snap = { version = "1.0", optional = true }
+zstd = { version = "0.12", optional = true }
+
+[dev-dependencies]
+tempfile = "3.20.0"
+
+[features]
+extended_categorical = ["minarrow/extended_categorical"]
+large_string = ["minarrow/large_string"]
+datetime = ["minarrow/datetime"]
+extended_numeric_types = ["minarrow/extended_numeric_types"]
+mmap = ["libc"]
+
+# Adds parquet IO
+parquet = []
+
+# Adds snappy compression option
+snappy = ["snap"]
+# Adds zstd compression option
+zstd = ["dep:zstd"]
+default = []
