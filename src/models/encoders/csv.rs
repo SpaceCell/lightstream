@@ -3,9 +3,10 @@
 //! - Supports custom delimiter, header row, quoting, and null representation.
 //! - Serialises a Table or SuperTable to any Write or Vec<u8>.
 
-use crate::debug_println;
 use minarrow::{Array, Bitmask, NumericArray, SuperTable, Table, TextArray};
 use std::io::{self, Write};
+
+use crate::debug_println;
 
 /// Options for CSV encoding.
 #[derive(Debug, Clone)]

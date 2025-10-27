@@ -95,7 +95,7 @@ pub fn decode_csv_batch<R: BufRead>(
     }
 
     if !saw_any {
-        // nothing read at all → EOF
+        // nothing read at all -> EOF
         return Ok(None);
     }
 
@@ -145,7 +145,7 @@ pub fn decode_csv<R: BufRead>(mut reader: R, options: &CsvDecodeOptions) -> io::
             let m = reader.read_until(b'\n', &mut buf)?;
             if m == 0 {
                 break;
-            } // EOF inside quotes → let parse fail later
+            } // EOF inside quotes -> let parse fail later
             quote_balance ^= buf[n..].iter().filter(|&&b| b == quote).count() % 2;
         }
 
@@ -574,7 +574,7 @@ mod tests {
         }
 
         // Nulls - strings column has values ["hello", "", "world", "rust"] where "" is null
-        // So 3 valid values, 1 null → count_ones() should be 3
+        // So 3 valid values, 1 null -> count_ones() should be 3
         match &table.cols[1].array {
             Array::TextArray(TextArray::String32(arr)) => {
                 assert_eq!(arr.null_mask.as_ref().unwrap().count_ones(), 3); // 3 valid, 1 null

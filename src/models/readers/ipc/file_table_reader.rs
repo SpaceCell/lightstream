@@ -28,7 +28,7 @@ use crate::models::decoders::ipc::parser::{
     handle_record_batch_shared,
 };
 #[cfg(any(feature = "zstd", feature = "snappy"))]
-use crate::models::decoders::ipc::parser::{is_body_compressed, decompress_sequential_body};
+use crate::models::decoders::ipc::parser::{decompress_sequential_body, is_body_compressed};
 
 /// Footer-declared block entry (i.e., offsets/lengths) for a dictionary or record batch.
 #[derive(Debug, Clone)]
@@ -230,9 +230,12 @@ impl FileTableReader {
         #[cfg(any(feature = "zstd", feature = "snappy"))]
         {
             let body_data = &self.data.as_ref().as_ref()[body_offset..body_offset + body_len];
-            let buffers = rec.buffers().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
+            let buffers = rec
+                .buffers()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
             if is_body_compressed(&buffers, body_data) {
-                let (decompressed_body, _offsets) = decompress_sequential_body(&buffers, body_data)?;
+                let (decompressed_body, _offsets) =
+                    decompress_sequential_body(&buffers, body_data)?;
                 let arc_data = Arc::new(decompressed_body.clone());
                 handle_record_batch_shared(
                     &rec,
@@ -277,7 +280,6 @@ impl FileTableReader {
             )
         }
     }
-
 
     /// Slice and validate the FlatBuffers message at the given block
     ///

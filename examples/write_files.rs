@@ -11,15 +11,13 @@ fn main() {
         // --- Table 1 ---
         let tbl1 = Table::new(
             "tbl1".to_string(),
-            vec![
-                FieldArray::new(
-                    Field::new("id", ArrowType::Int32, true, None),
-                    Array::from_int32(IntegerArray::<i32>::from_vec64(
-                        vec64![1_i32, 2, 3, 4],
-                        None,
-                    )),
-                ),
-            ]
+            vec![FieldArray::new(
+                Field::new("id", ArrowType::Int32, true, None),
+                Array::from_int32(IntegerArray::<i32>::from_vec64(
+                    vec64![1_i32, 2, 3, 4],
+                    None,
+                )),
+            )]
             .into(),
         );
 

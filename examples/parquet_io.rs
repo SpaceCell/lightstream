@@ -4,7 +4,7 @@
 //! - Write Arrow Tables to Parquet format with various compression options
 //! - Read Parquet files back into Arrow Tables
 //! - Handle different data types (integers, floats, strings, booleans, dates)
-//! - Use compression (None, Snappy, Zstd) for file size optimization
+//! - Use compression (None, Snappy, Zstd) for file size optimisation
 //! - Verify data integrity through round-trip testing
 
 #[cfg(feature = "parquet")]

@@ -249,7 +249,7 @@ mod pyarrow_roundtrip_tests {
 
     #[tokio::test]
     async fn test_read_pyarrow_file_format() {
-        println!("Testing PyArrow → lightstream roundtrip (file format)");
+        println!("Testing PyArrow -> lightstream roundtrip (file format)");
 
         // Read PyArrow-generated Arrow file
         let file_path = "python/pyarrow_basic_types.arrow";
@@ -276,7 +276,7 @@ mod pyarrow_roundtrip_tests {
 
     #[tokio::test]
     async fn test_read_pyarrow_stream_format() {
-        println!("Testing PyArrow → lightstream roundtrip (stream format)");
+        println!("Testing PyArrow -> lightstream roundtrip (stream format)");
 
         // Read PyArrow-generated Arrow stream
         let file_path = "python/pyarrow_basic_types.stream";
@@ -312,7 +312,7 @@ mod pyarrow_roundtrip_tests {
 
     #[tokio::test]
     async fn test_write_lightstream_file_format() {
-        println!("Testing lightstream → PyArrow roundtrip (file format)");
+        println!("Testing lightstream -> PyArrow roundtrip (file format)");
 
         // Create test data with lightstream
         let test_table = create_expected_table(4);
@@ -335,7 +335,7 @@ mod pyarrow_roundtrip_tests {
 
     #[tokio::test]
     async fn test_write_lightstream_stream_format() {
-        println!("Testing lightstream → PyArrow roundtrip (stream format)");
+        println!("Testing lightstream -> PyArrow roundtrip (stream format)");
 
         // Create test data with lightstream
         let test_table = create_expected_table(4);

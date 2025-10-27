@@ -138,13 +138,13 @@ pub fn unpack_bits(buf: &[u8], len: usize) -> Vec<bool> {
 
 // SliceWrapper - Temporary workaround for SIMD alignment preservation
 
-// TODO: Use MinArrow SharedBuffer directly and test zero-copy.
+// TODO[3]: Use MinArrow SharedBuffer directly and test zero-copy.
 
 use std::sync::Arc;
 
 /// Wrapper that preserves 64-byte alignment for memory-mapped data by holding
 /// a reference to the owner and providing a slice view.
-/// This is a temporary workaround until SharedBuffer::from_owner properly preserves alignment.
+/// This is a temporary workaround until SharedBuffer::from_owner is fixed to preserve alignment.
 pub struct SliceWrapper<M: ?Sized> {
     pub _owner: Arc<M>,
     pub offset: usize,

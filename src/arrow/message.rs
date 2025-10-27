@@ -1540,7 +1540,7 @@ pub mod org {
                     }
 
                     /// The number of observed nulls. Fields with null_count == 0 may choose not
-                    /// to write their physical validity bitmap out as a materialized buffer,
+                    /// to write their physical validity bitmap out as a materialised buffer,
                     /// instead setting the length of the bitmap buffer to 0.
                     pub fn null_count(&self) -> i64 {
                         let mut mem =

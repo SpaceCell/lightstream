@@ -402,7 +402,7 @@ mod tests {
         // check that bits at 1 and 3 are 0:
         let byte = buf[0];
         assert_eq!((byte >> 0) & 1, 1); // idx0 valid, true
-        assert_eq!((byte >> 1) & 1, 0); // idx1 null → treated as false
+        assert_eq!((byte >> 1) & 1, 0); // idx1 null -> treated as false
         assert_eq!((byte >> 2) & 1, 1); // idx2
         assert_eq!((byte >> 3) & 1, 0); // idx3 null
     }
@@ -484,11 +484,11 @@ mod tests {
 
     #[test]
     fn test_encode_dictionary_indices_rle_rle_run() {
-        // exactly 8 repeats → RLE run
+        // exactly 8 repeats -> RLE run
         let indices = vec![7u32; 8];
         let mut buf = Vec::new();
         encode_dictionary_indices_rle(&indices, &mut buf).unwrap();
-        // bit_width = 3, header = run_len<<1 = 16 → uleb128=16
+        // bit_width = 3, header = run_len<<1 = 16 -> uleb128=16
         assert_eq!(buf[0], 3);
         assert_eq!(buf[1], 16);
         // next byte is the value
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_encode_dictionary_indices_rle_mixed() {
-        // 5×A, 8×B, 3×C → bit-packed for first 5, RLE for next8, bit-packed for last3
+        // 5×A, 8×B, 3×C -> bit-packed for first 5, RLE for next8, bit-packed for last3
         let mut indices = vec![10u32; 5];
         indices.extend(std::iter::repeat(2).take(8));
         indices.extend(std::iter::repeat(3).take(3));

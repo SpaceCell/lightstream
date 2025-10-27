@@ -21,6 +21,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use crate::compression::{Compression, decompress};
+use crate::constants::PARQUET_MAGIC;
 use crate::error::IoError;
 #[cfg(feature = "datetime")]
 use crate::models::decoders::parquet::{decode_datetime32_plain, decode_datetime64_plain};
@@ -33,7 +34,6 @@ use crate::models::encoders::parquet::metadata::{
     ColumnChunkMeta, ColumnMetadata, DataPageHeader, DataPageHeaderV2, DictionaryPageHeader,
     FileMetaData, PageHeader, PageType, RowGroupMeta, SchemaElement, Statistics,
 };
-use crate::constants::PARQUET_MAGIC;
 use crate::models::types::parquet::{
     ParquetEncoding, ParquetLogicalType, ParquetPhysicalType, parquet_to_arrow_type,
 };

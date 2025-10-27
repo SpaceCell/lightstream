@@ -18,7 +18,7 @@
 //! - **Power** - **64-byte aligned by default** – All buffers use 64-byte aligned memory via [`Vec64`] for deterministic SIMD - not re-allocating
 //! during hotloop calculations where you need it fast.
 //! - **Extensible** - all primitives are provided to create your own data wire formats, and customise it to your stack. We also welcome contributions.
-//! 
+//!
 //! ## Highlights
 //!
 //! - ✅ Fully async-compatible with [`tokio::io::AsyncWrite`]  
@@ -30,25 +30,25 @@
 //!
 //! ## Example — Arrow Table Writer
 //!
-//! ***rust
-//! use minarrow::{arr_i32, arr_str32, FieldArray, Table};
+//! ```rust,no_run
+//! use minarrow::{arr_i32, arr_str32, vec64, FieldArray, Table};
 //! use lightstream::models::writers::ipc::table_writer::TableWriter;
 //! use lightstream::enums::IPCMessageProtocol;
 //! use tokio::fs::File;
 //!
 //! # async fn write() -> std::io::Result<()> {
-//! let col1 = FieldArray::from_inner("ids", arr_i32![1, 2, 3]);
-//! let col2 = FieldArray::from_inner("names", arr_str32!["a", "b", "c"]);
-//! let table = Table::new("example", vec![col1, col2].into());
+//! let col1 = FieldArray::from_arr("ids", arr_i32![1, 2, 3]);
+//! let col2 = FieldArray::from_arr("names", arr_str32!["a", "b", "c"]);
+//! let table = Table::new("example".to_string(), vec![col1, col2].into());
 //!
-//! let schema = table.schema().to_vec();
+//! let schema: Vec<_> = table.schema().iter().map(|f| (**f).clone()).collect();
 //! let file = File::create("out.arrow").await?;
 //!
 //! let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
 //! writer.write_table(table).await?;
 //! writer.finish().await?;
 //! # Ok(()) }
-//! ***
+//! ```
 //!
 //! See the [README](https://github.com/pbower/lightstream) for more examples.
 
@@ -69,6 +69,7 @@ pub mod traits {
 
 /// Codec implementations, readers, writers, and I/O models
 pub mod models {
+
     /// Sinks convert tables or TLV frames into byte streams
     pub mod sinks {
         /// Arrow IPC sink - Stream/File protocols

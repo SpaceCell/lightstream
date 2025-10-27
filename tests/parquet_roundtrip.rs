@@ -34,7 +34,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::None);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), 5);
         if let Array::NumericArray(NumericArray::Int32(a)) = &col.array {
             assert_eq!(a.data.as_slice(), &[1, 2, 3, 4, 5]);
@@ -54,7 +54,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::None);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), data.len());
         if let Array::BooleanArray(a) = &col.array {
             let observed = a.to_opt_bool_vec64();
@@ -79,10 +79,11 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::None);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), 4);
 
-        // TODO: Add QOL improvements to Minarrow
+        // TODO[5]: Add QOL improvements to Minarrow
+        // Bad syntax here
         if let Array::TextArray(a) = &col.array {
             let actual: Vec<String> = a
                 .clone()
@@ -115,7 +116,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::Snappy);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), 4);
         if let Array::TextArray(a) = &col.array {
             let actual: Vec<String> = a
@@ -149,7 +150,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::Snappy);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), 4);
         if let Array::TextArray(a) = &col.array {
             let actual: Vec<String> = a
@@ -183,7 +184,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::None);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), 6);
 
         if let Array::TextArray(a) = &col.array {
@@ -231,7 +232,7 @@ mod parquet_writer_integration_tests {
         );
 
         let out = roundtrip_table(&table, Compression::None);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         assert_eq!(col.len(), 4);
         if let Array::NumericArray(NumericArray::Int64(a)) = &col.array {
             assert_eq!(a.data.as_slice(), &[1, 0, 3, 0]);
@@ -257,7 +258,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
         let out = roundtrip_table(&table, Compression::None);
-        let col = out.col(0).unwrap();
+        let col = out.col_ix(0).unwrap();
         if let Array::NumericArray(NumericArray::Int32(a)) = &col.array {
             assert_eq!(a.data.as_slice(), &values);
         } else {

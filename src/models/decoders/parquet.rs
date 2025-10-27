@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_decode_dictionary_rle_partial_run() {
-        // run of 5 but len=3 → only 3 outputs
+        // run of 5 but len=3 -> only 3 outputs
         let buf = &[8u8, 10, 7]; // header=10 (5<<1), value=7
         let out = decode_dictionary_indices_rle(buf, 3).unwrap();
         assert_eq!(out.0, vec![7, 7, 7]);

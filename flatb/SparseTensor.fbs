@@ -126,7 +126,7 @@ table SparseMatrixIndexCSX {
 
 /// Compressed Sparse Fiber (CSF) sparse tensor index.
 table SparseTensorIndexCSF {
-  /// CSF is a generalization of compressed sparse row (CSR) index.
+  /// CSF is a generalisation of compressed sparse row (CSR) index.
   /// See [smith2017knl](http://shaden.io/pub-files/smith2017knl.pdf)
   ///
   /// CSF index recursively compresses each dimension of a tensor into a set

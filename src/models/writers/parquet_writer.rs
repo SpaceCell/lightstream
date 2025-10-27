@@ -43,6 +43,7 @@ use minarrow::TemporalArray;
 use minarrow::{Array, NumericArray, Table, TextArray};
 
 use crate::compression::{Compression, compress};
+use crate::constants::PARQUET_MAGIC;
 use crate::error::IoError;
 #[cfg(feature = "large_string")]
 use crate::models::encoders::parquet::data::encode_large_string_plain;
@@ -57,7 +58,6 @@ use crate::models::encoders::parquet::metadata::{
 };
 use crate::models::types::parquet::ParquetLogicalType::{self};
 use crate::models::types::parquet::{ParquetEncoding, arrow_type_to_parquet};
-use crate::constants::PARQUET_MAGIC;
 
 // Chunk size for page splitting
 pub const PAGE_CHUNK_SIZE: usize = 32_768;
@@ -450,7 +450,7 @@ pub fn encode_levels_rle(levels: &[bool]) -> Vec<u8> {
     // Check for single-value run
     if levels.iter().all(|&b| b == levels[0]) {
         // RLE header = run_len << 1
-        let header = (levels.len() as u64) << 1; // LSB = 0 → RLE
+        let header = (levels.len() as u64) << 1; // LSB = 0 -> RLE
         write_uleb128(header, &mut out);
         out.push(levels[0] as u8); // 1-byte value (bit-width = 1)
         return out;
@@ -459,7 +459,7 @@ pub fn encode_levels_rle(levels: &[bool]) -> Vec<u8> {
     // Bit-packed path
     let padded_len = ((levels.len() + 7) / 8) * 8;
     let groups = padded_len / 8;
-    let header = ((groups as u64) << 1) | 1; // LSB = 1 → bit-packed
+    let header = ((groups as u64) << 1) | 1; // LSB = 1 -> bit-packed
     write_uleb128(header, &mut out);
 
     for g in 0..groups {

@@ -105,14 +105,14 @@ let stream = FramedByteStream::new(socket, MyFramer);
 ### Write Tables
 ```rust
 use minarrow::{arr_i32, arr_str32, FieldArray, Table};
-use lightstream::io::table_writer::TableWriter;
+use lightstream::table_writer::TableWriter;
 use lightstream::enums::IPCMessageProtocol;
 use tokio::fs::File;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let col1 = FieldArray::from_inner("numbers", arr_i32![1, 2, 3]);
-    let col2 = FieldArray::from_inner("letters", arr_str32!["x", "y", "z"]);
+    let col1 = FieldArray::from_arr("numbers", arr_i32![1, 2, 3]);
+    let col2 = FieldArray::from_arr("letters", arr_str32!["x", "y", "z"]);
     let table = Table::new("demo".into(), vec![col1, col2].into());
 
     let file = File::create("demo.arrow").await?;

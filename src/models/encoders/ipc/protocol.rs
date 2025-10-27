@@ -3,7 +3,7 @@
 //! Encodes Arrow IPC messages and bodies into file or stream frames, handling
 //! continuation markers, padding, alignment, and optional file footers.
 //!
-//! Consistent with the official [Apache Arrow IPC specification](https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc).
+//! Consistent with the official [Apache Arrow IPC specification](https://arrow.apache.org/docs/format/Columnar.html#serialisation-and-interprocess-communication-ipc).
 //! This module performs no allocation beyond the chosen `StreamBuffer` and writes within the provided buffer.
 
 use std::io;
@@ -36,7 +36,7 @@ pub struct IPCFrame<'a> {
 
 /// Encodes a message + body as a valid Arrow IPC frame (file or stream).
 ///
-/// See the [Arrow Columnar IPC Specification](https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc)
+/// See the [Arrow Columnar IPC Specification](https://arrow.apache.org/docs/format/Columnar.html#serialisation-and-interprocess-communication-ipc)
 /// for the canonical layout.
 pub struct IPCFrameEncoder;
 

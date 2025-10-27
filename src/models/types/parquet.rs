@@ -279,7 +279,7 @@ pub(crate) fn arrow_type_to_parquet(
             },
         )),
         ArrowType::Dictionary(CategoricalIndexType::UInt32) => {
-            // TODO: Fix for non Cat32
+            // TODO[5]: Fix for non Cat32
             Ok((ParquetPhysicalType::Int32, ParquetLogicalType::NoneType))
         }
         ArrowType::Float32 => Ok((ParquetPhysicalType::Float, ParquetLogicalType::NoneType)),

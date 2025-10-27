@@ -224,7 +224,6 @@ async fn arrow_stream_example(
     if let Some(_) = reader.next().await {
         let read_time = start.elapsed();
         println!("  Stream read took: {:?}", read_time);
-
     } else {
         return Err("No data read from stream".into());
     }

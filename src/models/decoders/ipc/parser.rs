@@ -21,7 +21,7 @@
 //!
 //! See the [Apache Arrow IPC specification](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format).
 
-//! RecordBatch → Table decoder supporting Minarrow fixed‑width, Boolean,
+//! RecordBatch -> Table decoder supporting Minarrow fixed‑width, Boolean,
 //! UTF‑8, LargeUTF‑8, and Dictionary columns.
 
 use std::io;
@@ -35,13 +35,18 @@ use crate::arrow::message::org::apache::arrow::flatbuf as fb;
 use crate::arrow::message::org::apache::arrow::flatbuf::{
     BodyCompression, Buffer, DictionaryBatch,
 };
-use crate::utils::SliceWrapper;
-use crate::{AFMessage, AFMessageHeader, debug_println};
 #[cfg(any(feature = "zstd", feature = "snappy"))]
 use crate::compression::{Compression, decompress};
+use crate::debug_println;
+use crate::utils::SliceWrapper;
+use crate::{AFMessage, AFMessageHeader};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
+/// Used for parsing a RecordBatch into a Minarrow `Table`.
+///
+/// Can also be 'intercepted' and used in extreme performance-critical
+/// situations to avoid async overhead.
 pub struct RecordBatchParser;
 
 impl RecordBatchParser {
@@ -63,7 +68,7 @@ impl RecordBatchParser {
             ));
         }
 
-        // TODO: Compression handling
+        // TODO [3]: Compression handling
         if let Some(BodyCompression { .. }) = message
             .header_as_record_batch()
             .and_then(|rb| rb.compression())
@@ -300,7 +305,7 @@ impl RecordBatchParser {
                     let offsets_l = offsets_buf.length() as usize;
                     let expected_u32_size = (field_len + 1) * 4;
                     let expected_u64_size = (field_len + 1) * 8;
-                    
+
                     if offsets_l == expected_u32_size {
                         // Likely u32 offsets, parse as String32 instead
                         let (data, offsets) = Self::parse_utf8_array::<u32>(
@@ -311,20 +316,26 @@ impl RecordBatchParser {
                             &field.name,
                             &arc_opt,
                         )?;
-                        let arr = Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                            data,
-                            null_mask.map(|mask| {
-                                assert_eq!(
-                                    mask.len(),
-                                    field_len,
-                                    "String null_mask length must equal number of strings"
-                                );
-                                mask
-                            }),
-                            offsets,
-                        ))));
+                        let arr =
+                            Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
+                                data,
+                                null_mask.map(|mask| {
+                                    assert_eq!(
+                                        mask.len(),
+                                        field_len,
+                                        "String null_mask length must equal number of strings"
+                                    );
+                                    mask
+                                }),
+                                offsets,
+                            ))));
                         // Create corrected field with String type instead of LargeString
-                        let corrected_field = Field::new(field.name.clone(), ArrowType::String, field.nullable, Some(field.metadata.clone()));
+                        let corrected_field = Field::new(
+                            field.name.clone(),
+                            ArrowType::String,
+                            field.nullable,
+                            Some(field.metadata.clone()),
+                        );
                         cols.push(FieldArray::new(corrected_field, arr));
                         continue;
                     } else if offsets_l == expected_u64_size {
@@ -352,8 +363,10 @@ impl RecordBatchParser {
                     } else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)", 
-                                    field.name, offsets_l, expected_u32_size, expected_u64_size),
+                            format!(
+                                "Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)",
+                                field.name, offsets_l, expected_u32_size, expected_u64_size
+                            ),
                         ));
                     }
                 }
@@ -387,7 +400,7 @@ impl RecordBatchParser {
                 }
                 // dictionary
                 ArrowType::Dictionary(idx_ty) => {
-                    // TODO: isDelta check is done in the DictionaryBatch path,
+                    // TODO[5]: isDelta check is done in the DictionaryBatch path,
                     // but we include a guard here in case a delta batch arrives first,
                     // as we do not yet support it.
                     if let Some(dict_batch) = message.header_as_dictionary_batch() {
@@ -428,7 +441,7 @@ impl RecordBatchParser {
                     let bytes_buf: minarrow::Buffer<u8> =
                         unsafe { Self::buffer_from_slice::<u8>(val_slice, val_len, &arc_opt) };
 
-                    // TODO: u32 should be larger or dynamic to handle all variants
+                    // TODO[5]: u32 should be larger or dynamic to handle all variants
                     let offs: &[u32] = offsets_buf.as_ref();
                     let unique_n = offs.len().saturating_sub(1);
                     let mut unique_values = Vec64::<String>::with_capacity(unique_n);
@@ -544,7 +557,10 @@ impl RecordBatchParser {
         if current_buffer_idx >= corrected_offsets.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Buffer index {} out of range for corrected offsets", current_buffer_idx),
+                format!(
+                    "Buffer index {} out of range for corrected offsets",
+                    current_buffer_idx
+                ),
             ));
         }
 
@@ -621,11 +637,11 @@ impl RecordBatchParser {
         }
     }
 
-    // TODO: Dictionary delta support
+    // TODO[5]: Dictionary delta support
 
     /// Checks for the unsupported dictionary delta case.
     ///
-    /// * If `isDelta == true` → returns an **Unsupported** error.
+    /// * If `isDelta == true` -> returns an **Unsupported** error.
     pub fn check_dictionary_delta(batch: &DictionaryBatch) -> io::Result<()> {
         if batch.isDelta() {
             return Err(io::Error::new(
@@ -837,20 +853,12 @@ pub(crate) fn handle_record_batch(
     let n_rows = nodes.get(0).length() as usize;
 
     #[allow(unused_mut)]
-    let mut extract_buffer_slice = |buffer_idx: &mut usize, field_name: &str| -> io::Result<(&[u8], usize)> {
-        RecordBatchParser::extract_buffer_slice(
-            &buffers,
-            buffer_idx,
-            body,
-            field_name,
-        )
-    };
+    let mut extract_buffer_slice =
+        |buffer_idx: &mut usize, field_name: &str| -> io::Result<(&[u8], usize)> {
+            RecordBatchParser::extract_buffer_slice(&buffers, buffer_idx, body, field_name)
+        };
 
     for (col_idx, field) in fields.iter().enumerate() {
-        eprintln!(
-            "DEBUG handle_record_batch: Processing field {} ({}), type {:?}",
-            col_idx, field.name, field.dtype
-        );
         let node = nodes.get(col_idx);
         let row_count = node.length() as usize;
 
@@ -1039,7 +1047,10 @@ pub(crate) fn handle_record_batch(
             }
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => {
-                eprintln!("DEBUG: About to extract offset buffer for field '{}'", field.name);
+                eprintln!(
+                    "DEBUG: About to extract offset buffer for field '{}'",
+                    field.name
+                );
                 let (offs_slice, offs_offset) = extract_buffer_slice(&mut buffer_idx, &field.name)?;
                 let (data_slice, data_offset) = extract_buffer_slice(&mut buffer_idx, &field.name)?;
                 check_two_buffer_bounds(
@@ -1053,12 +1064,18 @@ pub(crate) fn handle_record_batch(
                 )?;
                 // Check if this is actually u32 offset data misidentified as LargeString
                 // For string arrays, we have (n_elements + 1) offsets
-                // If buffer size = (n_elements + 1) * 4, it's u32 offsets (String32)  
+                // If buffer size = (n_elements + 1) * 4, it's u32 offsets (String32)
                 // If buffer size = (n_elements + 1) * 8, it's u64 offsets (String64)
                 let expected_u32_size = (row_count + 1) * 4;
                 let expected_u64_size = (row_count + 1) * 8;
-                eprintln!("DEBUG: LargeString buffer size check for field '{}': got {}, expected {} (u32) or {} (u64), row_count={}",
-                    field.name, offs_slice.len(), expected_u32_size, expected_u64_size, row_count);
+                eprintln!(
+                    "DEBUG: LargeString buffer size check for field '{}': got {}, expected {} (u32) or {} (u64), row_count={}",
+                    field.name,
+                    offs_slice.len(),
+                    expected_u32_size,
+                    expected_u64_size,
+                    row_count
+                );
                 if offs_slice.len() == expected_u32_size {
                     // Likely u32 offsets, parse as String32 instead
                     let offs_u32 = cast_slice::<u32>(offs_slice);
@@ -1071,7 +1088,12 @@ pub(crate) fn handle_record_batch(
                         .into(),
                     );
                     // Create corrected field with String type instead of LargeString
-                    let corrected_field = Field::new(field.name.clone(), ArrowType::String, field.nullable, Some(field.metadata.clone()));
+                    let corrected_field = Field::new(
+                        field.name.clone(),
+                        ArrowType::String,
+                        field.nullable,
+                        Some(field.metadata.clone()),
+                    );
                     cols.push(FieldArray::new(corrected_field, Array::TextArray(arr)));
                 } else if offs_slice.len() == expected_u64_size {
                     // Actual u64 offsets
@@ -1088,8 +1110,13 @@ pub(crate) fn handle_record_batch(
                 } else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)", 
-                                field.name, offs_slice.len(), expected_u32_size, expected_u64_size),
+                        format!(
+                            "Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)",
+                            field.name,
+                            offs_slice.len(),
+                            expected_u32_size,
+                            expected_u64_size
+                        ),
                     ));
                 }
             }
@@ -1248,7 +1275,7 @@ where
     let buffers = rec
         .buffers()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
-    
+
     let mut buffer_idx = 0;
     let mut cols = Vec::with_capacity(fields.len());
     let n_rows = nodes.get(0).length() as usize;
@@ -1256,15 +1283,12 @@ where
     let body = &full_data[body_offset..body_offset + body_len];
 
     // Helper closure to extract buffer slices
-    let extract_buffer_slice = |buffer_idx: &mut usize, field_name: &str| -> io::Result<(&[u8], usize)> {
-        RecordBatchParser::extract_buffer_slice(&buffers, buffer_idx, body, field_name)
-    };
+    let extract_buffer_slice =
+        |buffer_idx: &mut usize, field_name: &str| -> io::Result<(&[u8], usize)> {
+            RecordBatchParser::extract_buffer_slice(&buffers, buffer_idx, body, field_name)
+        };
 
     for (col_idx, field) in fields.iter().enumerate() {
-        eprintln!(
-            "DEBUG handle_record_batch_shared: Processing field {} ({}), type {:?}",
-            col_idx, field.name, field.dtype
-        );
         let node = nodes.get(col_idx);
         let row_count = node.length() as usize;
 
@@ -1493,7 +1517,6 @@ where
                 // Create shared buffers for string data using SharedBuffer
                 use minarrow::structs::shared_buffer::SharedBuffer;
 
-
                 let data_wrapper = SliceWrapper {
                     _owner: arc_data.clone(),
                     offset: body_offset + data_offset,
@@ -1516,7 +1539,10 @@ where
             }
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => {
-                eprintln!("DEBUG: About to extract offset buffer for field '{}'", field.name);
+                eprintln!(
+                    "DEBUG: About to extract offset buffer for field '{}'",
+                    field.name
+                );
                 let (offs_slice, offs_offset) = extract_buffer_slice(&mut buffer_idx, &field.name)?;
                 let (data_slice, data_offset) = extract_buffer_slice(&mut buffer_idx, &field.name)?;
                 check_two_buffer_bounds(
@@ -1532,7 +1558,6 @@ where
                 // Create shared buffers for string data using SharedBuffer
                 use minarrow::structs::shared_buffer::SharedBuffer;
 
-
                 let data_wrapper = SliceWrapper {
                     _owner: arc_data.clone(),
                     offset: body_offset + data_offset,
@@ -1543,7 +1568,7 @@ where
 
                 // Check if this is actually u32 offset data misidentified as LargeString
                 // For string arrays, we have (n_elements + 1) offsets
-                // If buffer size = (n_elements + 1) * 4, it's u32 offsets (String32)  
+                // If buffer size = (n_elements + 1) * 4, it's u32 offsets (String32)
                 // If buffer size = (n_elements + 1) * 8, it's u64 offsets (String64)
                 let expected_u32_size = (row_count + 1) * 4;
                 let expected_u64_size = (row_count + 1) * 8;
@@ -1561,7 +1586,12 @@ where
                     let arr =
                         TextArray::String32(StringArray::new(data_buf, null_mask, offs_buf).into());
                     // Create corrected field with String type instead of LargeString
-                    let corrected_field = Field::new(field.name.clone(), ArrowType::String, field.nullable, Some(field.metadata.clone()));
+                    let corrected_field = Field::new(
+                        field.name.clone(),
+                        ArrowType::String,
+                        field.nullable,
+                        Some(field.metadata.clone()),
+                    );
                     cols.push(FieldArray::new(corrected_field, Array::TextArray(arr)));
                 } else if offs_slice.len() == expected_u64_size {
                     // Actual u64 offsets
@@ -1580,8 +1610,13 @@ where
                 } else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)", 
-                                field.name, offs_slice.len(), expected_u32_size, expected_u64_size),
+                        format!(
+                            "Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)",
+                            field.name,
+                            offs_slice.len(),
+                            expected_u32_size,
+                            expected_u64_size
+                        ),
                     ));
                 }
             }
@@ -1702,7 +1737,7 @@ where
 ///
 /// Converts FlatBuffers fields to native [`Field`] representations.
 #[inline(always)]
-pub(crate) fn handle_schema_header(af_msg: &fb::Message) -> io::Result<Vec<Field>> {
+pub fn handle_schema_header(af_msg: &fb::Message) -> io::Result<Vec<Field>> {
     // 1. Validate Flatbuffer version
     let version = af_msg.version();
     match version {
@@ -1984,12 +2019,19 @@ fn push_numeric_col_shared<T, M: ?Sized>(
     M: AsRef<[u8]> + Send + Sync + 'static,
 {
     use minarrow::structs::shared_buffer::SharedBuffer;
-    
+
     let absolute_offset = body_offset + data_offset;
     let final_addr = arc_data.as_ref().as_ref().as_ptr() as usize + absolute_offset;
-    
-    debug_println!("Numeric buffer {} - body_offset: {}, data_offset: {}, absolute_offset: {}, final_addr: 0x{:x}, aligned: {}", 
-                  field.name, body_offset, data_offset, absolute_offset, final_addr, final_addr % 64 == 0);
+
+    debug_println!(
+        "Numeric buffer {} - body_offset: {}, data_offset: {}, absolute_offset: {}, final_addr: 0x{:x}, aligned: {}",
+        field.name,
+        body_offset,
+        data_offset,
+        absolute_offset,
+        final_addr,
+        final_addr % 64 == 0
+    );
 
     // Create a wrapper that references the slice we need
     let byte_len = data_slice.len();
@@ -2001,9 +2043,12 @@ fn push_numeric_col_shared<T, M: ?Sized>(
     };
 
     let shared = SharedBuffer::from_owner(wrapper);
-    debug_println!("SharedBuffer pointer for {}: {:p}, aligned: {}", 
-                  field.name, shared.as_slice().as_ptr(), 
-                  shared.as_slice().as_ptr() as usize % 64 == 0);
+    debug_println!(
+        "SharedBuffer pointer for {}: {:p}, aligned: {}",
+        field.name,
+        shared.as_slice().as_ptr(),
+        shared.as_slice().as_ptr() as usize % 64 == 0
+    );
     let data = minarrow::Buffer::from_shared(shared);
 
     let arr = Arc::new(IntegerArray { data, null_mask });
@@ -2054,7 +2099,6 @@ fn push_float_col_shared<T, M: ?Sized>(
     M: AsRef<[u8]> + Send + Sync + 'static,
 {
     use minarrow::structs::shared_buffer::SharedBuffer;
-
 
     let absolute_offset = body_offset + data_offset;
     let byte_len = data_slice.len();
@@ -2269,25 +2313,32 @@ pub(crate) fn decompress_sequential_body(
     let mut decompressed_body = Vec::new();
     let mut buffer_offsets = Vec::new(); // Offset of each buffer in the decompressed body
     let mut read_offset = 0; // Offset in the compressed body we're reading from
-    
-    eprintln!("DEBUG: Decompressing {} buffers, compressed_body.len()={}", buffers.len(), compressed_body.len());
-    
+
+    eprintln!(
+        "DEBUG: Decompressing {} buffers, compressed_body.len()={}",
+        buffers.len(),
+        compressed_body.len()
+    );
+
     for i in 0..buffers.len() {
         let buf = buffers.get(i);
         let buf_length = buf.length() as usize; // This is the UNCOMPRESSED length
-        
-        eprintln!("DEBUG: Buffer {}: uncompressed_length={}, read_offset={}", i, buf_length, read_offset);
-        
+
+        eprintln!(
+            "DEBUG: Buffer {}: uncompressed_length={}, read_offset={}",
+            i, buf_length, read_offset
+        );
+
         // Record the current offset in the decompressed body for this buffer
         buffer_offsets.push(decompressed_body.len());
-        
+
         // Skip buffers with zero length (common for null masks)
         if buf_length == 0 {
             eprintln!("DEBUG: Skipping zero-length buffer {}", i);
             // Zero length buffers still take space in the decompressed output (nothing to decompress)
             continue;
         }
-        
+
         // Check if this looks like a compressed buffer (starts with 8-byte uncompressed length)
         if read_offset + 8 > compressed_body.len() {
             return Err(io::Error::new(
@@ -2295,30 +2346,37 @@ pub(crate) fn decompress_sequential_body(
                 format!("Buffer {} header extends beyond body data", i),
             ));
         }
-        
+
         let header_bytes = &compressed_body[read_offset..read_offset + 8];
-        let uncompressed_len = u64::from_le_bytes(
-            header_bytes.try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid length header: {}", e)))?
-        ) as usize;
-        
-        eprintln!("DEBUG: Buffer {} header uncompressed_len={}", i, uncompressed_len);
-        
+        let uncompressed_len = u64::from_le_bytes(header_bytes.try_into().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid length header: {}", e),
+            )
+        })?) as usize;
+
+        eprintln!(
+            "DEBUG: Buffer {} header uncompressed_len={}",
+            i, uncompressed_len
+        );
+
         // Verify the uncompressed length matches the FlatBuffers metadata
         if uncompressed_len != buf_length {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Uncompressed length mismatch for buffer {}: header says {}, metadata says {}", 
-                        i, uncompressed_len, buf_length),
+                format!(
+                    "Uncompressed length mismatch for buffer {}: header says {}, metadata says {}",
+                    i, uncompressed_len, buf_length
+                ),
             ));
         }
-        
+
         let compressed_start = read_offset + 8;
-        
+
         // For the compressed data size, we need to scan to find the right boundary
         // since compressed data can be variable size + padding
         let remaining_body = &compressed_body[compressed_start..];
-        
+
         // Try different compression algorithms and find the one that works
         let compression_types = [
             #[cfg(feature = "snappy")]
@@ -2326,30 +2384,35 @@ pub(crate) fn decompress_sequential_body(
             #[cfg(feature = "zstd")]
             Compression::Zstd,
         ];
-        
+
         let mut decompressed = None;
         let mut actual_compressed_size = 0;
-        
+
         for &compression in &compression_types {
             // Try different compressed sizes - scan forward to find the right size
             for try_len in 1..=remaining_body.len() {
                 let try_compressed = &remaining_body[..try_len];
                 if let Ok(result) = decompress(try_compressed, compression) {
                     if result.len() == uncompressed_len {
-                        eprintln!("DEBUG: Successfully decompressed buffer {} with {:?}, size {} -> {}", 
-                                  i, compression, try_len, result.len());
+                        eprintln!(
+                            "DEBUG: Successfully decompressed buffer {} with {:?}, size {} -> {}",
+                            i,
+                            compression,
+                            try_len,
+                            result.len()
+                        );
                         decompressed = Some(result);
                         actual_compressed_size = try_len;
                         break;
                     }
                 }
             }
-            
+
             if decompressed.is_some() {
                 break;
             }
         }
-        
+
         match decompressed {
             Some(data) => {
                 decompressed_body.extend_from_slice(&data);
@@ -2358,7 +2421,10 @@ pub(crate) fn decompress_sequential_body(
                 // Add padding to align to 64-byte boundary (Arrow IPC alignment)
                 let aligned_size = ((total_size + 63) / 64) * 64;
                 read_offset += aligned_size;
-                eprintln!("DEBUG: Buffer {} processed, advancing read_offset by {} to {}", i, aligned_size, read_offset);
+                eprintln!(
+                    "DEBUG: Buffer {} processed, advancing read_offset by {} to {}",
+                    i, aligned_size, read_offset
+                );
             }
             None => {
                 return Err(io::Error::new(
@@ -2368,8 +2434,11 @@ pub(crate) fn decompress_sequential_body(
             }
         }
     }
-    
-    eprintln!("DEBUG: Decompressed body size: {} bytes", decompressed_body.len());
+
+    eprintln!(
+        "DEBUG: Decompressed body size: {} bytes",
+        decompressed_body.len()
+    );
     eprintln!("DEBUG: Buffer offsets count: {}", buffer_offsets.len());
     Ok((decompressed_body, buffer_offsets))
 }
@@ -2383,27 +2452,33 @@ pub(crate) fn is_body_compressed(buffers: &Vector<Buffer>, body: &[u8]) -> bool 
         let buf = buffers.get(i);
         let buf_offset = buf.offset() as usize;
         let buf_length = buf.length() as usize;
-        
+
         // Skip zero-length buffers
         if buf_length == 0 {
             continue;
         }
-        
+
         // Check if we have enough bytes for the header
         if buf_offset + 8 <= body.len() {
             let header_bytes = &body[buf_offset..buf_offset + 8];
             if let Ok(header_bytes_arr) = header_bytes.try_into() {
                 let uncompressed_len = u64::from_le_bytes(header_bytes_arr) as usize;
-                
+
                 // If the header's uncompressed length matches the FlatBuffers metadata length,
                 // and it's a reasonable size, this is likely compressed
-                if uncompressed_len == buf_length && uncompressed_len > 0 && uncompressed_len < 100_000_000 {
-                    eprintln!("DEBUG: Heuristic found compression header at buffer {}: uncompressed_len={}", i, uncompressed_len);
+                if uncompressed_len == buf_length
+                    && uncompressed_len > 0
+                    && uncompressed_len < 100_000_000
+                {
+                    eprintln!(
+                        "DEBUG: Heuristic found compression header at buffer {}: uncompressed_len={}",
+                        i, uncompressed_len
+                    );
                     return true;
                 }
             }
         }
     }
-    
+
     false
 }

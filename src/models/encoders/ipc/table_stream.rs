@@ -51,7 +51,7 @@ pub type TableStreamEncoder64 = GTableStreamEncoder<Vec64<u8>>;
 /// Low-level, pull-based streaming Arrow IPC writer producing encoded frames.
 ///
 /// This struct incrementally serialises Arrow `Table` data as IPC frames using any buffer
-/// implementing `StreamBuffer`, supporting both Arrow *File* and *Stream* [IPC protocols](https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc).
+/// implementing `StreamBuffer`, supporting both Arrow *File* and *Stream* [IPC protocols](https://arrow.apache.org/docs/format/Columnar.html#serialisation-and-interprocess-communication-ipc).
 ///
 /// Typical usage: construct the writer, register any required dictionaries,
 /// write tables in sequence, and finally call [`finish`] to emit the footer or EOS marker.

@@ -181,9 +181,11 @@ fn concat_field_arrays(batches: Vec<FieldArray>) -> io::Result<FieldArray> {
 #[cfg(test)]
 mod tests {
     use crate::enums::IPCMessageProtocol;
+    use crate::models::readers::ipc::table_reader::StreamBuffer;
     use crate::models::readers::ipc::table_reader::TableReader;
     use crate::models::writers::ipc::table_stream_writer::TableStreamWriter;
     use crate::test_helpers::{make_all_types_table, make_schema_all_types};
+    use crate::utils;
     use futures_core::Stream;
     use minarrow::{SuperTable, Table};
     use std::io;
@@ -192,14 +194,12 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf, duplex};
 
     /// Helper function to register dictionaries for categorical columns in a table
-    fn register_dictionaries_for_table<
-        B: crate::traits::stream_buffer::StreamBuffer + Unpin + 'static,
-    >(
+    fn register_dictionaries_for_table<B: StreamBuffer + Unpin + 'static>(
         writer: &mut TableStreamWriter<B>,
         table: &Table,
     ) {
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = crate::utils::extract_dictionary_values_from_col(col) {
+            if let Some(values) = utils::extract_dictionary_values_from_col(col) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
