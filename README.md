@@ -1,145 +1,136 @@
-# Lightstream – *Arrow IPC streaming without compromise*
+# Lightstream
 
-## Why this crate exists
-When building high-performance, full-stack, data-driven applications, I repeatedly hit the same barriers.  
+**Zero-copy Arrow streaming over any transport.**
 
-- **Protobuf/gRPC**: convenient, but introduces memory copies.  
-- **FlightRPC**: powerful, but heavyweight and overengineered for most cases.  
+Lightstream gives you Arrow IPC streaming with SIMD-aligned buffers across TCP, QUIC, WebSocket, Unix sockets, and stdio. No FlightRPC overhead, no Protobuf copies, no heavy infrastructure. Plug into Tokio, stream tables, stay zero-copy from wire to SIMD kernel.
 
-I wanted a crate that would:  
-1. Integrate Arrow IPC memory format seamlessly into any async context  
-2. Provide low-level control  
-3. Establish composable patterns for arbitrary wire formats  
-4. Require no heavy infrastructure to get started  
-5. Offer a true zero-copy path from wire -> SIMD kernels without re-allocation  
-6. Maintain reasonable compile times  
+## Why Lightstream?
 
-**Lightstream** is the result: an extension to [Minarrow](https://crates.io/crates/minarrow) that adds native streaming and I/O. It enables raw bytestream construction, reading and writing IPC and TLV formats, CSV/Parquet writers, and a high-performance 64-byte SIMD memory-mapped IPC reader.  
+**The problem:** Arrow has great in-memory format, but getting data in and out efficiently is painful. DIY Protobuf copies everything. FlightRPC is heavyweight. Most solutions break SIMD alignment somewhere in the pipeline.
 
-### Use cases
-* Bypassing library machinery and going straight to the wire
-* Streaming Arrow IPC tables over network sockets with zero-copy buffers
-* Defining custom binary transport protocols  
-* Zero-copy ingestion with mmap for ultra-fast analytics
-* Control data alignment at source - SIMD-aligned Arrow IPC writers/readers
-* Async data pipelines with backpressure-aware sinks and streams
-* Building custom data transport layers and transfer protocols
+**The solution:** Lightstream maintains 64-byte alignment from source to sink. Memory-mapped reads hit 100M rows in ~4.5ms. Async streams integrate with Tokio. Pick your transport, pick your format, keep your alignment.
 
+## Transports
 
-## Introduction
-Lightstream provides composable building blocks for high-performance data I/O in Rust:  
+| Transport | Feature Flag | Description |
+|-----------|--------------|-------------|
+| TCP | `tcp` | Raw TCP sockets |
+| WebSocket | `websocket` | Browser-compatible streaming |
+| QUIC | `quic` | Modern UDP-based, multiplexed connections |
+| Unix Domain Socket | `uds` | Fast local IPC |
+| Stdio | `stdio` | Pipe-based communication |
 
-- Asynchronous Arrow IPC streaming and file writing  
-- Framed decoders/sinks for IPC, TLV, CSV, and optional Parquet  
-- Zero-copy, memory-mapped Arrow file reads **(~4.5ms for 100M rows × 4 columns on a consumer laptop)**  
-- Direct integration with Tokio and futures using zero-copy buffers  
-- 64-byte SIMD aligned readers/writers *(the only Arrow-compatible crate providing this in 2025)*  
+All transports use the same codec layer. Switch transports without changing your framing logic.
 
----
+## Formats
 
-## Design Principles
-- **Customisable** – *You own the buffer*. Pull-based or sink-driven streaming.  
-- **Composable** – Layerable codecs for encoders, decoders, sinks, and stream adapters.  
-- **Control** – Wire-level framing: IPC, TLV, CSV, and Parquet are handled at the transport boundary.  
-- **Compatible** – Native async support for futures and Tokio.  
-- **Power** – 64-byte aligned memory via `Vec64` ensures deterministic SIMD without hot-loop re-allocations.  
-- **Extensible** – Primitive building blocks to implement custom wire formats. Contributions welcome.  
-- **Efficient** – Minimal dependencies and fast compile times.  
+| Format | Description |
+|--------|-------------|
+| Arrow IPC | SIMD-aligned File and Stream protocols with schema + dictionaries |
+| TLV | Minimal type-length-value for lightweight transport |
+| CSV | Streaming readers/writers with null handling |
+| Parquet | Columnar with Zstd/Snappy compression (feature-gated) |
+| Memory Maps | Zero-copy ingestion, millions of rows in microseconds |
 
----
+## Quick Start
 
-## Layered Abstractions
+### Stream Tables over TCP
 
-| Layer               | Provided by Lightstream            | Replaceable |
-|---------------------|------------------------------------|-------------|
-| Framing             | `TlvFrame`, `IpcMessage`           | ✅ |
-| Buffering           | `StreamBuffer`                     | ✅ |
-| Encoding/Decoding   | `FrameEncoder`, `FrameDecoder`     | ✅ |
-| Streaming           | `GenByteStream`, `Sink`            | ✅ |
-| Formats             | IPC, Parquet, CSV, TLV             | ✅ |
-
-Each layer is trait-based with a reference implementation. Swap in your own framing, buffering, or encoding logic without re-implementing the stack.  
-
----
-
-## Supported Formats
-
-- **Arrow IPC** – Full support for SIMD-aligned *File* and *Stream* protocols, schema + dictionaries, streaming or random access.  
-- **TLV** – Minimal type-length-value framing for telemetry, control, or lightweight transport.  
-- **Parquet** *(feature-gated)* – Compact, columnar, compression-aware writer (Zstd, Snappy) with minimal dependencies.  
-- **CSV** – Streaming Arrow/Minarrow table readers/writers with headers, nulls, and custom delimiter/null handling.  
-- **Memory Maps** – Ultra-fast, zero-copy ingestion: millions of rows in microseconds, SIMD-ready.  
-
----
-
-## Examples
-
-### Framed Stream Reader
 ```rust
-use lightstream::models::streams::framed_byte_stream::FramedByteStream;
-use lightstream::models::decoders::ipc::table_stream::TableStreamDecoder;
-use lightstream::models::readers::ipc::table_stream_reader::TableStreamReader;
+use futures_util::StreamExt;
+use lightstream::models::readers::tcp::TcpTableReader;
 
-let framed = FramedByteStream::new(socket, TableStreamDecoder::default());
-let mut reader = TableStreamReader::new(framed);
-
-while let Some(table) = reader.next_table().await? {
-    println!("Received table: {:?}", table.name);
+let mut reader = TcpTableReader::connect("127.0.0.1:9000").await?;
+while let Some(result) = reader.next().await {
+    let table = result?;
+    process(table);
 }
 ```
 
-### Custom Protocol
+### Write Arrow Files
+
 ```rust
+use minarrow::{arr_i32, arr_str32, FieldArray, Table};
+use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::enums::IPCMessageProtocol;
+use tokio::fs::File;
+
+let table = Table::new("demo".into(), vec![
+    FieldArray::from_arr("id", arr_i32![1, 2, 3]),
+    FieldArray::from_arr("name", arr_str32!["a", "b", "c"]),
+].into());
+
+let file = File::create("demo.arrow").await?;
+let schema: Vec<_> = table.schema().iter().map(|f| (**f).clone()).collect();
+let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+writer.write_table(table).await?;
+writer.finish().await?;
+```
+
+### Custom Protocol
+
+```rust
+use lightstream::traits::frame_decoder::FrameDecoder;
+use lightstream::enums::DecodeResult;
+use lightstream::models::streams::framed_byte_stream::FramedByteStream;
+
 pub struct MyFramer;
 
 impl FrameDecoder for MyFramer {
     type Frame = Vec<u8>;
-    fn decode(&mut self, buf: &[u8]) -> DecodeResult<Self::Frame> {
-        // Custom framing logic
+    fn decode(&mut self, buf: &[u8]) -> Result<DecodeResult<Self::Frame>, std::io::Error> {
+        // Your framing logic
     }
 }
 
-let stream = FramedByteStream::new(socket, MyFramer);
+let framed = FramedByteStream::new(socket, MyFramer, 64 * 1024);
 ```
 
-### Write Tables
-```rust
-use minarrow::{arr_i32, arr_str32, FieldArray, Table};
-use lightstream::table_writer::TableWriter;
-use lightstream::enums::IPCMessageProtocol;
-use tokio::fs::File;
+## Architecture
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let col1 = FieldArray::from_arr("numbers", arr_i32![1, 2, 3]);
-    let col2 = FieldArray::from_arr("letters", arr_str32!["x", "y", "z"]);
-    let table = Table::new("demo".into(), vec![col1, col2].into());
+Lightstream is layered and composable. Swap any layer without rewriting the stack:
 
-    let file = File::create("demo.arrow").await?;
-    let schema = table.schema().to_vec();
-    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+| Layer | Implementation | Replaceable |
+|-------|----------------|-------------|
+| Transport | TCP, QUIC, WebSocket, UDS, Stdio | Yes |
+| Framing | `TlvFrame`, `IpcMessage` | Yes |
+| Buffering | `StreamBuffer` | Yes |
+| Encoding | `FrameEncoder`, `FrameDecoder` | Yes |
+| Formats | IPC, Parquet, CSV, TLV | Yes |
 
-    writer.write_table(table).await?;
-    writer.finish().await?;
-    Ok(())
-}
-```
+## Design Principles
 
----
+- **Zero-copy** — 64-byte aligned buffers via `Vec64`, no reallocation to fix alignment
+- **Composable** — Layered codecs, mix and match transports and formats
+- **Async-native** — Built for Tokio and futures with backpressure-aware sinks
+- **Minimal** — Fast compile times, few dependencies
 
-## Optional Features
-- `parquet` – Parquet writer  
-- `mmap` – Memory-mapped files  
-- `zstd` – Zstd compression (IPC + Parquet)  
-- `snappy` – Snappy compression (IPC + Parquet)  
+## Feature Flags
 
----
+| Feature | Description |
+|---------|-------------|
+| `tcp` | TCP transport |
+| `websocket` | WebSocket transport |
+| `quic` | QUIC transport |
+| `uds` | Unix domain socket transport |
+| `stdio` | Stdin/stdout transport |
+| `mmap` | Memory-mapped file reads |
+| `parquet` | Parquet writer |
+| `zstd` | Zstd compression |
+| `snappy` | Snappy compression |
 
-## Licence
-This project is licensed under the MIT Licence. See the `LICENCE` file for full terms, and `THIRD_PARTY_LICENSES` for Apache-licensed dependencies.  
+## Performance
 
----
+Memory-mapped reads: **~4.5ms for 100M rows × 4 columns** on a consumer laptop.
+
+The only Arrow-compatible Rust crate providing 64-byte SIMD-aligned readers/writers.
+
+## License
+
+Copyright Peter Garfield Bower 2025-2026.
+
+Released under MIT. See [LICENSE](LICENSE) for details, and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) for Apache-licensed dependencies.
 
 ## Affiliation Notice
-This project is not affiliated with Apache Arrow or the Apache Software Foundation.  
-It serialises the public Arrow format via a custom implementation (*Minarrow*), while reusing Flatbuffers schemas from Arrow-RS for schema type generation.  
+
+Lightstream is not affiliated with Apache Arrow or the Apache Software Foundation. It serialises the public Arrow format via Minarrow, using Flatbuffers schemas from Arrow-RS for schema type generation (see `THIRD_PARTY_LICENSES`).

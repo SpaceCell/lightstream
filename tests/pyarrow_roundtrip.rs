@@ -4,7 +4,7 @@ mod pyarrow_roundtrip_tests {
 
     use ::lightstream::enums::IPCMessageProtocol;
     use ::lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-    use ::lightstream::models::readers::ipc::table_stream_reader::TableStreamReader64;
+    use ::lightstream::models::readers::ipc::table_stream_reader::TableStreamReader;
     use ::lightstream::models::streams::disk::DiskByteStream;
     use ::lightstream::models::writers::ipc::table_stream_writer::write_tables_to_stream;
     use ::lightstream::models::writers::ipc::table_writer::write_tables_to_file;
@@ -278,13 +278,54 @@ mod pyarrow_roundtrip_tests {
     async fn test_read_pyarrow_stream_format() {
         println!("Testing PyArrow -> lightstream roundtrip (stream format)");
 
-        // Read PyArrow-generated Arrow stream
+        // Read PyArrow-generated Arrow stream.
+        // PyArrow writes standard 8-byte aligned Arrow IPC, so we use
+        // TableStreamReader (Vec<u8>, 8-byte alignment) rather than
+        // TableStreamReader64 (Vec64<u8>, 64-byte alignment).
+        // DiskByteStream yields Vec64 for I/O buffer alignment but
+        // implements AsyncRead, so we wrap it in an adapter that
+        // re-chunks into Vec<u8>.
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::{AsyncRead, AsyncReadExt};
+
+        struct ByteStream<R>(R);
+        impl<R: AsyncRead + Unpin> futures_core::Stream for ByteStream<R> {
+            type Item = Result<Vec<u8>, std::io::Error>;
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                let mut buf = vec![0u8; 8192];
+                let mut fut = Box::pin(self.0.read(&mut buf));
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(Ok(0)) => Poll::Ready(None),
+                    Poll::Ready(Ok(n)) => {
+                        buf.truncate(n);
+                        Poll::Ready(Some(Ok(buf)))
+                    }
+                    Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+        impl<R: AsyncRead + Unpin> AsyncRead for ByteStream<R> {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.0).poll_read(cx, buf)
+            }
+        }
+
         let file_path = "python/pyarrow_basic_types.stream";
         use ::lightstream::enums::BufferChunkSize;
-        let stream = DiskByteStream::open(file_path, BufferChunkSize::Custom(1024))
+        let disk = DiskByteStream::open(file_path, BufferChunkSize::Custom(1024))
             .await
             .expect("Failed to create stream");
-        let mut reader = TableStreamReader64::new(stream, 1024, IPCMessageProtocol::Stream);
+        let stream = ByteStream(disk);
+        let mut reader = TableStreamReader::new(stream, 1024, IPCMessageProtocol::Stream);
 
         let mut tables = vec![];
         while let Some(table) = reader.next().await {

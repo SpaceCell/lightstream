@@ -15,7 +15,9 @@ use futures_core::Stream;
 use futures_util::StreamExt;
 use minarrow::{Field, FieldArray, SuperTable, Table};
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::io::AsyncRead;
 
 /// High-level async table reader over a framed Arrow IPC stream.
@@ -126,6 +128,19 @@ where
     /// Read the next `Table` from the stream, or `None` on EOS
     pub async fn read_next(&mut self) -> io::Result<Option<Table>> {
         self.decoder.next().await.transpose()
+    }
+}
+
+impl<S, B> Stream for TableReader<S, B>
+where
+    S: Stream<Item = Result<B, io::Error>> + AsyncRead + Unpin + Send + Sync + 'static,
+    B: StreamBuffer + Unpin + 'static,
+{
+    type Item = io::Result<Table>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let me = self.get_mut();
+        Pin::new(&mut me.decoder).poll_next(cx)
     }
 }
 

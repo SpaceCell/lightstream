@@ -21,7 +21,7 @@ use crate::enums::{DecodeResult, DecodeState, IPCMessageProtocol};
 use crate::models::frames::ipc_message::ArrowIPCMessage;
 use crate::traits::frame_decoder::FrameDecoder;
 use crate::traits::stream_buffer::StreamBuffer;
-use crate::utils::align_8;
+use crate::utils::{align_8, align_to};
 
 /// Decoder for Arrow IPC (file/stream) format state machine.
 pub struct ArrowIPCFrameDecoder<B: StreamBuffer> {
@@ -327,9 +327,9 @@ impl<B: StreamBuffer> ArrowIPCFrameDecoder<B> {
             }
 
             let body = B::from_slice(&buf[body_start..body_end]);
-            // Account for body padding to maintain 8-byte alignment
+            // Account for body padding matching the encoder's alignment
             let consumed_before_body_pad = base_off + prefix + msg_len + meta_pad + body_len;
-            let body_pad = align_8(consumed_before_body_pad);
+            let body_pad = align_to::<B>(consumed_before_body_pad);
             let consumed = consumed_before_body_pad + body_pad;
 
             // Prepare for next frame
@@ -392,8 +392,8 @@ impl<B: StreamBuffer> ArrowIPCFrameDecoder<B> {
             self.file_magic_unconsumed = false;
         }
 
-        // Account for body padding
-        let body_pad = align_8(needed);
+        // Account for body padding matching the encoder's alignment
+        let body_pad = align_to::<B>(needed);
         let consumed = needed + body_pad;
 
         Ok(Some(DecodeResult::Frame {

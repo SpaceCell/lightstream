@@ -287,12 +287,13 @@ pub(crate) fn arrow_type_to_parquet(
         ArrowType::String => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
         #[cfg(feature = "large_string")]
         ArrowType::LargeString => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
+        ArrowType::Utf8View => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
         #[cfg(feature = "datetime")]
         ArrowType::Date32 => Ok((ParquetPhysicalType::Int32, ParquetLogicalType::Date32)),
         #[cfg(feature = "datetime")]
         ArrowType::Date64 => Ok((ParquetPhysicalType::Int64, ParquetLogicalType::Date64)),
         #[cfg(feature = "datetime")]
-        ArrowType::Timestamp(unit) => match unit {
+        ArrowType::Timestamp(unit, _) => match unit {
             TimeUnit::Milliseconds => Ok((
                 ParquetPhysicalType::Int64,
                 ParquetLogicalType::TimestampMillis,
@@ -443,15 +444,15 @@ pub(crate) fn parquet_to_arrow_type(
         (ParquetPhysicalType::Int64, Some(ParquetLogicalType::Date64)) => Ok(ArrowType::Date64),
         #[cfg(feature = "datetime")]
         (ParquetPhysicalType::Int64, Some(ParquetLogicalType::TimestampMillis)) => {
-            Ok(ArrowType::Timestamp(TimeUnit::Milliseconds))
+            Ok(ArrowType::Timestamp(TimeUnit::Milliseconds, None))
         }
         #[cfg(feature = "datetime")]
         (ParquetPhysicalType::Int64, Some(ParquetLogicalType::TimestampMicros)) => {
-            Ok(ArrowType::Timestamp(TimeUnit::Microseconds))
+            Ok(ArrowType::Timestamp(TimeUnit::Microseconds, None))
         }
         #[cfg(feature = "datetime")]
         (ParquetPhysicalType::Int64, Some(ParquetLogicalType::TimestampNanos)) => {
-            Ok(ArrowType::Timestamp(TimeUnit::Nanoseconds))
+            Ok(ArrowType::Timestamp(TimeUnit::Nanoseconds, None))
         }
         #[cfg(feature = "datetime")]
         (ParquetPhysicalType::Int32, Some(ParquetLogicalType::TimeMillis)) => {

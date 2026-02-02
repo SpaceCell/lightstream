@@ -174,6 +174,26 @@ pub mod models {
         /// Parquet reader
         #[cfg(feature = "parquet")]
         pub mod parquet_reader;
+
+        /// TCP table reader
+        #[cfg(feature = "tcp")]
+        pub mod tcp;
+
+        /// WebSocket table reader
+        #[cfg(feature = "websocket")]
+        pub mod websocket;
+
+        /// QUIC table reader
+        #[cfg(feature = "quic")]
+        pub mod quic;
+
+        /// UDS table reader
+        #[cfg(feature = "uds")]
+        pub mod uds;
+
+        /// Stdin table reader
+        #[cfg(feature = "stdio")]
+        pub mod stdio;
     }
 
     /// Writers for Arrow IPC, CSV, and optionally Parquet.
@@ -192,6 +212,26 @@ pub mod models {
         /// Parquet writer
         #[cfg(feature = "parquet")]
         pub mod parquet_writer;
+
+        /// TCP table writer
+        #[cfg(feature = "tcp")]
+        pub mod tcp;
+
+        /// WebSocket table writer
+        #[cfg(feature = "websocket")]
+        pub mod websocket;
+
+        /// QUIC table writer
+        #[cfg(feature = "quic")]
+        pub mod quic;
+
+        /// UDS table writer
+        #[cfg(feature = "uds")]
+        pub mod uds;
+
+        /// Stdout table writer
+        #[cfg(feature = "stdio")]
+        pub mod stdio;
     }
 
     /// Stream adapters and sources.
@@ -201,6 +241,26 @@ pub mod models {
 
         /// Framed byte stream adapter.
         pub mod framed_byte_stream;
+
+        /// TCP byte stream adapter.
+        #[cfg(feature = "tcp")]
+        pub mod tcp;
+
+        /// WebSocket byte stream and sink adapters.
+        #[cfg(feature = "websocket")]
+        pub mod websocket;
+
+        /// QUIC byte stream adapter.
+        #[cfg(feature = "quic")]
+        pub mod quic;
+
+        /// UDS byte stream adapter.
+        #[cfg(feature = "uds")]
+        pub mod uds;
+
+        /// Stdin byte stream adapter.
+        #[cfg(feature = "stdio")]
+        pub mod stdio;
     }
 
     /// Arrow and Parquet type mappings.
