@@ -362,10 +362,10 @@ fn infer_schema(
             ArrowType::UInt32
         } else if is_u64 {
             ArrowType::UInt64
-        } else if is_f32 {
-            ArrowType::Float32
         } else if is_f64 {
             ArrowType::Float64
+        } else if is_f32 {
+            ArrowType::Float32
         } else if is_cat {
             ArrowType::Dictionary(CategoricalIndexType::UInt32)
         } else {

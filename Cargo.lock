@@ -272,7 +272,7 @@ checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
 
 [[package]]
 name = "lightstream"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "flatbuffers",
  "futures-core",
@@ -310,9 +310,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "minarrow"
-version = "0.7.2"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afe4bd696af379d0aabf9b7cc4590c88937d088b3741183818c87bb1448e9a41"
+checksum = "dec83afe7627050e33e0dc8b8c343f26a55c26950456e3d98165ce3e860f6954"
 dependencies = [
  "libc",
  "num-traits",

@@ -222,11 +222,19 @@ pub fn encode_table_csv<W: Write>(
                     }
                     NumericArray::Float32(arr) => {
                         let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        if v.fract() == 0.0 {
+                            write!(writer, "{v:.1}")?;
+                        } else {
+                            write!(writer, "{v}")?;
+                        }
                     }
                     NumericArray::Float64(arr) => {
                         let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        if v.fract() == 0.0 {
+                            write!(writer, "{v:.1}")?;
+                        } else {
+                            write!(writer, "{v}")?;
+                        }
                     }
                     _ => {
                         writer.write_all(b"<unsupported>")?;
