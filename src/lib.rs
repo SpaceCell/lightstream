@@ -187,6 +187,10 @@ pub mod models {
         #[cfg(feature = "quic")]
         pub mod quic;
 
+        /// WebTransport table reader
+        #[cfg(feature = "webtransport")]
+        pub mod webtransport;
+
         /// UDS table reader
         #[cfg(feature = "uds")]
         pub mod uds;
@@ -225,6 +229,10 @@ pub mod models {
         #[cfg(feature = "quic")]
         pub mod quic;
 
+        /// WebTransport table writer
+        #[cfg(feature = "webtransport")]
+        pub mod webtransport;
+
         /// UDS table writer
         #[cfg(feature = "uds")]
         pub mod uds;
@@ -253,6 +261,10 @@ pub mod models {
         /// QUIC byte stream adapter.
         #[cfg(feature = "quic")]
         pub mod quic;
+
+        /// WebTransport byte stream adapter.
+        #[cfg(feature = "webtransport")]
+        pub mod webtransport;
 
         /// UDS byte stream adapter.
         #[cfg(feature = "uds")]

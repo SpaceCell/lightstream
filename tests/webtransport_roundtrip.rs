@@ -1,25 +1,25 @@
-//! WebSocket roundtrip integration tests.
+//! WebTransport roundtrip integration test.
 //!
-//! Spins up a local TCP listener, upgrades to WebSocket, writes Arrow IPC
-//! tables from a client task, reads them back on the server side, and
-//! verifies the data survives the trip.
+//! Spins up a local WebTransport server, writes Arrow IPC tables from one task,
+//! reads them back from another, and verifies the data survives the trip.
 
-#![cfg(feature = "websocket")]
+#![cfg(feature = "webtransport")]
 
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use lightstream::enums::IPCMessageProtocol;
+use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
 use lightstream::models::readers::ipc::table_reader::TableReader;
-use lightstream::models::streams::websocket::WebSocketByteStream;
-use lightstream::models::writers::websocket::WebSocketTableWriter;
+use lightstream::models::readers::webtransport::WebTransportTableReader;
+use lightstream::models::streams::webtransport::WebTransportByteStream;
+use lightstream::models::writers::webtransport::WebTransportTableWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
     ffi::arrow_dtype::CategoricalIndexType,
 };
-use tokio::net::TcpListener;
-use tokio_tungstenite::accept_async;
+use wtransport::tls::Sha256Digest;
+use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig};
 
 fn make_test_table() -> Table {
     let int_col = FieldArray::new(
@@ -95,37 +95,56 @@ fn make_schema(table: &Table) -> Vec<Field> {
         .collect()
 }
 
-/// Accept a TCP connection and upgrade it to a WebSocket, returning the
-/// read half wrapped as a `WebSocketByteStream` for Arrow IPC decoding.
-async fn accept_ws_reader(
-    listener: &TcpListener,
-) -> WebSocketByteStream<
-    futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    >,
-> {
-    let (socket, _) = listener.accept().await.unwrap();
-    let ws = accept_async(socket).await.unwrap();
-    let (_, read_half) = futures_util::StreamExt::split(ws);
-    WebSocketByteStream::new(read_half)
+/// Create a self-signed identity for testing.
+///
+/// Returns the identity and its certificate hash so the client can verify
+/// the server using `with_server_certificate_hashes` — the standard
+/// WebTransport certificate pinning mechanism.
+fn make_test_identity() -> (Identity, Sha256Digest) {
+    let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"]).unwrap();
+    let hash = identity.certificate_chain().as_slice()[0].hash();
+    (identity, hash)
 }
 
-/// Basic roundtrip: write one table over WebSocket, read it back.
+/// Create a WebTransport server config with self-signed cert for testing.
+fn make_server_config(identity: Identity, port: u16) -> ServerConfig {
+    ServerConfig::builder()
+        .with_bind_default(port)
+        .with_identity(identity)
+        .build()
+}
+
+/// Create a client config that validates the server certificate by hash.
+fn make_client_config(server_cert_hash: Sha256Digest) -> ClientConfig {
+    ClientConfig::builder()
+        .with_bind_default()
+        .with_server_certificate_hashes([server_cert_hash])
+        .build()
+}
+
+/// Basic roundtrip: write one table over WebTransport, read it back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_ws_single_table_roundtrip() {
+async fn test_webtransport_single_table_roundtrip() {
     let table = make_test_table();
     let schema = make_schema(&table);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("ws://{addr}");
+    let (identity, cert_hash) = make_test_identity();
+    let server_config = make_server_config(identity, 0);
+    let server = Endpoint::server(server_config).unwrap();
+    let addr = server.local_addr().unwrap();
 
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let client_config = make_client_config(cert_hash);
+        let client = Endpoint::client(client_config).unwrap();
+        let conn = client
+            .connect(format!("https://127.0.0.1:{}", addr.port()))
             .await
             .unwrap();
+
+        let send = conn.open_uni().await.unwrap().await.unwrap();
+        let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
         writer.register_dictionary(3, vec![
             "red".to_string(),
             "green".to_string(),
@@ -133,10 +152,16 @@ async fn test_ws_single_table_roundtrip() {
         ]);
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
+        conn.closed().await;
     });
 
-    let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let incoming = server.accept().await;
+    let session_request = incoming.await.unwrap();
+    let conn = session_request.accept().await.unwrap();
+    let recv = conn.accept_uni().await.unwrap();
+
+    let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
+    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -148,20 +173,27 @@ async fn test_ws_single_table_roundtrip() {
 
 /// Write multiple tables, read them all back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_ws_multi_table_roundtrip() {
+async fn test_webtransport_multi_table_roundtrip() {
     let table = make_test_table();
     let schema = make_schema(&table);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("ws://{addr}");
+    let (identity, cert_hash) = make_test_identity();
+    let server_config = make_server_config(identity, 0);
+    let server = Endpoint::server(server_config).unwrap();
+    let addr = server.local_addr().unwrap();
 
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let client_config = make_client_config(cert_hash);
+        let client = Endpoint::client(client_config).unwrap();
+        let conn = client
+            .connect(format!("https://127.0.0.1:{}", addr.port()))
             .await
             .unwrap();
+
+        let send = conn.open_uni().await.unwrap().await.unwrap();
+        let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
         writer.register_dictionary(3, vec![
             "red".to_string(),
             "green".to_string(),
@@ -171,10 +203,16 @@ async fn test_ws_multi_table_roundtrip() {
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
+        conn.closed().await;
     });
 
-    let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let incoming = server.accept().await;
+    let session_request = incoming.await.unwrap();
+    let conn = session_request.accept().await.unwrap();
+    let recv = conn.accept_uni().await.unwrap();
+
+    let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
+    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -186,22 +224,29 @@ async fn test_ws_multi_table_roundtrip() {
     }
 }
 
-/// Use the Stream trait for continuous reading over WebSocket.
+/// Use the high-level WebTransportTableReader with Stream trait for continuous reading.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_ws_stream_trait() {
+async fn test_webtransport_stream_trait() {
     let table = make_test_table();
     let schema = make_schema(&table);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("ws://{addr}");
+    let (identity, cert_hash) = make_test_identity();
+    let server_config = make_server_config(identity, 0);
+    let server = Endpoint::server(server_config).unwrap();
+    let addr = server.local_addr().unwrap();
 
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let client_config = make_client_config(cert_hash);
+        let client = Endpoint::client(client_config).unwrap();
+        let conn = client
+            .connect(format!("https://127.0.0.1:{}", addr.port()))
             .await
             .unwrap();
+
+        let send = conn.open_uni().await.unwrap().await.unwrap();
+        let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
         writer.register_dictionary(3, vec![
             "red".to_string(),
             "green".to_string(),
@@ -210,10 +255,16 @@ async fn test_ws_stream_trait() {
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
+        conn.closed().await;
     });
 
-    let byte_stream = accept_ws_reader(&listener).await;
-    let mut reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let incoming = server.accept().await;
+    let session_request = incoming.await.unwrap();
+    let conn = session_request.accept().await.unwrap();
+    let recv = conn.accept_uni().await.unwrap();
+
+    let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
+    let mut reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream);
 
     let mut count = 0;
     while let Some(result) = reader.next().await {
@@ -226,22 +277,29 @@ async fn test_ws_stream_trait() {
     assert_eq!(count, 2);
 }
 
-/// Collect multiple WebSocket batches into a SuperTable without re-allocation.
+/// Collect multiple WebTransport batches into a SuperTable without re-allocation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_ws_read_to_super_table() {
+async fn test_webtransport_read_to_super_table() {
     let table = make_test_table();
     let schema = make_schema(&table);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("ws://{addr}");
+    let (identity, cert_hash) = make_test_identity();
+    let server_config = make_server_config(identity, 0);
+    let server = Endpoint::server(server_config).unwrap();
+    let addr = server.local_addr().unwrap();
 
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let client_config = make_client_config(cert_hash);
+        let client = Endpoint::client(client_config).unwrap();
+        let conn = client
+            .connect(format!("https://127.0.0.1:{}", addr.port()))
             .await
             .unwrap();
+
+        let send = conn.open_uni().await.unwrap().await.unwrap();
+        let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
         writer.register_dictionary(3, vec![
             "red".to_string(),
             "green".to_string(),
@@ -250,10 +308,16 @@ async fn test_ws_read_to_super_table() {
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
+        conn.closed().await;
     });
 
-    let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let incoming = server.accept().await;
+    let session_request = incoming.await.unwrap();
+    let conn = session_request.accept().await.unwrap();
+    let recv = conn.accept_uni().await.unwrap();
+
+    let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
+    let reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream);
     let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
 
     writer_handle.await.unwrap();

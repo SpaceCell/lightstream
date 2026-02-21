@@ -320,9 +320,9 @@ async fn test_quic_stream_trait() {
     assert_eq!(count, 2);
 }
 
-/// Combine multiple QUIC batches into a single Table.
+/// Collect multiple QUIC batches into a SuperTable without re-allocation.
 #[tokio::test]
-async fn test_quic_combine_to_table() {
+async fn test_quic_read_to_super_table() {
     let table = make_test_table();
     let schema = make_schema(&table);
 
@@ -357,11 +357,15 @@ async fn test_quic_combine_to_table() {
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream);
-    let combined = reader.combine_to_table(Some("merged".into())).await.unwrap();
+    let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
 
     writer_handle.await.unwrap();
 
-    assert_eq!(combined.n_rows, 8);
-    assert_eq!(combined.cols.len(), 4);
-    assert_eq!(combined.name, "merged");
+    assert_eq!(super_table.n_rows, 8);
+    assert_eq!(super_table.batches.len(), 2);
+    assert_eq!(super_table.name, "merged");
+    for batch in &super_table.batches {
+        assert_eq!(batch.n_rows, 4);
+        assert_eq!(batch.cols.len(), 4);
+    }
 }

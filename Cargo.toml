@@ -30,6 +30,7 @@ snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 zstd = { version = "0.12", optional = true }
 quinn = { version = "0.11", optional = true, default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+wtransport = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tempfile = "3.20.0"
@@ -52,6 +53,8 @@ tcp = ["tokio/net"]
 websocket = ["tcp", "tokio-tungstenite"]
 # QUIC transport
 quic = ["tokio/net", "quinn"]
+# WebTransport transport
+webtransport = ["tokio/net", "wtransport"]
 # Unix domain socket transport
 uds = ["tokio/net"]
 # Stdin/stdout transport
