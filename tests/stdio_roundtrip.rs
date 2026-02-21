@@ -350,11 +350,12 @@ async fn test_stdio_types_exist() {
     use lightstream::models::streams::stdio::StdinByteStream;
     use lightstream::models::writers::stdio::StdoutTableWriter;
 
-    // Verify types exist and have expected constructors
+    // Verify types and constructors exist
     // We don't actually call these since they would interact with real stdin/stdout
     fn _check_stdin_stream() {
-        let _: fn(lightstream::enums::BufferChunkSize) -> StdinByteStream = StdinByteStream::new;
-        let _: fn() -> StdinByteStream = StdinByteStream::default_size;
+        use lightstream::models::streams::stdio::{from_stdin, from_stdin_default};
+        let _: fn(lightstream::enums::BufferChunkSize) -> StdinByteStream = from_stdin;
+        let _: fn() -> StdinByteStream = from_stdin_default;
     }
 
     fn _check_stdin_reader() {

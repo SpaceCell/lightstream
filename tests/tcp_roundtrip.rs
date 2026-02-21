@@ -13,6 +13,8 @@ use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::readers::tcp::TcpTableReader;
 use lightstream::models::streams::tcp::TcpByteStream;
 use lightstream::models::writers::tcp::TcpTableWriter;
+use lightstream::traits::transport_reader::TransportReader;
+use lightstream::traits::transport_writer::TransportWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,

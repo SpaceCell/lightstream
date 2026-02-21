@@ -13,6 +13,7 @@ use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::streams::websocket::WebSocketByteStream;
 use lightstream::models::writers::websocket::WebSocketTableWriter;
+use lightstream::traits::transport_writer::TransportWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,

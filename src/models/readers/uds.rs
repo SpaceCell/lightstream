@@ -34,6 +34,7 @@ use minarrow::{Field, SuperTable, Table};
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
 use crate::models::streams::uds::UdsByteStream;
+use crate::traits::transport_reader::TransportReader;
 
 /// Async Arrow IPC reader over a Unix domain socket connection.
 ///
@@ -71,21 +72,23 @@ impl UdsTableReader {
         let inner = TableReader::new(stream, 64 * 1024, protocol);
         Self { inner }
     }
+}
 
+impl TransportReader for UdsTableReader {
     /// Read all tables from the stream until it closes.
-    pub async fn read_all_tables(self) -> io::Result<Vec<Table>> {
+    async fn read_all_tables(self) -> io::Result<Vec<Table>> {
         self.inner.read_all_tables().await
     }
 
     /// Read up to `n` tables. If `n` is `None`, read until end of stream.
-    pub async fn read_tables(self, n: Option<usize>) -> io::Result<Vec<Table>> {
+    async fn read_tables(self, n: Option<usize>) -> io::Result<Vec<Table>> {
         self.inner.read_tables(n).await
     }
 
     /// Read batches and assemble into a `SuperTable`.
     ///
     /// If `n` is `None`, read until end of stream.
-    pub async fn read_to_super_table(
+    async fn read_to_super_table(
         self,
         name: Option<String>,
         n: Option<usize>,
@@ -94,17 +97,17 @@ impl UdsTableReader {
     }
 
     /// Read all batches and concatenate into a single `Table`.
-    pub async fn combine_to_table(self, name: Option<String>) -> io::Result<Table> {
+    async fn combine_to_table(self, name: Option<String>) -> io::Result<Table> {
         self.inner.combine_to_table(name).await
     }
 
     /// Return the decoded schema, if available after the first schema message.
-    pub fn schema(&self) -> Option<&[Field]> {
+    fn schema(&self) -> Option<&[Field]> {
         self.inner.schema()
     }
 
     /// Read the next table from the stream, or `None` on end of stream.
-    pub async fn read_next(&mut self) -> io::Result<Option<Table>> {
+    async fn read_next(&mut self) -> io::Result<Option<Table>> {
         self.inner.read_next().await
     }
 }

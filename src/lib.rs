@@ -65,6 +65,12 @@ pub mod traits {
 
     /// Output buffer abstraction (`Vec<u8>`, `Vec64<u8>`, etc.).
     pub mod stream_buffer;
+
+    /// Transport-level table reader trait
+    pub mod transport_reader;
+
+    /// Transport-level table writer trait
+    pub mod transport_writer;
 }
 
 /// Codec implementations, readers, writers, and I/O models
@@ -244,6 +250,9 @@ pub mod models {
 
     /// Stream adapters and sources.
     pub mod streams {
+        /// Generic async byte stream adapter for any `AsyncRead` source.
+        pub mod async_read;
+
         /// Async disk-to-buffer stream.
         pub mod disk;
 

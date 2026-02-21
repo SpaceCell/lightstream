@@ -27,6 +27,7 @@ use tokio::io::Stdout;
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::TableSink;
+use crate::traits::transport_writer::TransportWriter;
 
 /// Async Arrow IPC writer to stdout.
 ///
@@ -66,29 +67,28 @@ impl StdoutTableWriter {
         )?;
         Ok(Self { sink })
     }
+}
 
+impl TransportWriter for StdoutTableWriter {
     /// Get the schema used for this writer.
-    pub fn schema(&self) -> &[Field] {
+    fn schema(&self) -> &[Field] {
         &self.sink.schema
     }
 
     /// Register a dictionary for categorical columns.
-    pub fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
+    fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
         self.sink.inner.register_dictionary(dict_id, values);
     }
 
     /// Write a single table and flush.
-    pub async fn write_table(&mut self, table: Table) -> io::Result<()> {
+    async fn write_table(&mut self, table: Table) -> io::Result<()> {
         SinkExt::send(&mut self.sink, table).await?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
 
-    /// Write all tables from an iterator and close.
-    pub async fn write_all_tables<I>(&mut self, tables: I) -> io::Result<()>
-    where
-        I: IntoIterator<Item = Table>,
-    {
+    /// Write all tables and close.
+    async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
             SinkExt::send(&mut sink, table).await?;
@@ -98,7 +98,7 @@ impl StdoutTableWriter {
     }
 
     /// Finalise the stream. Must be called after writing all tables.
-    pub async fn finish(&mut self) -> io::Result<()> {
+    async fn finish(&mut self) -> io::Result<()> {
         SinkExt::close(&mut self.sink).await
     }
 }

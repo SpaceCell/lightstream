@@ -41,7 +41,8 @@ use minarrow::{Field, SuperTable, Table};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
-use crate::models::streams::stdio::StdinByteStream;
+use crate::models::streams::stdio::{StdinByteStream, from_stdin, from_stdin_default};
+use crate::traits::transport_reader::TransportReader;
 
 /// Async Arrow IPC reader over stdin.
 ///
@@ -58,14 +59,14 @@ impl StdinTableReader {
     ///
     /// Uses `IPCMessageProtocol::Stream` and a 64 KiB chunk size.
     pub fn new() -> Self {
-        let stream = StdinByteStream::default_size();
+        let stream = from_stdin_default();
         let inner = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
         Self { inner }
     }
 
     /// Create a stdin table reader with explicit chunk size and protocol.
     pub fn new_with(chunk_size: BufferChunkSize, protocol: IPCMessageProtocol) -> Self {
-        let stream = StdinByteStream::new(chunk_size);
+        let stream = from_stdin(chunk_size);
         let inner = TableReader::new(stream, chunk_size.chunk_size(), protocol);
         Self { inner }
     }
@@ -75,21 +76,23 @@ impl StdinTableReader {
         let inner = TableReader::new(stream, 64 * 1024, protocol);
         Self { inner }
     }
+}
 
+impl TransportReader for StdinTableReader {
     /// Read all tables from stdin until EOF.
-    pub async fn read_all_tables(self) -> io::Result<Vec<Table>> {
+    async fn read_all_tables(self) -> io::Result<Vec<Table>> {
         self.inner.read_all_tables().await
     }
 
     /// Read up to `n` tables. If `n` is `None`, read until EOF.
-    pub async fn read_tables(self, n: Option<usize>) -> io::Result<Vec<Table>> {
+    async fn read_tables(self, n: Option<usize>) -> io::Result<Vec<Table>> {
         self.inner.read_tables(n).await
     }
 
     /// Read batches and assemble into a `SuperTable`.
     ///
     /// If `n` is `None`, read until EOF.
-    pub async fn read_to_super_table(
+    async fn read_to_super_table(
         self,
         name: Option<String>,
         n: Option<usize>,
@@ -98,17 +101,17 @@ impl StdinTableReader {
     }
 
     /// Read all batches and concatenate into a single `Table`.
-    pub async fn combine_to_table(self, name: Option<String>) -> io::Result<Table> {
+    async fn combine_to_table(self, name: Option<String>) -> io::Result<Table> {
         self.inner.combine_to_table(name).await
     }
 
     /// Return the decoded schema, if available after the first schema message.
-    pub fn schema(&self) -> Option<&[Field]> {
+    fn schema(&self) -> Option<&[Field]> {
         self.inner.schema()
     }
 
     /// Read the next table from stdin, or `None` on EOF.
-    pub async fn read_next(&mut self) -> io::Result<Option<Table>> {
+    async fn read_next(&mut self) -> io::Result<Option<Table>> {
         self.inner.read_next().await
     }
 }
