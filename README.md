@@ -19,6 +19,7 @@ Lightstream gives you Arrow IPC streaming with SIMD-aligned buffers across TCP, 
 | QUIC | `quic` | Modern UDP-based, multiplexed connections |
 | Unix Domain Socket | `uds` | Fast local IPC |
 | Stdio | `stdio` | Pipe-based communication |
+| WebTransport | `webtransport` | Modern WebTransport support via `wtransport` crate |
 
 All transports use the same codec layer. Switch transports without changing your framing logic.
 
@@ -118,6 +119,7 @@ Lightstream is layered and composable. Swap any layer without rewriting the stac
 | `parquet` | Parquet writer |
 | `zstd` | Zstd compression |
 | `snappy` | Snappy compression |
+| `webtransport` | Webtransport support |
 
 ## Performance
 

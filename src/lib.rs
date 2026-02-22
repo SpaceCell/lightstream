@@ -154,6 +154,10 @@ pub mod models {
 
         /// TLV frame definitions
         pub mod tlv_frame;
+
+        /// Lightstream protocol message types
+        #[cfg(feature = "protocol")]
+        pub mod protocol_message;
     }
 
     /// Readers for files, mmap, and async streams
@@ -204,6 +208,10 @@ pub mod models {
         /// Stdin table reader
         #[cfg(feature = "stdio")]
         pub mod stdio;
+
+        /// Lightstream protocol reader
+        #[cfg(feature = "protocol")]
+        pub mod lightstream;
     }
 
     /// Writers for Arrow IPC, CSV, and optionally Parquet.
@@ -246,6 +254,10 @@ pub mod models {
         /// Stdout table writer
         #[cfg(feature = "stdio")]
         pub mod stdio;
+
+        /// Lightstream protocol writer
+        #[cfg(feature = "protocol")]
+        pub mod lightstream;
     }
 
     /// Stream adapters and sources.
@@ -283,6 +295,10 @@ pub mod models {
         #[cfg(feature = "stdio")]
         pub mod stdio;
     }
+
+    /// Lightstream protocol: multiplexed messages and Arrow IPC tables over a single stream.
+    #[cfg(feature = "protocol")]
+    pub mod protocol;
 
     /// Arrow and Parquet type mappings.
     pub mod types {
