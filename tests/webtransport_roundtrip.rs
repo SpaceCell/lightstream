@@ -165,6 +165,7 @@ async fn test_webtransport_single_table_roundtrip() {
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
+    drop(conn);
 
     writer_handle.await.unwrap();
 
@@ -216,6 +217,7 @@ async fn test_webtransport_multi_table_roundtrip() {
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
+    drop(conn);
 
     writer_handle.await.unwrap();
 
@@ -274,6 +276,7 @@ async fn test_webtransport_stream_trait() {
         assert_eq!(t.n_rows, 4);
         count += 1;
     }
+    drop(conn);
 
     writer_handle.await.unwrap();
     assert_eq!(count, 2);
@@ -321,6 +324,7 @@ async fn test_webtransport_read_to_super_table() {
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream);
     let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
+    drop(conn);
 
     writer_handle.await.unwrap();
 

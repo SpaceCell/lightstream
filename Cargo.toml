@@ -1,6 +1,6 @@
 [package]
 name = "lightstream"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT"
 keywords = [
@@ -25,7 +25,7 @@ futures-util = { version = "0.3", features = ["sink"] }
 flatbuffers = "25.2.10"
 libc = { version = "0.2.174", optional = true }
 futures-sink = "0.3.31"
-minarrow = { version = "0.8.1", features = ["chunked", "views", "large_string"] }
+minarrow = { version = "0.8.2", features = ["chunked", "views", "large_string"] }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 zstd = { version = "0.12", optional = true }
@@ -76,3 +76,57 @@ snappy = ["snap"]
 zstd = ["dep:zstd"]
 
 default = []
+
+[[example]]
+name = "lightstream"
+required-features = ["protocol", "tcp", "msgpack"]
+
+[[example]]
+name = "tcp_lightstream"
+path = "examples/tcp/lightstream.rs"
+required-features = ["protocol", "tcp", "msgpack"]
+
+[[example]]
+name = "tcp_arrow"
+path = "examples/tcp/arrow.rs"
+required-features = ["tcp"]
+
+[[example]]
+name = "websocket_lightstream"
+path = "examples/websocket/lightstream.rs"
+required-features = ["protocol", "websocket", "msgpack"]
+
+[[example]]
+name = "websocket_arrow"
+path = "examples/websocket/arrow.rs"
+required-features = ["websocket"]
+
+[[example]]
+name = "uds_lightstream"
+path = "examples/uds/lightstream.rs"
+required-features = ["protocol", "uds", "msgpack"]
+
+[[example]]
+name = "uds_arrow"
+path = "examples/uds/arrow.rs"
+required-features = ["uds"]
+
+[[example]]
+name = "quic_lightstream"
+path = "examples/quic/lightstream.rs"
+required-features = ["protocol", "quic", "msgpack"]
+
+[[example]]
+name = "quic_arrow"
+path = "examples/quic/arrow.rs"
+required-features = ["quic"]
+
+[[example]]
+name = "webtransport_lightstream"
+path = "examples/webtransport/lightstream.rs"
+required-features = ["protocol", "webtransport", "msgpack"]
+
+[[example]]
+name = "webtransport_arrow"
+path = "examples/webtransport/arrow.rs"
+required-features = ["webtransport"]

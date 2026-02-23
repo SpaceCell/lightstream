@@ -120,14 +120,9 @@ fn make_client_config() -> quinn::ClientConfig {
         .with_no_client_auth();
     crypto.alpn_protocols = vec![b"ls".to_vec()];
 
-    let mut transport = quinn::TransportConfig::default();
-    transport.max_idle_timeout(Some(std::time::Duration::from_secs(10).try_into().unwrap()));
-
-    let mut client_config = quinn::ClientConfig::new(Arc::new(
+    quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(crypto).unwrap(),
-    ));
-    client_config.transport_config(Arc::new(transport));
-    client_config
+    ))
 }
 
 /// Certificate verifier that accepts any certificate, for test use only.
@@ -216,6 +211,7 @@ async fn test_quic_single_table_roundtrip() {
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
 
     writer_handle.await.unwrap();
 
@@ -263,6 +259,7 @@ async fn test_quic_multi_table_roundtrip() {
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
 
     writer_handle.await.unwrap();
 
@@ -317,6 +314,7 @@ async fn test_quic_stream_trait() {
         assert_eq!(t.n_rows, 4);
         count += 1;
     }
+    conn.close(0u32.into(), b"done");
 
     writer_handle.await.unwrap();
     assert_eq!(count, 2);
@@ -360,6 +358,7 @@ async fn test_quic_read_to_super_table() {
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream);
     let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
+    conn.close(0u32.into(), b"done");
 
     writer_handle.await.unwrap();
 

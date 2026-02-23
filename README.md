@@ -33,6 +33,47 @@ All transports use the same codec layer. Switch transports without changing your
 | Parquet | Columnar with Zstd/Snappy compression (feature-gated) |
 | Memory Maps | Zero-copy ingestion, millions of rows in microseconds |
 
+## Lightstream Protocol
+
+Need more than raw tables? The optional protocol layer multiplexes typed messages and Arrow tables on a single connection. Register named types on both sides, then send and receive freely - raw bytes, Protobuf, MessagePack, or Arrow tables, all interleaved on one stream.
+
+- **TLV wire format** - `[tag: u8][len: u32 LE][payload]`, 5-byte header per frame
+- **Persistent Arrow state** - first table send carries schema and dictionaries; subsequent sends carry only record batches
+- **Format-agnostic payloads** - raw `&[u8]`, Protobuf via `prost`, or MessagePack via `rmp-serde`
+- **Works on every transport** - same API across TCP, WebSocket, QUIC, UDS, WebTransport, and stdio
+
+```rust
+use lightstream::models::protocol::connection::TcpLightstreamConnection;
+use lightstream::models::protocol::LightstreamMessage;
+
+let mut conn = TcpLightstreamConnection::from_tcp(stream);
+
+// Both sides register types in the same order
+conn.register_message("event");           // tag 0: opaque byte payloads
+conn.register_message("command");         // tag 1: msgpack-encoded structs
+conn.register_table("metrics", schema);   // Arrow table channel
+
+// Send a mix of message types on one connection
+conn.send("event", b"user-login").await?;
+conn.send_msgpack("command", &cmd).await?;
+conn.send_table("metrics", &table).await?;
+conn.flush().await?;
+
+// Receive and dispatch
+while let Some(Ok(msg)) = conn.recv().await {
+    match msg {
+        LightstreamMessage::Message { tag, payload } => {
+            // Decode based on tag: raw bytes, protobuf, or msgpack
+        }
+        LightstreamMessage::Table { table, .. } => {
+            // Full Arrow table with schema decoded automatically
+        }
+    }
+}
+```
+
+Enable with the `protocol` feature flag, plus `msgpack` or `protobuf` if you want typed serialisation.
+
 ## Quick Start
 
 ### Stream Tables over TCP
@@ -93,7 +134,8 @@ Lightstream is layered and composable. Swap any layer without rewriting the stac
 
 | Layer | Implementation | Replaceable |
 |-------|----------------|-------------|
-| Transport | TCP, QUIC, WebSocket, UDS, Stdio | Yes |
+| Transport | TCP, QUIC, WebSocket, UDS, WebTransport, Stdio | Yes |
+| Protocol | `LightstreamConnection` - typed multiplexing | Optional |
 | Framing | `TlvFrame`, `IpcMessage` | Yes |
 | Buffering | `StreamBuffer` | Yes |
 | Encoding | `FrameEncoder`, `FrameDecoder` | Yes |
@@ -101,10 +143,10 @@ Lightstream is layered and composable. Swap any layer without rewriting the stac
 
 ## Design Principles
 
-- **Zero-copy** — 64-byte aligned buffers via `Vec64`, no reallocation to fix alignment
-- **Composable** — Layered codecs, mix and match transports and formats
-- **Async-native** — Built for Tokio and futures with backpressure-aware sinks
-- **Minimal** — Fast compile times, few dependencies
+- **Zero-copy** - 64-byte aligned buffers via `Vec64`, no reallocation to fix alignment
+- **Composable** - Layered codecs, mix and match transports and formats
+- **Async-native** - Built for Tokio and futures with backpressure-aware sinks
+- **Minimal** - Fast compile times, few dependencies
 
 ## Feature Flags
 
@@ -119,7 +161,10 @@ Lightstream is layered and composable. Swap any layer without rewriting the stac
 | `parquet` | Parquet writer |
 | `zstd` | Zstd compression |
 | `snappy` | Snappy compression |
-| `webtransport` | Webtransport support |
+| `webtransport` | WebTransport support |
+| `protocol` | Lightstream protocol multiplexing |
+| `protobuf` | Protobuf message encoding via `prost` (implies `protocol`) |
+| `msgpack` | MessagePack encoding via `rmp-serde` (implies `protocol`) |
 
 ## Performance
 
