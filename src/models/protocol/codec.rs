@@ -25,8 +25,8 @@
 use std::collections::HashMap;
 use std::io;
 
-use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::Field;
+use minarrow::ffi::arrow_dtype::ArrowType;
 
 use crate::arrow::message::org::apache::arrow::flatbuf as fb;
 use crate::enums::{DecodeResult, IPCMessageProtocol};
@@ -35,7 +35,7 @@ use crate::models::decoders::ipc::parser::{
 };
 use crate::models::decoders::ipc::protocol::ArrowIPCFrameDecoder;
 use crate::models::encoders::ipc::table_stream::GTableStreamEncoder;
-use crate::models::frames::protocol_message::{FrameKind, LightstreamMessage, FRAME_HEADER_SIZE};
+use crate::models::frames::protocol_message::{FRAME_HEADER_SIZE, FrameKind, LightstreamMessage};
 use crate::traits::frame_decoder::FrameDecoder;
 use crate::traits::stream_buffer::StreamBuffer;
 
@@ -159,6 +159,9 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
     /// Uses the persistent IPC streaming encoder: the first call for a given
     /// type includes schema and dictionary frames; subsequent calls emit only
     /// the record batch.
+    ///
+    /// Builds the final wire buffer in a single allocation: TLV header
+    /// followed by all IPC frames drained directly from the encoder.
     pub fn encode_table(&mut self, tag: u8, table: &minarrow::Table) -> io::Result<B> {
         let entry = self.types.get_mut(tag as usize).ok_or_else(|| {
             io::Error::new(
@@ -173,12 +176,12 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
             ));
         }
 
-        let encoder = entry.encoder.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "table encoder missing")
-        })?;
+        let encoder = entry
+            .encoder
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "table encoder missing"))?;
 
-        let ipc_payload = encode_table_to_ipc(encoder, table)?;
-        encode_frame::<B>(tag, ipc_payload.as_ref())
+        encode_table_to_wire(encoder, tag, table)
     }
 
     /// Decode a TLV frame payload into a [`LightstreamMessage`].
@@ -201,15 +204,13 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
                 payload: payload.to_vec(),
             }),
             FrameKind::Table => {
-                let table = decode_ipc_payload(
-                    payload,
-                    &mut entry.decode_fields,
-                    &mut entry.decode_dicts,
-                )?;
+                let table =
+                    decode_ipc_payload(payload, &mut entry.decode_fields, &mut entry.decode_dicts)?;
                 Ok(LightstreamMessage::Table { tag, table })
             }
         }
     }
+
 }
 
 impl<B: StreamBuffer + Unpin> Default for LightstreamCodec<B> {
@@ -232,14 +233,16 @@ fn encode_frame<B: StreamBuffer>(tag: u8, payload: &[u8]) -> io::Result<B> {
     Ok(buf)
 }
 
-/// Encode a table through the persistent IPC streaming encoder.
+/// Encode a table into a single TLV-wrapped wire buffer.
 ///
 /// Handles dictionary registration for categorical columns, writes the
-/// record batch frame, and drains all queued IPC frames into one buffer.
-/// The encoder retains its state across calls, so schema and dictionary
-/// frames are only emitted when needed.
-fn encode_table_to_ipc<B: StreamBuffer + Unpin>(
+/// record batch frame, and drains all queued IPC frames directly into the
+/// output buffer after the TLV header. This avoids the intermediate
+/// concatenation and TLV-wrapping copies that the previous two-stage
+/// approach required.
+fn encode_table_to_wire<B: StreamBuffer + Unpin>(
     encoder: &mut GTableStreamEncoder<B>,
+    tag: u8,
     table: &minarrow::Table,
 ) -> io::Result<B> {
     // Register dictionary values from categorical columns
@@ -252,12 +255,13 @@ fn encode_table_to_ipc<B: StreamBuffer + Unpin>(
 
     encoder.write_record_batch_frame(table)?;
 
-    let mut total_len = 0;
-    for frame in &encoder.out_frames {
-        total_len += frame.as_ref().len();
-    }
+    // Total IPC payload size across all queued frames
+    let ipc_size: usize = encoder.out_frames.iter().map(|f| f.as_ref().len()).sum();
 
-    let mut out = B::with_capacity(total_len);
+    // Single allocation: TLV header + all IPC frames
+    let mut out = B::with_capacity(FRAME_HEADER_SIZE + ipc_size);
+    out.push(tag);
+    out.extend_from_slice(&(ipc_size as u32).to_le_bytes());
     while let Some(frame) = encoder.out_frames.pop_front() {
         out.extend_from_slice(frame.as_ref());
     }
@@ -311,10 +315,8 @@ fn decode_ipc_payload(
                     break;
                 }
 
-                let af_msg =
-                    flatbuffers::root::<fb::Message>(frame.message.as_ref()).map_err(|e| {
-                        io::Error::new(io::ErrorKind::InvalidData, e)
-                    })?;
+                let af_msg = flatbuffers::root::<fb::Message>(frame.message.as_ref())
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
                 match af_msg.header_type() {
                     fb::MessageHeader::Schema => {
@@ -337,13 +339,14 @@ fn decode_ipc_payload(
                             ));
                         }
                         let rec = af_msg.header_as_record_batch().ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "missing RecordBatch header",
-                            )
+                            io::Error::new(io::ErrorKind::InvalidData, "missing RecordBatch header")
                         })?;
-                        result_table =
-                            Some(handle_record_batch(&rec, fields, dicts, frame.body.as_ref())?);
+                        result_table = Some(handle_record_batch(
+                            &rec,
+                            fields,
+                            dicts,
+                            frame.body.as_ref(),
+                        )?);
                     }
                     fb::MessageHeader::NONE => {
                         // EOS

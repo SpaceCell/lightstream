@@ -91,11 +91,7 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
     /// Encodes the message via `prost::Message::encode_to_vec` and sends it
     /// as an opaque payload.
     #[cfg(feature = "protobuf")]
-    pub async fn send_proto<M: prost::Message>(
-        &mut self,
-        name: &str,
-        msg: &M,
-    ) -> io::Result<()> {
+    pub async fn send_proto<M: prost::Message>(&mut self, name: &str, msg: &M) -> io::Result<()> {
         let bytes = msg.encode_to_vec();
         self.send(name, &bytes).await
     }
@@ -125,8 +121,8 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
 #[cfg(feature = "msgpack")]
 fn encode_msgpack<M: serde::Serialize>(msg: &M) -> io::Result<Vec<u8>> {
     let mut buf = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut buf)
-        .with_bytes(rmp_serde::config::BytesMode::ForceAll);
+    let mut serializer =
+        rmp_serde::Serializer::new(&mut buf).with_bytes(rmp_serde::config::BytesMode::ForceAll);
     msg.serialize(&mut serializer)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(buf)

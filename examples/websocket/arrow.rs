@@ -45,10 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         // Wrap in MaybeTlsStream so the split type matches WebSocketTableReader
-        let ws_stream =
-            tokio_tungstenite::accept_async(MaybeTlsStream::Plain(tcp_stream))
-                .await
-                .unwrap();
+        let ws_stream = tokio_tungstenite::accept_async(MaybeTlsStream::Plain(tcp_stream))
+            .await
+            .unwrap();
         println!("WebSocket handshake complete.");
 
         let (_, read_half) = futures_util::StreamExt::split(ws_stream);

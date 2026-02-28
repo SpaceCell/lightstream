@@ -147,11 +147,10 @@ async fn test_webtransport_single_table_roundtrip() {
 
         let send = conn.open_uni().await.unwrap().await.unwrap();
         let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
         conn.closed().await;
@@ -197,11 +196,10 @@ async fn test_webtransport_multi_table_roundtrip() {
 
         let send = conn.open_uni().await.unwrap().await.unwrap();
         let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
@@ -251,11 +249,10 @@ async fn test_webtransport_stream_trait() {
 
         let send = conn.open_uni().await.unwrap().await.unwrap();
         let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -305,11 +302,10 @@ async fn test_webtransport_read_to_super_table() {
 
         let send = conn.open_uni().await.unwrap().await.unwrap();
         let mut writer = WebTransportTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -323,7 +319,10 @@ async fn test_webtransport_read_to_super_table() {
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream);
-    let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
+    let super_table = reader
+        .read_to_super_table(Some("merged".into()), None)
+        .await
+        .unwrap();
     drop(conn);
 
     writer_handle.await.unwrap();

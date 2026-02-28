@@ -26,6 +26,7 @@
 
 use std::io;
 use std::sync::Arc;
+use tracing::debug;
 
 use flatbuffers::Vector;
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
@@ -461,7 +462,7 @@ impl RecordBatchParser {
                         }
                         #[cfg(feature = "extended_categorical")]
                         CategoricalIndexType::UInt8 => {
-                            eprintln!(
+                            debug!(
                                 "DEBUG parse_record_batch: Creating Categorical8, field_len={}, idx_slice.len()={}, unique_values.len()={}, null_mask={:?}",
                                 field_len,
                                 idx_slice.len(),
@@ -1047,7 +1048,7 @@ pub(crate) fn handle_record_batch(
             }
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => {
-                eprintln!(
+                debug!(
                     "DEBUG: About to extract offset buffer for field '{}'",
                     field.name
                 );
@@ -1068,7 +1069,7 @@ pub(crate) fn handle_record_batch(
                 // If buffer size = (n_elements + 1) * 8, it's u64 offsets (String64)
                 let expected_u32_size = (row_count + 1) * 4;
                 let expected_u64_size = (row_count + 1) * 8;
-                eprintln!(
+                debug!(
                     "DEBUG: LargeString buffer size check for field '{}': got {}, expected {} (u32) or {} (u64), row_count={}",
                     field.name,
                     offs_slice.len(),
@@ -1168,7 +1169,7 @@ pub(crate) fn handle_record_batch(
                 )?;
                 match idx_ty {
                     CategoricalIndexType::UInt32 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical32 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1186,7 +1187,7 @@ pub(crate) fn handle_record_batch(
                     }
                     #[cfg(feature = "extended_categorical")]
                     CategoricalIndexType::UInt8 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical8 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1204,7 +1205,7 @@ pub(crate) fn handle_record_batch(
                     }
                     #[cfg(feature = "extended_categorical")]
                     CategoricalIndexType::UInt16 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical16 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1222,7 +1223,7 @@ pub(crate) fn handle_record_batch(
                     }
                     #[cfg(feature = "extended_categorical")]
                     CategoricalIndexType::UInt64 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical64 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1539,7 +1540,7 @@ where
             }
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => {
-                eprintln!(
+                debug!(
                     "DEBUG: About to extract offset buffer for field '{}'",
                     field.name
                 );
@@ -1645,7 +1646,7 @@ where
 
                 match idx_ty {
                     CategoricalIndexType::UInt32 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical32 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1663,7 +1664,7 @@ where
                     }
                     #[cfg(feature = "extended_categorical")]
                     CategoricalIndexType::UInt8 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical8 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1681,7 +1682,7 @@ where
                     }
                     #[cfg(feature = "extended_categorical")]
                     CategoricalIndexType::UInt16 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical16 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -1699,7 +1700,7 @@ where
                     }
                     #[cfg(feature = "extended_categorical")]
                     CategoricalIndexType::UInt64 => {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Creating Categorical64 for field {}, idx_slice.len()={}, dict_values.len()={}, null_mask={:?}",
                             field.name,
                             idx_slice.len(),
@@ -2314,7 +2315,7 @@ pub(crate) fn decompress_sequential_body(
     let mut buffer_offsets = Vec::new(); // Offset of each buffer in the decompressed body
     let mut read_offset = 0; // Offset in the compressed body we're reading from
 
-    eprintln!(
+    debug!(
         "DEBUG: Decompressing {} buffers, compressed_body.len()={}",
         buffers.len(),
         compressed_body.len()
@@ -2324,7 +2325,7 @@ pub(crate) fn decompress_sequential_body(
         let buf = buffers.get(i);
         let buf_length = buf.length() as usize; // This is the UNCOMPRESSED length
 
-        eprintln!(
+        debug!(
             "DEBUG: Buffer {}: uncompressed_length={}, read_offset={}",
             i, buf_length, read_offset
         );
@@ -2334,7 +2335,7 @@ pub(crate) fn decompress_sequential_body(
 
         // Skip buffers with zero length (common for null masks)
         if buf_length == 0 {
-            eprintln!("DEBUG: Skipping zero-length buffer {}", i);
+            debug!("DEBUG: Skipping zero-length buffer {}", i);
             // Zero length buffers still take space in the decompressed output (nothing to decompress)
             continue;
         }
@@ -2355,7 +2356,7 @@ pub(crate) fn decompress_sequential_body(
             )
         })?) as usize;
 
-        eprintln!(
+        debug!(
             "DEBUG: Buffer {} header uncompressed_len={}",
             i, uncompressed_len
         );
@@ -2394,7 +2395,7 @@ pub(crate) fn decompress_sequential_body(
                 let try_compressed = &remaining_body[..try_len];
                 if let Ok(result) = decompress(try_compressed, compression) {
                     if result.len() == uncompressed_len {
-                        eprintln!(
+                        debug!(
                             "DEBUG: Successfully decompressed buffer {} with {:?}, size {} -> {}",
                             i,
                             compression,
@@ -2421,7 +2422,7 @@ pub(crate) fn decompress_sequential_body(
                 // Add padding to align to 64-byte boundary (Arrow IPC alignment)
                 let aligned_size = ((total_size + 63) / 64) * 64;
                 read_offset += aligned_size;
-                eprintln!(
+                debug!(
                     "DEBUG: Buffer {} processed, advancing read_offset by {} to {}",
                     i, aligned_size, read_offset
                 );
@@ -2435,11 +2436,11 @@ pub(crate) fn decompress_sequential_body(
         }
     }
 
-    eprintln!(
+    debug!(
         "DEBUG: Decompressed body size: {} bytes",
         decompressed_body.len()
     );
-    eprintln!("DEBUG: Buffer offsets count: {}", buffer_offsets.len());
+    debug!("DEBUG: Buffer offsets count: {}", buffer_offsets.len());
     Ok((decompressed_body, buffer_offsets))
 }
 
@@ -2470,7 +2471,7 @@ pub(crate) fn is_body_compressed(buffers: &Vector<Buffer>, body: &[u8]) -> bool 
                     && uncompressed_len > 0
                     && uncompressed_len < 100_000_000
                 {
-                    eprintln!(
+                    debug!(
                         "DEBUG: Heuristic found compression header at buffer {}: uncompressed_len={}",
                         i, uncompressed_len
                     );

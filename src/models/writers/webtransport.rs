@@ -49,12 +49,8 @@ impl WebTransportTableWriter {
         schema: Vec<Field>,
         compression: Compression,
     ) -> io::Result<Self> {
-        let sink = TableSink::with_compression(
-            send,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink =
+            TableSink::with_compression(send, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

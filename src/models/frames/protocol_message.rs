@@ -107,14 +107,9 @@ impl LightstreamMessage {
     #[cfg(feature = "protobuf")]
     pub fn decode_payload<M: prost::Message + Default>(&self) -> std::io::Result<M> {
         let bytes = self.payload().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "not a message variant",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a message variant")
         })?;
-        M::decode(bytes).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        M::decode(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Consume this value and decode the message payload as a protobuf type.
@@ -123,14 +118,10 @@ impl LightstreamMessage {
     #[cfg(feature = "protobuf")]
     pub fn into_decoded_payload<M: prost::Message + Default>(self) -> std::io::Result<M> {
         let bytes = self.into_payload().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "not a message variant",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a message variant")
         })?;
-        M::decode(bytes.as_slice()).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        M::decode(bytes.as_slice())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Decode the message payload as a MessagePack type via serde.
@@ -139,14 +130,10 @@ impl LightstreamMessage {
     #[cfg(feature = "msgpack")]
     pub fn decode_msgpack<M: serde::de::DeserializeOwned>(&self) -> std::io::Result<M> {
         let bytes = self.payload().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "not a message variant",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a message variant")
         })?;
-        rmp_serde::from_slice(bytes).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        rmp_serde::from_slice(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Consume this value and decode the message payload as a MessagePack type
@@ -156,13 +143,9 @@ impl LightstreamMessage {
     #[cfg(feature = "msgpack")]
     pub fn into_decoded_msgpack<M: serde::de::DeserializeOwned>(self) -> std::io::Result<M> {
         let bytes = self.into_payload().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "not a message variant",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a message variant")
         })?;
-        rmp_serde::from_slice(&bytes).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        rmp_serde::from_slice(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }

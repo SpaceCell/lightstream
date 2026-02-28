@@ -38,8 +38,7 @@ use crate::models::streams::websocket::WebSocketByteStream;
 use crate::traits::transport_reader::TransportReader;
 
 /// The concrete stream type produced by splitting a client WebSocket connection.
-type WsSplitStream =
-    futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
+type WsSplitStream = futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 
 /// Async Arrow IPC reader over a WebSocket connection.
 ///

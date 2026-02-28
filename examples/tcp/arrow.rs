@@ -41,10 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Server accepted connection from {}", peer);
 
         let (read_half, _write_half) = stream.into_split();
-        let byte_stream = TcpByteStream::from_read_half(
-            read_half,
-            lightstream::enums::BufferChunkSize::Http,
-        );
+        let byte_stream =
+            TcpByteStream::from_read_half(read_half, lightstream::enums::BufferChunkSize::Http);
         let reader = TcpTableReader::from_stream(byte_stream, IPCMessageProtocol::Stream);
         let tables = reader.read_all_tables().await.unwrap();
 

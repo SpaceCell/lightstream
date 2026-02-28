@@ -58,6 +58,8 @@ pub mod connection;
 pub use codec::LightstreamCodec;
 pub use connection::LightstreamConnection;
 
-pub use crate::models::frames::protocol_message::{FrameKind, LightstreamMessage, FRAME_HEADER_SIZE};
+pub use crate::models::frames::protocol_message::{
+    FRAME_HEADER_SIZE, FrameKind, LightstreamMessage,
+};
 pub use crate::models::readers::lightstream::LightstreamReader;
 pub use crate::models::writers::lightstream::LightstreamWriter;

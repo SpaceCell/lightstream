@@ -64,8 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let send_stream = connection.open_uni().await?.await?;
     let recv_stream = connection.accept_uni().await?;
 
-    let mut client =
-        WebTransportLightstreamConnection::from_webtransport(recv_stream, send_stream);
+    let mut client = WebTransportLightstreamConnection::from_webtransport(recv_stream, send_stream);
     register_demo_types(&mut client);
     send_demo_messages(&mut client, "webtransport").await?;
 

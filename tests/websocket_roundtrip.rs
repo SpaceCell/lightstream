@@ -101,9 +101,7 @@ fn make_schema(table: &Table) -> Vec<Field> {
 async fn accept_ws_reader(
     listener: &TcpListener,
 ) -> WebSocketByteStream<
-    futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    >,
+    futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>>,
 > {
     let (socket, _) = listener.accept().await.unwrap();
     let ws = accept_async(socket).await.unwrap();
@@ -127,11 +125,10 @@ async fn test_ws_single_table_roundtrip() {
         let mut writer = WebSocketTableWriter::connect(&url, write_schema)
             .await
             .unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
     });
@@ -163,11 +160,10 @@ async fn test_ws_multi_table_roundtrip() {
         let mut writer = WebSocketTableWriter::connect(&url, write_schema)
             .await
             .unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
@@ -203,11 +199,10 @@ async fn test_ws_stream_trait() {
         let mut writer = WebSocketTableWriter::connect(&url, write_schema)
             .await
             .unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -243,11 +238,10 @@ async fn test_ws_read_to_super_table() {
         let mut writer = WebSocketTableWriter::connect(&url, write_schema)
             .await
             .unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -255,7 +249,10 @@ async fn test_ws_read_to_super_table() {
 
     let byte_stream = accept_ws_reader(&listener).await;
     let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
-    let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
+    let super_table = reader
+        .read_to_super_table(Some("merged".into()), None)
+        .await
+        .unwrap();
 
     writer_handle.await.unwrap();
 

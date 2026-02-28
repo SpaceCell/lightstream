@@ -35,7 +35,7 @@ use minarrow::Vec64;
 /// - Appending new bytes
 /// - Querying the current buffer length
 /// - Accessing the internal byte slice
-pub trait StreamBuffer: AsRef<[u8]> + Default + Extend<u8> + 'static {
+pub trait StreamBuffer: AsRef<[u8]> + Default + Extend<u8> + Send + Sync + 'static {
     /// What alignment should the data buffer use?
     /// This is a data point that can be used for enforcing the alignment
     /// constraint via padding when necessary.

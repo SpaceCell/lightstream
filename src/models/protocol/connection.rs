@@ -232,8 +232,8 @@ pub use websocket_impl::WebSocketLightstreamConnection;
 #[cfg(feature = "quic")]
 mod quic_impl {
     use super::*;
-    use crate::models::streams::quic::QuicByteStream;
     use crate::enums::BufferChunkSize;
+    use crate::models::streams::quic::QuicByteStream;
 
     /// Lightstream protocol connection over QUIC.
     pub type QuicLightstreamConnection =
@@ -254,8 +254,8 @@ pub use quic_impl::QuicLightstreamConnection;
 #[cfg(feature = "webtransport")]
 mod webtransport_impl {
     use super::*;
-    use crate::models::streams::webtransport::WebTransportByteStream;
     use crate::enums::BufferChunkSize;
+    use crate::models::streams::webtransport::WebTransportByteStream;
 
     /// Lightstream protocol connection over WebTransport.
     pub type WebTransportLightstreamConnection =

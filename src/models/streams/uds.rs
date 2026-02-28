@@ -21,8 +21,8 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use tokio::io::{AsyncRead, BufReader, ReadBuf};
-use tokio::net::unix::OwnedReadHalf;
 use tokio::net::UnixStream;
+use tokio::net::unix::OwnedReadHalf;
 
 use crate::enums::BufferChunkSize;
 

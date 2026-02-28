@@ -44,10 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Server accepted connection.");
 
         let (read_half, _write_half) = stream.into_split();
-        let byte_stream = UdsByteStream::from_read_half(
-            read_half,
-            lightstream::enums::BufferChunkSize::Http,
-        );
+        let byte_stream =
+            UdsByteStream::from_read_half(read_half, lightstream::enums::BufferChunkSize::Http);
         let reader = UdsTableReader::from_stream(byte_stream, IPCMessageProtocol::Stream);
         let tables = reader.read_all_tables().await.unwrap();
 

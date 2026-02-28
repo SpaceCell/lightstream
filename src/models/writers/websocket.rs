@@ -70,12 +70,8 @@ impl WebSocketTableWriter {
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
         let (ws_sink, _read_half) = futures_util::StreamExt::split(ws_stream);
         let adapter = WebSocketSinkAdapter::new(ws_sink);
-        let sink = TableSink::with_compression(
-            adapter,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink =
+            TableSink::with_compression(adapter, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 

@@ -99,7 +99,8 @@ fn make_schema(table: &Table) -> Vec<Field> {
 fn make_server_config() -> quinn::ServerConfig {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert);
-    let key_der = rustls::pki_types::PrivateKeyDer::try_from(cert.key_pair.serialize_der()).unwrap();
+    let key_der =
+        rustls::pki_types::PrivateKeyDer::try_from(cert.key_pair.serialize_der()).unwrap();
 
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -187,8 +188,7 @@ async fn test_quic_single_table_roundtrip() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let client_endpoint =
-            quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
         let conn = client_endpoint
             .connect_with(make_client_config(), addr, "localhost")
             .unwrap()
@@ -196,11 +196,10 @@ async fn test_quic_single_table_roundtrip() {
             .unwrap();
         let send = conn.open_uni().await.unwrap();
         let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
         conn.closed().await;
@@ -233,8 +232,7 @@ async fn test_quic_multi_table_roundtrip() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let client_endpoint =
-            quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
         let conn = client_endpoint
             .connect_with(make_client_config(), addr, "localhost")
             .unwrap()
@@ -242,11 +240,10 @@ async fn test_quic_multi_table_roundtrip() {
             .unwrap();
         let send = conn.open_uni().await.unwrap();
         let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
@@ -283,8 +280,7 @@ async fn test_quic_stream_trait() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let client_endpoint =
-            quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
         let conn = client_endpoint
             .connect_with(make_client_config(), addr, "localhost")
             .unwrap()
@@ -292,11 +288,10 @@ async fn test_quic_stream_trait() {
             .unwrap();
         let send = conn.open_uni().await.unwrap();
         let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -333,8 +328,7 @@ async fn test_quic_read_to_super_table() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let client_endpoint =
-            quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
         let conn = client_endpoint
             .connect_with(make_client_config(), addr, "localhost")
             .unwrap()
@@ -342,11 +336,10 @@ async fn test_quic_read_to_super_table() {
             .unwrap();
         let send = conn.open_uni().await.unwrap();
         let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -357,7 +350,10 @@ async fn test_quic_read_to_super_table() {
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
     let reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream);
-    let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
+    let super_table = reader
+        .read_to_super_table(Some("merged".into()), None)
+        .await
+        .unwrap();
     conn.close(0u32.into(), b"done");
 
     writer_handle.await.unwrap();

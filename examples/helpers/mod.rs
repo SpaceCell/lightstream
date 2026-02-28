@@ -1,11 +1,11 @@
-use minarrow::{arr_f64, arr_i32, arr_str32, FieldArray, Table, Vec64};
+use minarrow::{FieldArray, Table, Vec64, arr_f64, arr_i32, arr_str32};
 
 #[cfg(feature = "msgpack")]
 use futures_core::Stream;
 #[cfg(feature = "msgpack")]
-use lightstream::models::protocol::connection::LightstreamConnection;
-#[cfg(feature = "msgpack")]
 use lightstream::models::protocol::LightstreamMessage;
+#[cfg(feature = "msgpack")]
+use lightstream::models::protocol::connection::LightstreamConnection;
 #[cfg(feature = "msgpack")]
 use tokio::io::AsyncWrite;
 
@@ -99,21 +99,14 @@ where
         match &msg {
             LightstreamMessage::Message { tag, payload } => {
                 if *tag == 0 {
-                    println!(
-                        "  [raw] {:?}",
-                        std::str::from_utf8(payload).unwrap()
-                    );
+                    println!("  [raw] {:?}", std::str::from_utf8(payload).unwrap());
                 } else {
                     let cmd: Command = msg.decode_msgpack().unwrap();
                     println!("  [command] {:?}", cmd);
                 }
             }
             LightstreamMessage::Table { table, .. } => {
-                println!(
-                    "  [table] {} rows, {} cols",
-                    table.n_rows,
-                    table.cols.len()
-                );
+                println!("  [table] {} rows, {} cols", table.n_rows, table.cols.len());
             }
         }
     }

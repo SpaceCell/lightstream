@@ -112,12 +112,13 @@ async fn test_uds_single_table_roundtrip() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema).await.unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+            .await
+            .unwrap();
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
     });
@@ -186,12 +187,13 @@ async fn test_uds_multi_table_roundtrip() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema).await.unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+            .await
+            .unwrap();
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
@@ -228,12 +230,13 @@ async fn test_uds_stream_trait() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema).await.unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+            .await
+            .unwrap();
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -270,12 +273,13 @@ async fn test_uds_read_to_super_table() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema).await.unwrap();
-        writer.register_dictionary(3, vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ]);
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+            .await
+            .unwrap();
+        writer.register_dictionary(
+            3,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        );
         writer.write_table(write_table.clone()).await.unwrap();
         writer.write_table(write_table).await.unwrap();
         writer.finish().await.unwrap();
@@ -285,7 +289,10 @@ async fn test_uds_read_to_super_table() {
     let (read_half, _write_half) = socket.into_split();
     let stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
     let reader = UdsTableReader::from_stream(stream, IPCMessageProtocol::Stream);
-    let super_table = reader.read_to_super_table(Some("merged".into()), None).await.unwrap();
+    let super_table = reader
+        .read_to_super_table(Some("merged".into()), None)
+        .await
+        .unwrap();
 
     writer_handle.await.unwrap();
 

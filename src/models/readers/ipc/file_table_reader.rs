@@ -318,6 +318,7 @@ impl FileTableReader {
 #[cfg(test)]
 mod tests {
     use minarrow::{Array, NumericArray, TextArray};
+    use tracing::debug;
 
     use crate::{
         models::readers::ipc::file_table_reader::FileTableReader,
@@ -345,9 +346,9 @@ mod tests {
                 // Check if buffer is shared (will be true if data is 64-byte aligned in file)
                 // If not aligned, minarrow will clone for safety
                 if arr.data.is_shared() {
-                    eprintln!("Int32 buffer is shared (zero-copy)");
+                    debug!("Int32 buffer is shared (zero-copy)");
                 } else {
-                    eprintln!("Int32 buffer was cloned (not 64-byte aligned in file)");
+                    debug!("Int32 buffer was cloned (not 64-byte aligned in file)");
                 }
             }
             _ => panic!("wrong type"),
@@ -360,9 +361,9 @@ mod tests {
                 // Check if buffer is shared (will be true if data is 64-byte aligned in file)
                 // If not aligned, minarrow will clone for safety
                 if arr.data.is_shared() {
-                    eprintln!("Float64 buffer is shared (zero-copy)");
+                    debug!("Float64 buffer is shared (zero-copy)");
                 } else {
-                    eprintln!("Float64 buffer was cloned (not 64-byte aligned in file)");
+                    debug!("Float64 buffer was cloned (not 64-byte aligned in file)");
                 }
             }
             _ => panic!("wrong type"),
@@ -376,19 +377,19 @@ mod tests {
                 Array::TextArray(TextArray::String32(a)) => {
                     seen_string = true;
                     if a.data.is_shared() {
-                        eprintln!("String32 data buffer is shared (zero-copy)");
+                        debug!("String32 data buffer is shared (zero-copy)");
                         any_shared = true;
                     } else {
-                        eprintln!("String32 data buffer was cloned (not 64-byte aligned in file)");
+                        debug!("String32 data buffer was cloned (not 64-byte aligned in file)");
                     }
                 }
                 Array::BooleanArray(a) => {
                     seen_bool = true;
                     if a.data.bits.is_shared() {
-                        eprintln!("Boolean bits buffer is shared (zero-copy)");
+                        debug!("Boolean bits buffer is shared (zero-copy)");
                         any_shared = true;
                     } else {
-                        eprintln!("Boolean bits buffer was cloned (not 64-byte aligned in file)");
+                        debug!("Boolean bits buffer was cloned (not 64-byte aligned in file)");
                     }
                 }
                 _ => {}
@@ -398,7 +399,7 @@ mod tests {
             seen_string && seen_bool,
             "String32 and Bool must be present"
         );
-        eprintln!("Any buffers shared: {}", any_shared);
+        debug!("Any buffers shared: {}", any_shared);
         drop(rdr);
         drop(temp);
     }
@@ -470,12 +471,12 @@ mod tests {
             }
         }
 
-        eprintln!(
+        debug!(
             "Shared buffers: {}, Cloned buffers: {}",
             shared_count, cloned_count
         );
-        eprintln!("Note: Cloning is expected when file data is not 64-byte aligned.");
-        eprintln!("The writer currently doesn't guarantee 64-byte alignment.");
+        debug!("Note: Cloning is expected when file data is not 64-byte aligned.");
+        debug!("The writer currently doesn't guarantee 64-byte alignment.");
 
         // We don't assert on specific counts because alignment depends on the writer
         // Just verify the file was read correctly

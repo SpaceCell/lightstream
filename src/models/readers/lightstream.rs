@@ -16,8 +16,8 @@ use futures_core::Stream;
 use minarrow::Field;
 
 use crate::models::decoders::tlv::TLVDecoder;
-use crate::models::protocol::codec::LightstreamCodec;
 use crate::models::frames::protocol_message::LightstreamMessage;
+use crate::models::protocol::codec::LightstreamCodec;
 use crate::models::streams::framed_byte_stream::FramedByteStream;
 use crate::traits::stream_buffer::StreamBuffer;
 

@@ -54,17 +54,10 @@ impl StdoutTableWriter {
     }
 
     /// Create a stdout table writer with optional compression.
-    pub fn new_with_compression(
-        schema: Vec<Field>,
-        compression: Compression,
-    ) -> io::Result<Self> {
+    pub fn new_with_compression(schema: Vec<Field>, compression: Compression) -> io::Result<Self> {
         let stdout = tokio::io::stdout();
-        let sink = TableSink::with_compression(
-            stdout,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink =
+            TableSink::with_compression(stdout, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

@@ -66,12 +66,17 @@ impl rustls::client::danger::ServerCertVerifier for SkipVerification {
 }
 
 /// Generate a self-signed certificate and return (cert_chain, private_key).
-fn generate_self_signed_cert(
-) -> (Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>) {
+fn generate_self_signed_cert() -> (
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert);
     let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
-    (vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+    (
+        vec![cert_der],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
+    )
 }
 
 #[tokio::main]
@@ -102,8 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // --- Server endpoint ---
-    let server_endpoint =
-        quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap())?;
+    let server_endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap())?;
     let addr = server_endpoint.local_addr()?;
     println!("QUIC server listening on {}", addr);
 

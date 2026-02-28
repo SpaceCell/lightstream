@@ -22,6 +22,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use tracing::debug;
 
 use flatbuffers::Vector;
 use minarrow::{Field, SuperTable, Table};
@@ -363,6 +364,8 @@ impl MmapTableReader {
 #[cfg(test)]
 mod tests {
 
+    use tracing::debug;
+
     use crate::{
         models::readers::ipc::mmap_table_reader::MmapTableReader,
         test_helpers::{make_all_types_table, write_test_table_to_file},
@@ -393,9 +396,9 @@ mod tests {
                 // so buffers won't be shared. True zero-copy would require
                 // modifying minarrow to accept mmap memory directly.
                 if arr.data.is_shared() {
-                    eprintln!("Int32 buffer is shared (64-byte aligned in copied Arc)");
+                    debug!("Int32 buffer is shared (64-byte aligned in copied Arc)");
                 } else {
-                    eprintln!("Int32 buffer was cloned (not 64-byte aligned in copied Arc)");
+                    debug!("Int32 buffer was cloned (not 64-byte aligned in copied Arc)");
                 }
             }
             _ => panic!("wrong type"),
@@ -409,9 +412,9 @@ mod tests {
                 // so buffers won't be shared. True zero-copy would require
                 // modifying minarrow to accept mmap memory directly.
                 if arr.data.is_shared() {
-                    eprintln!("Float64 buffer is shared (64-byte aligned in copied Arc)");
+                    debug!("Float64 buffer is shared (64-byte aligned in copied Arc)");
                 } else {
-                    eprintln!("Float64 buffer was cloned (not 64-byte aligned in copied Arc)");
+                    debug!("Float64 buffer was cloned (not 64-byte aligned in copied Arc)");
                 }
             }
             _ => panic!("wrong type"),
@@ -433,19 +436,19 @@ mod tests {
                 Array::TextArray(TextArray::String32(a)) => {
                     seen_string = true;
                     if a.data.is_shared() {
-                        eprintln!("String32 data buffer is shared");
+                        debug!("String32 data buffer is shared");
                         any_shared = true;
                     } else {
-                        eprintln!("String32 data buffer was cloned");
+                        debug!("String32 data buffer was cloned");
                     }
                 }
                 Array::BooleanArray(a) => {
                     seen_bool = true;
                     if a.data.bits.is_shared() {
-                        eprintln!("Boolean bits buffer is shared");
+                        debug!("Boolean bits buffer is shared");
                         any_shared = true;
                     } else {
-                        eprintln!("Boolean bits buffer was cloned");
+                        debug!("Boolean bits buffer was cloned");
                     }
                 }
                 _ => {}
@@ -455,7 +458,7 @@ mod tests {
             seen_string && seen_bool,
             "String32 and Bool must be present"
         );
-        eprintln!("Any buffers shared in mmap: {}", any_shared);
+        debug!("Any buffers shared in mmap: {}", any_shared);
         drop(rdr);
         drop(temp);
     }
@@ -512,7 +515,7 @@ mod tests {
                 _ => {}
             }
         }
-        eprintln!(
+        debug!(
             "Mmap into_table: {} shared, {} owned buffers",
             shared_count, owned_count
         );
@@ -559,7 +562,7 @@ mod tests {
                     Array::NumericArray(NumericArray::Int32(arr)) => {
                         // Note: May be owned or shared depending on alignment
                         if arr.data.is_shared() {
-                            eprintln!("Int32 is shared");
+                            debug!("Int32 is shared");
                         }
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.is_shared());
@@ -567,7 +570,7 @@ mod tests {
                     Array::NumericArray(NumericArray::Float64(arr)) => {
                         // Note: May be owned or shared depending on alignment
                         if arr.data.is_shared() {
-                            eprintln!("Float64 is shared");
+                            debug!("Float64 is shared");
                         }
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.is_shared());
@@ -575,7 +578,7 @@ mod tests {
                     Array::TextArray(TextArray::String32(arr)) => {
                         // Note: May be owned or shared depending on alignment
                         if arr.data.is_shared() {
-                            eprintln!("String32 is shared");
+                            debug!("String32 is shared");
                         }
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.is_shared());
@@ -583,7 +586,7 @@ mod tests {
                     Array::BooleanArray(arr) => {
                         // Note: May be owned or shared depending on alignment
                         if arr.data.bits.is_shared() {
-                            eprintln!("Boolean is shared");
+                            debug!("Boolean is shared");
                         }
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.bits.is_shared());
@@ -591,7 +594,7 @@ mod tests {
                     Array::TextArray(TextArray::Categorical32(arr)) => {
                         // Note: May be owned or shared depending on alignment
                         if arr.data.is_shared() {
-                            eprintln!("Categorical32 is shared");
+                            debug!("Categorical32 is shared");
                         }
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.is_shared());

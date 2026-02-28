@@ -1,6 +1,6 @@
 [package]
 name = "lightstream"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT"
 keywords = [
@@ -34,11 +34,18 @@ wtransport = { version = "0.7", optional = true }
 prost = { version = "0.13", optional = true }
 rmp-serde = { version = "1", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }
+tracing = "0.1.44"
 
 [dev-dependencies]
 tempfile = "3.20.0"
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "transport_throughput"
+harness = false
+required-features = ["protocol", "tcp", "uds"]
 
 [features]
 extended_categorical = ["minarrow/extended_categorical"]

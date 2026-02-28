@@ -11,9 +11,9 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use lightstream::enums::BufferChunkSize;
 use lightstream::models::protocol::connection::TcpLightstreamConnection;
+use lightstream::models::readers::lightstream::LightstreamReader;
 use lightstream::models::streams::tcp::TcpByteStream;
 use lightstream::models::writers::lightstream::LightstreamWriter;
-use lightstream::models::readers::lightstream::LightstreamReader;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
@@ -549,7 +549,10 @@ async fn test_protocol_msgpack_roundtrip() {
     assert_eq!(reading.timestamp_ms, 1_700_000_000_000);
     assert!((reading.temperature - 23.7).abs() < f64::EPSILON);
     assert_eq!(reading.tags, vec!["lab", "floor-3"]);
-    assert_eq!(reading.raw_payload, vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF]);
+    assert_eq!(
+        reading.raw_payload,
+        vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF]
+    );
 
     // 2. Second reading — decode by consuming
     let msg = conn.recv().await.unwrap().unwrap();
@@ -721,8 +724,8 @@ async fn test_protocol_msgpack_binary_efficiency() {
 
     // Replicate the encoding logic from the writer to verify size
     let mut buf = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut buf)
-        .with_bytes(rmp_serde::config::BytesMode::ForceAll);
+    let mut serializer =
+        rmp_serde::Serializer::new(&mut buf).with_bytes(rmp_serde::config::BytesMode::ForceAll);
     serde::Serialize::serialize(&reading, &mut serializer).unwrap();
 
     // The binary payload is 256 bytes. With bin format: 1 byte type + 2 bytes len + 256 data = 259.

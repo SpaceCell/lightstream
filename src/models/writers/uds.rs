@@ -15,8 +15,8 @@ use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table};
-use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
@@ -41,10 +41,7 @@ impl UdsTableWriter {
     /// Uses `IPCMessageProtocol::Stream` — the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
-    pub async fn connect(
-        path: impl AsRef<Path>,
-        schema: Vec<Field>,
-    ) -> io::Result<Self> {
+    pub async fn connect(path: impl AsRef<Path>, schema: Vec<Field>) -> io::Result<Self> {
         let stream = UnixStream::connect(path).await?;
         let (_read, write) = stream.into_split();
         let sink = TableSink::new(write, schema, IPCMessageProtocol::Stream)?;
@@ -59,20 +56,13 @@ impl UdsTableWriter {
     ) -> io::Result<Self> {
         let stream = UnixStream::connect(path).await?;
         let (_read, write) = stream.into_split();
-        let sink = TableSink::with_compression(
-            write,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink =
+            TableSink::with_compression(write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 
     /// Wrap an existing UDS write half as a table writer.
-    pub fn from_write_half(
-        write_half: OwnedWriteHalf,
-        schema: Vec<Field>,
-    ) -> io::Result<Self> {
+    pub fn from_write_half(write_half: OwnedWriteHalf, schema: Vec<Field>) -> io::Result<Self> {
         let sink = TableSink::new(write_half, schema, IPCMessageProtocol::Stream)?;
         Ok(Self { sink })
     }

@@ -26,7 +26,10 @@ pub trait TransportWriter {
     fn write_table(&mut self, table: Table) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Write all tables and close.
-    fn write_all_tables(&mut self, tables: Vec<Table>) -> impl Future<Output = io::Result<()>> + Send;
+    fn write_all_tables(
+        &mut self,
+        tables: Vec<Table>,
+    ) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Finalise the stream. Must be called after writing all tables.
     fn finish(&mut self) -> impl Future<Output = io::Result<()>> + Send;

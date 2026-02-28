@@ -17,9 +17,9 @@
 
 mod helpers;
 
-use helpers::{make_table, table_schema, Command};
-use lightstream::models::protocol::connection::TcpLightstreamConnection;
+use helpers::{Command, make_table, table_schema};
 use lightstream::models::protocol::LightstreamMessage;
+use lightstream::models::protocol::connection::TcpLightstreamConnection;
 use tokio::net::TcpListener;
 
 #[tokio::main]
