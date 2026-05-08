@@ -6,7 +6,7 @@
 //! ## Features
 //! - Pluggable destination: in-memory (`Vec<u8>`) or files (`std::fs::File`)
 //! - Configurable delimiter, header emission, and null representation via [`CsvEncodeOptions`]
-//! - RFC 4180–style quoting/escaping handled by the encoders
+//! - RFC 4180-style quoting/escaping handled by the encoders
 //! - Write single tables or concatenate multi-batch [`SuperTable`]s - header on first batch only
 //!
 //! ## Quick start

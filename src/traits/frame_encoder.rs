@@ -1,13 +1,13 @@
 //! # Generic Frame Encoder
 //!
-//! Serialise your protocol frames into **on-the-wire bytes** efficiently.
+//! Serialise protocol frames into **on-the-wire bytes** efficiently.
 //!
-//! **Why this is useful**
-//! - Central place to define how a frame becomes a byte sequence (length-prefix, TLV, IPC, …).
+//! **Purpose**
+//! - Central place to define how a frame becomes a byte sequence i.e., length-prefix, TLV, IPC, etc..
 //! - Keeps responsibility for buffer management with the caller.
-//! - Plays nicely with any sink (files, sockets, custom transports).
+//! - Plays nicely with any sink incl., files, sockets, custom transports.
 //!
-//! Implement `FrameEncoder` for your format; call `encode()` to append the wire bytes into a buffer.
+//! Implement `FrameEncoder` for a custom format; call `encode()` to append the wire bytes into a buffer.
 
 use std::io;
 

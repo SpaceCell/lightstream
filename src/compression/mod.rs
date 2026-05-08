@@ -1,10 +1,41 @@
-//! Compression utilities for parquet_writer.
-//! - Snappy via rust-snappy crate when feature is enabled.
-//! - Zstd via zstd crate when feature is enabled.
+//! Compression codecs for Arrow IPC and Parquet.
+//!
+//! - Zstd via the zstd crate when the `zstd` feature is enabled.
+//!   Supported by both Arrow IPC and Parquet.
+//! - Snappy via the snap crate when the `snappy` feature is enabled.
+//!   Supported by Parquet only. Not part of the Arrow IPC BodyCompression spec.
+//!
+//! The `ipc` submodule handles Arrow IPC per-buffer body decompression.
+//!
+//! ## Performance characteristics
+//!
+//! Compression introduces a per-batch allocation and decompression step that
+//! breaks the zero-copy SharedBuffer path. On local transports where the wire
+//! runs at multi-GiB/s (TCP ~3.3 GiB/s, UDS ~3.6 GiB/s), compression is a
+//! net throughput loss because zstd decode (~3-4 GiB/s single-threaded)
+//! becomes the bottleneck. Typical compressed streaming throughput is
+//! ~440-540 MiB/s vs ~3.3-3.6 GiB/s uncompressed.
+//!
+//! For file I/O where disk is the bottleneck, compressed writes can be
+//! *faster* than uncompressed (fewer bytes to flush), and reads see minimal
+//! overhead (~2%) because the disk read savings offset decompression cost.
+//!
+//! Use compression for bandwidth-constrained or storage-bound workloads
+//! (WAN, cloud cross-region, S3, disk). For local high-throughput transport,
+//! the uncompressed zero-copy path is the right choice. The uncompressed
+//! fast path pays no overhead for compression support existing.
+
+/// Arrow IPC per-buffer body decompression.
+#[cfg(feature = "zstd")]
+pub mod ipc;
+
+use std::io;
 
 use crate::error::IoError;
 
-/// Supported Parquet compression codecs.
+use crate::arrow::message::org::apache::arrow::flatbuf::CompressionType;
+
+/// Supported compression codecs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
     None,
@@ -12,6 +43,25 @@ pub enum Compression {
     Snappy,
     #[cfg(feature = "zstd")]
     Zstd,
+}
+
+impl Compression {
+    /// Convert to the Arrow IPC BodyCompression type.
+    ///
+    /// Returns `None` for uncompressed. Returns an error for codecs
+    /// not supported by the Arrow IPC spec.
+    pub fn to_arrow_ipc_type(self) -> io::Result<Option<CompressionType>> {
+        match self {
+            Compression::None => Ok(None),
+            #[cfg(feature = "zstd")]
+            Compression::Zstd => Ok(Some(CompressionType::ZSTD)),
+            #[cfg(feature = "snappy")]
+            Compression::Snappy => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Snappy is not part of the Arrow IPC (Flatbuffers metadata) specification for BodyCompression",
+            )),
+        }
+    }
 }
 
 /// Compress a buffer according to the requested codec.

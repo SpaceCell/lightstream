@@ -27,7 +27,7 @@ pub(crate) struct FileMetaData {
     pub num_rows: i64,
     /// Row group descriptors with column chunk metadata.
     pub row_groups: Vec<RowGroupMeta>,
-    /// Optional key–value pairs to carry producer-specific metadata.
+    /// Optional key-value pairs to carry producer-specific metadata.
     pub key_value_metadata: Option<BTreeMap<String, String>>,
     /// Optional producer string.
     pub created_by: Option<String>,

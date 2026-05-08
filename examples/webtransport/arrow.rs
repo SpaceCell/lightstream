@@ -21,8 +21,8 @@ mod helpers;
 use helpers::{make_table, table_schema};
 use lightstream::models::readers::webtransport::WebTransportTableReader;
 use lightstream::models::writers::webtransport::WebTransportTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use wtransport::tls::Sha256Digest;
 
 #[tokio::main]

@@ -4,7 +4,7 @@ mod pyarrow_roundtrip_tests {
 
     use ::lightstream::enums::IPCMessageProtocol;
     use ::lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-    use ::lightstream::models::readers::ipc::table_stream_reader::TableStreamReader;
+    use ::lightstream::models::readers::ipc::table_reader::TableReader;
     use ::lightstream::models::streams::disk::DiskByteStream;
     use ::lightstream::models::writers::ipc::table_stream_writer::write_tables_to_stream;
     use ::lightstream::models::writers::ipc::table_writer::write_tables_to_file;
@@ -141,6 +141,7 @@ mod pyarrow_roundtrip_tests {
                         i
                     );
                 }
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 (
                     Array::TextArray(TextArray::Categorical32(exp)),
                     Array::TextArray(TextArray::Categorical32(act)),
@@ -154,6 +155,23 @@ mod pyarrow_roundtrip_tests {
                     assert_eq!(
                         exp.unique_values, act.unique_values,
                         "Categorical32 values mismatch in column {}",
+                        i
+                    );
+                }
+                #[cfg(feature = "default_categorical_8")]
+                (
+                    Array::TextArray(TextArray::Categorical8(exp)),
+                    Array::TextArray(TextArray::Categorical8(act)),
+                ) => {
+                    assert_eq!(
+                        exp.data.as_slice(),
+                        act.data.as_slice(),
+                        "Categorical8 indices mismatch in column {}",
+                        i
+                    );
+                    assert_eq!(
+                        exp.unique_values, act.unique_values,
+                        "Categorical8 values mismatch in column {}",
                         i
                     );
                 }
@@ -325,7 +343,7 @@ mod pyarrow_roundtrip_tests {
             .await
             .expect("Failed to create stream");
         let stream = ByteStream(disk);
-        let mut reader = TableStreamReader::new(stream, 1024, IPCMessageProtocol::Stream);
+        let mut reader = TableReader::<Vec<u8>>::new(stream, 1024, IPCMessageProtocol::Stream);
 
         let mut tables = vec![];
         while let Some(table) = reader.next().await {

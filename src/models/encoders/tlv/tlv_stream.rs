@@ -1,6 +1,6 @@
 //! # TLV Stream Writer
 //!
-//! Asynchronous, pull-based producer that encodes Type–Length–Value frames and yields them
+//! Asynchronous, pull-based producer that encodes Type-Length-Value frames and yields them
 //! as a `futures_core::Stream` of buffers. Uses the generic [`StreamBuffer`] so you can emit
 //! either standard `Vec<u8>` or SIMD-aligned `Vec64<u8>` buffers. Push frames with
 //! [`TLVStreamWriter::write_frame`], then call [`TLVStreamWriter::finish`] to signal end of stream.
@@ -12,7 +12,7 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::models::encoders::tlv::protocol::TLVEncoder;
+use crate::models::encoders::tlv::TLVEncoder;
 use crate::models::frames::tlv_frame::TLVFrame;
 use crate::traits::frame_encoder::FrameEncoder;
 use crate::traits::stream_buffer::StreamBuffer;

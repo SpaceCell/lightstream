@@ -15,11 +15,10 @@
 
 use std::io;
 
-use futures_core::Stream;
-use minarrow::Field;
-use tokio::io::AsyncWrite;
+use minarrow::{Field, Vec64};
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::models::frames::protocol_message::LightstreamMessage;
+use crate::models::frames::lightstream_message::LightstreamMessage;
 use crate::models::readers::lightstream::LightstreamReader;
 use crate::models::writers::lightstream::LightstreamWriter;
 use crate::traits::stream_buffer::StreamBuffer;
@@ -29,32 +28,33 @@ use crate::traits::stream_buffer::StreamBuffer;
 /// Combines a reader and writer over the same type registry. Both sides
 /// of the connection must register types in the same order.
 ///
-/// Arrow tables are sent using the IPC streaming protocol — schema overhead
+/// Arrow tables are sent using the IPC streaming protocol - schema overhead
 /// is paid once per table type. Messages are opaque bytes by default; enable
 /// the `protobuf` feature for typed send/receive via prost.
-pub struct LightstreamConnection<S, W, B = Vec<u8>>
+pub struct LightstreamConnection<W, B = Vec64<u8>>
 where
-    S: Stream<Item = Result<B, io::Error>> + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
     B: StreamBuffer + Unpin,
 {
     /// The protocol writer half.
     pub writer: LightstreamWriter<W, B>,
     /// The protocol reader half.
-    pub reader: LightstreamReader<S, B>,
+    pub reader: LightstreamReader<B>,
 }
 
-impl<S, W, B> LightstreamConnection<S, W, B>
+impl<W, B> LightstreamConnection<W, B>
 where
-    S: Stream<Item = Result<B, io::Error>> + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
     B: StreamBuffer + Unpin,
 {
-    /// Create a connection from pre-built reader and writer halves.
-    pub fn from_parts(reader_stream: S, writer_dest: W) -> Self {
+    /// Create a connection from an AsyncRead source and AsyncWrite destination.
+    pub fn new(
+        source: impl AsyncRead + Unpin + Send + 'static,
+        writer_dest: W,
+    ) -> Self {
         Self {
             writer: LightstreamWriter::new(writer_dest),
-            reader: LightstreamReader::new(reader_stream),
+            reader: LightstreamReader::new(source),
         }
     }
 
@@ -105,11 +105,7 @@ where
     /// Encodes the message via `prost::Message::encode_to_vec` and sends it
     /// as an opaque payload.
     #[cfg(feature = "protobuf")]
-    pub async fn send_proto<M: prost::Message>(
-        &mut self,
-        name: &str,
-        msg: &M,
-    ) -> io::Result<()> {
+    pub async fn send_proto<M: prost::Message>(&mut self, name: &str, msg: &M) -> io::Result<()> {
         self.writer.send_proto(name, msg).await
     }
 
@@ -135,27 +131,22 @@ where
 #[cfg(feature = "tcp")]
 mod tcp_impl {
     use super::*;
-    use crate::enums::BufferChunkSize;
-    use crate::models::streams::tcp::TcpByteStream;
-    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::net::TcpStream;
+    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
     /// Lightstream protocol connection over TCP.
-    pub type TcpLightstreamConnection =
-        LightstreamConnection<TcpByteStream, OwnedWriteHalf, Vec<u8>>;
+    pub type TcpLightstreamConnection = LightstreamConnection<OwnedWriteHalf>;
 
     impl TcpLightstreamConnection {
         /// Create a connection from an established TCP stream.
         pub fn from_tcp(stream: TcpStream) -> Self {
             let (read_half, write_half) = stream.into_split();
-            let byte_stream = TcpByteStream::from_read_half(read_half, BufferChunkSize::Http);
-            Self::from_parts(byte_stream, write_half)
+            Self::new(read_half, write_half)
         }
 
         /// Create a connection from pre-split TCP halves.
         pub fn from_tcp_halves(read_half: OwnedReadHalf, write_half: OwnedWriteHalf) -> Self {
-            let byte_stream = TcpByteStream::from_read_half(read_half, BufferChunkSize::Http);
-            Self::from_parts(byte_stream, write_half)
+            Self::new(read_half, write_half)
         }
     }
 }
@@ -166,27 +157,22 @@ pub use tcp_impl::TcpLightstreamConnection;
 #[cfg(feature = "uds")]
 mod uds_impl {
     use super::*;
-    use crate::enums::BufferChunkSize;
-    use crate::models::streams::uds::UdsByteStream;
-    use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::net::UnixStream;
+    use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
     /// Lightstream protocol connection over Unix domain sockets.
-    pub type UdsLightstreamConnection =
-        LightstreamConnection<UdsByteStream, OwnedWriteHalf, Vec<u8>>;
+    pub type UdsLightstreamConnection = LightstreamConnection<OwnedWriteHalf>;
 
     impl UdsLightstreamConnection {
         /// Create a connection from an established Unix stream.
         pub fn from_uds(stream: UnixStream) -> Self {
             let (read_half, write_half) = stream.into_split();
-            let byte_stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
-            Self::from_parts(byte_stream, write_half)
+            Self::new(read_half, write_half)
         }
 
         /// Create a connection from pre-split UDS halves.
         pub fn from_uds_halves(read_half: OwnedReadHalf, write_half: OwnedWriteHalf) -> Self {
-            let byte_stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
-            Self::from_parts(byte_stream, write_half)
+            Self::new(read_half, write_half)
         }
     }
 }
@@ -197,19 +183,15 @@ pub use uds_impl::UdsLightstreamConnection;
 #[cfg(feature = "websocket")]
 mod websocket_impl {
     use super::*;
-    use crate::models::streams::websocket::{WebSocketByteStream, WebSocketSinkAdapter};
-    use futures_util::stream::{SplitSink, SplitStream};
-    use futures_util::StreamExt;
-    use tokio_tungstenite::tungstenite::Message;
+    use crate::models::streams::websocket::{WsRead, WsWrite};
     use tokio_tungstenite::WebSocketStream;
 
     /// Lightstream protocol connection over WebSocket.
     ///
-    /// The type parameters reflect the split WebSocket halves.
+    /// Extracts the raw TCP stream after the tungstenite handshake
+    /// and uses WsRead/WsWrite for frame parsing on the data path.
     pub type WebSocketLightstreamConnection<T> = LightstreamConnection<
-        WebSocketByteStream<SplitStream<WebSocketStream<T>>>,
-        WebSocketSinkAdapter<SplitSink<WebSocketStream<T>, Message>>,
-        Vec<u8>,
+        WsWrite<tokio::io::WriteHalf<T>>,
     >;
 
     impl<T> WebSocketLightstreamConnection<T>
@@ -217,11 +199,14 @@ mod websocket_impl {
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         /// Create a connection from a WebSocket stream.
+        ///
+        /// Extracts the raw TCP stream after the tungstenite handshake.
         pub fn from_websocket(ws: WebSocketStream<T>) -> Self {
-            let (sink, stream) = ws.split();
-            let byte_stream = WebSocketByteStream::new(stream);
-            let write_adapter = WebSocketSinkAdapter::new(sink);
-            Self::from_parts(byte_stream, write_adapter)
+            let raw = ws.into_inner();
+            let (read_half, write_half) = tokio::io::split(raw);
+            let (shared_writer, ws_write) = WsWrite::new(write_half);
+            let ws_read = WsRead::new(read_half, shared_writer);
+            Self::new(ws_read, ws_write)
         }
     }
 }
@@ -232,18 +217,14 @@ pub use websocket_impl::WebSocketLightstreamConnection;
 #[cfg(feature = "quic")]
 mod quic_impl {
     use super::*;
-    use crate::enums::BufferChunkSize;
-    use crate::models::streams::quic::QuicByteStream;
 
     /// Lightstream protocol connection over QUIC.
-    pub type QuicLightstreamConnection =
-        LightstreamConnection<QuicByteStream, quinn::SendStream, Vec<u8>>;
+    pub type QuicLightstreamConnection = LightstreamConnection<quinn::SendStream>;
 
     impl QuicLightstreamConnection {
         /// Create a connection from QUIC send and receive streams.
         pub fn from_quic(recv: quinn::RecvStream, send: quinn::SendStream) -> Self {
-            let byte_stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-            Self::from_parts(byte_stream, send)
+            Self::new(recv, send)
         }
     }
 }
@@ -254,12 +235,10 @@ pub use quic_impl::QuicLightstreamConnection;
 #[cfg(feature = "webtransport")]
 mod webtransport_impl {
     use super::*;
-    use crate::enums::BufferChunkSize;
-    use crate::models::streams::webtransport::WebTransportByteStream;
 
     /// Lightstream protocol connection over WebTransport.
     pub type WebTransportLightstreamConnection =
-        LightstreamConnection<WebTransportByteStream, wtransport::SendStream, Vec<u8>>;
+        LightstreamConnection<wtransport::SendStream>;
 
     impl WebTransportLightstreamConnection {
         /// Create a connection from WebTransport send and receive streams.
@@ -267,8 +246,7 @@ mod webtransport_impl {
             recv: wtransport::RecvStream,
             send: wtransport::SendStream,
         ) -> Self {
-            let byte_stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-            Self::from_parts(byte_stream, send)
+            Self::new(recv, send)
         }
     }
 }
@@ -279,18 +257,14 @@ pub use webtransport_impl::WebTransportLightstreamConnection;
 #[cfg(feature = "stdio")]
 mod stdio_impl {
     use super::*;
-    use crate::models::streams::stdio::{StdinByteStream, from_stdin_default};
 
     /// Lightstream protocol connection over stdin/stdout.
-    pub type StdioLightstreamConnection =
-        LightstreamConnection<StdinByteStream, tokio::io::Stdout, Vec<u8>>;
+    pub type StdioLightstreamConnection = LightstreamConnection<tokio::io::Stdout>;
 
     impl StdioLightstreamConnection {
         /// Create a connection from stdin and stdout.
         pub fn from_stdio() -> Self {
-            let byte_stream = from_stdin_default();
-            let stdout = tokio::io::stdout();
-            Self::from_parts(byte_stream, stdout)
+            Self::new(tokio::io::stdin(), tokio::io::stdout())
         }
     }
 }

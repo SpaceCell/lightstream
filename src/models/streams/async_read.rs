@@ -1,68 +1,52 @@
 //! # Generic asynchronous byte stream adapter
 //!
-//! Wraps any [`AsyncRead`] source in a [`Stream`] that yields fixed-size
-//! byte chunks.
+//! Wraps any [`AsyncRead`] source as both [`AsyncRead`] and [`Stream`].
 //!
-//! ## Overview
-//! - Wraps any `AsyncRead` implementor using a buffered reader.
-//! - Supports async backpressure via `poll_next`.
-//! - Yields unaligned `Vec<u8>` chunks — alignment is deferred to the
-//!   Arrow decoding layer where it matters.
-//! - Chunk size controlled by [`BufferChunkSize`].
+//! ## AsyncRead
+//! Passthrough to the inner source for the direct decode path.
 //!
-//! ## Use cases
-//! - Receive Arrow IPC streams from any async byte source without loading
-//!   them fully into memory.
-//! - Feed I/O from any transport directly into async Arrow decoding pipelines.
-//! - Build custom transport adapters without reimplementing the buffered
-//!   read-to-stream bridge.
+//! ## Stream
+//! Yields [`SharedBuffer`] windows from a [`StreamArena`] for zero-allocation
+//! streaming. This is the generic building block behind transport-specific
+//! byte streams - QUIC, WebTransport, and Stdin are type aliases over this.
 
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use tokio::io::{AsyncRead, BufReader, ReadBuf};
+use minarrow::structs::shared_buffer::SharedBuffer;
+use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::enums::BufferChunkSize;
+use crate::models::streams::stream_arena::StreamArena;
 
-/// A `Stream` that reads any `AsyncRead` source in fixed-size byte chunks.
+/// A `Stream` that reads any `AsyncRead` source with zero-allocation
+/// arena-backed SharedBuffer windows.
 ///
-/// This is the generic building block behind all transport-specific byte
-/// streams. Each transport module re-exports a type alias over this struct
-/// e.g. `QuicByteStream`, `TcpByteStream` for discoverability.
-///
-/// ### Includes:
-/// - `BufReader` based buffering over any `AsyncRead`
-/// - Async back-pressure support via `poll_next`
-/// - Control of chunk size via `BufferChunkSize`
-///
-/// ### Use cases:
-/// - Receive Arrow IPC data from any async byte source
-/// - Plug custom transports into Arrow decoding pipelines
+/// Also implements `AsyncRead` as a direct passthrough for the
+/// internal decode path.
 pub struct AsyncReadByteStream<R: AsyncRead + Unpin> {
-    /// Buffered reader over the source.
-    reader: BufReader<R>,
-    /// End-of-stream flag, prevents further reads after completion.
+    source: R,
     eof: bool,
-    /// Configured chunk size in bytes.
     chunk_size: usize,
+    arena: StreamArena,
 }
 
 impl<R: AsyncRead + Unpin> AsyncReadByteStream<R> {
     /// Wrap an async read source as a byte stream.
     pub fn new(source: R, size: BufferChunkSize) -> Self {
-        let chunk_size = size.chunk_size();
         Self {
-            reader: BufReader::with_capacity(chunk_size, source),
+            source,
             eof: false,
-            chunk_size,
+            chunk_size: size.chunk_size(),
+            arena: StreamArena::new(),
         }
     }
 }
 
 impl<R: AsyncRead + Unpin> Stream for AsyncReadByteStream<R> {
-    type Item = Result<Vec<u8>, io::Error>;
+    type Item = Result<SharedBuffer, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.get_mut();
@@ -71,26 +55,34 @@ impl<R: AsyncRead + Unpin> Stream for AsyncReadByteStream<R> {
             return Poll::Ready(None);
         }
 
-        let mut buf = vec![0u8; me.chunk_size];
-        let mut read_buf = ReadBuf::new(&mut buf);
-
-        match Pin::new(&mut me.reader).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => {
-                let n = read_buf.filled().len();
-                if n == 0 {
-                    me.eof = true;
-                    Poll::Ready(None)
-                } else {
-                    buf.truncate(n);
-                    Poll::Ready(Some(Ok(buf)))
-                }
-            }
-            Poll::Ready(Err(e)) => {
-                me.eof = true;
-                Poll::Ready(Some(Err(e)))
-            }
-            Poll::Pending => Poll::Pending,
+        if me.arena.remaining() < me.chunk_size {
+            me.arena.recycle_or_reset();
         }
+
+        let chunk_start = me.arena.write_pos();
+        let n = {
+            let spare = me.arena.spare_mut();
+            let read_len = spare.len().min(me.chunk_size);
+            let mut read_buf = ReadBuf::new(&mut spare[..read_len]);
+            match Pin::new(&mut me.source).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => read_buf.filled().len(),
+                Poll::Ready(Err(e)) => {
+                    me.eof = true;
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        };
+
+        if n == 0 {
+            me.eof = true;
+            return Poll::Ready(None);
+        }
+
+        me.arena.advance(n);
+        let shared = me.arena.window(chunk_start, n);
+        me.arena.align();
+        Poll::Ready(Some(Ok(shared)))
     }
 }
 
@@ -101,6 +93,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for AsyncReadByteStream<R> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let me = self.get_mut();
-        Pin::new(&mut me.reader).poll_read(cx, buf)
+        Pin::new(&mut me.source).poll_read(cx, buf)
     }
 }

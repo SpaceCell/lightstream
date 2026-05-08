@@ -1,61 +1,54 @@
 //! # WebSocket table writer
 //!
 //! High-level async writer that connects to a WebSocket endpoint and sends
-//! Arrow IPC encoded tables as binary messages.
+//! Arrow IPC encoded tables as binary WebSocket messages.
 //!
-//! Wraps a [`TableSink`] over a [`WebSocketSinkAdapter`], hiding the wiring
-//! so callers get a one-liner API.
+//! Extracts the raw TCP stream after the tungstenite handshake and uses
+//! [`WsWrite`] for WebSocket binary frame encoding on the data path.
 //!
-//! Uses `Vec<u8>` (8-byte aligned) encoding, matching the alignment
-//! expected by the standard Arrow IPC frame decoder on the read side.
+//! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding.
 
 use std::io;
 use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio_tungstenite::connect_async;
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
-use crate::models::sinks::table_sink::TableSink;
-use crate::models::streams::websocket::WebSocketSinkAdapter;
-use crate::traits::transport_writer::TransportWriter;
-
-/// The concrete sink type produced by splitting a client WebSocket connection.
-type WsSplitSink =
-    futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
+use crate::models::sinks::table_sink::TableSink64;
+use crate::models::streams::websocket::WsWrite;
+use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Async Arrow IPC writer over a WebSocket connection.
 ///
 /// Connects to a remote WebSocket endpoint and writes Arrow IPC stream
 /// protocol data as binary WebSocket messages.
 ///
-/// Uses 8-byte aligned buffers to match the frame decoder on the
-/// read side, which always uses 8-byte alignment for frame boundary
-/// calculation.
+/// Uses `WsWrite` for WebSocket frame encoding after the tungstenite
+/// handshake. Vec64 for 64-byte SIMD aligned encoding.
 pub struct WebSocketTableWriter {
-    sink: TableSink<WebSocketSinkAdapter<WsSplitSink>>,
+    sink: TableSink64<WsWrite<tokio::io::WriteHalf<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>>,
 }
 
 impl WebSocketTableWriter {
     /// Connect to a WebSocket server and prepare to write Arrow IPC tables.
     ///
-    /// Uses `IPCMessageProtocol::Stream` — the unbounded protocol suited
+    /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
     ///
-    /// The read half of the WebSocket is dropped — use `from_sink` if you
-    /// need bidirectional communication.
+    /// The read half is dropped - use the Lightstream connection for
+    /// bidirectional communication.
     pub async fn connect(url: &str, schema: Vec<Field>) -> io::Result<Self> {
         let (ws_stream, _response) = connect_async(url)
             .await
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let (ws_sink, _read_half) = futures_util::StreamExt::split(ws_stream);
-        let adapter = WebSocketSinkAdapter::new(ws_sink);
-        let sink = TableSink::new(adapter, schema, IPCMessageProtocol::Stream)?;
+        let raw = ws_stream.into_inner();
+        let (_read_half, write_half) = tokio::io::split(raw);
+        let (_shared, ws_write) = WsWrite::new(write_half);
+        let sink = TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream)?;
         Ok(Self { sink })
     }
 
@@ -68,42 +61,30 @@ impl WebSocketTableWriter {
         let (ws_stream, _response) = connect_async(url)
             .await
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let (ws_sink, _read_half) = futures_util::StreamExt::split(ws_stream);
-        let adapter = WebSocketSinkAdapter::new(ws_sink);
+        let raw = ws_stream.into_inner();
+        let (_read_half, write_half) = tokio::io::split(raw);
+        let (_shared, ws_write) = WsWrite::new(write_half);
         let sink =
-            TableSink::with_compression(adapter, schema, IPCMessageProtocol::Stream, compression)?;
-        Ok(Self { sink })
-    }
-
-    /// Wrap an existing WebSocket sink adapter as a table writer.
-    pub fn from_sink(
-        adapter: WebSocketSinkAdapter<WsSplitSink>,
-        schema: Vec<Field>,
-    ) -> io::Result<Self> {
-        let sink = TableSink::new(adapter, schema, IPCMessageProtocol::Stream)?;
+            TableSink64::new_with_compression(ws_write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }
 
-impl TransportWriter for WebSocketTableWriter {
-    /// Get the schema used for this writer.
+impl IPCTransportWriter for WebSocketTableWriter {
     fn schema(&self) -> &[Field] {
         &self.sink.schema
     }
 
-    /// Register a dictionary for categorical columns.
     fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
-        self.sink.inner.register_dictionary(dict_id, values);
+        self.sink.codec.register_dictionary(dict_id, values);
     }
 
-    /// Write a single table and flush.
     async fn write_table(&mut self, table: Table) -> io::Result<()> {
         SinkExt::send(&mut self.sink, table).await?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
 
-    /// Write all tables and close.
     async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
@@ -113,7 +94,6 @@ impl TransportWriter for WebSocketTableWriter {
         Ok(())
     }
 
-    /// Finalise the stream. Must be called after writing all tables.
     async fn finish(&mut self) -> io::Result<()> {
         SinkExt::close(&mut self.sink).await
     }

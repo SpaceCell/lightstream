@@ -10,13 +10,8 @@ use lightstream::enums::IPCMessageProtocol;
 #[cfg(feature = "mmap")]
 use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
 use lightstream::models::writers::ipc::table_writer::TableWriter;
-use minarrow::ffi::arrow_dtype::ArrowType;
-use minarrow::{
-    Array, Bitmask, BooleanArray, Buffer, Field, FieldArray, FloatArray, IntegerArray,
-    NumericArray, Table, Vec64,
-};
+use minarrow::{arr_bool, arr_f64, arr_i64, arr_u32, Field, FieldArray, Table, Vec64};
 use std::path::Path;
-use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::fs::File;
 
@@ -57,67 +52,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Create a large table with pre-built standard buffers
+/// Create a large table for mmap benchmarking.
 fn create_large_table() -> Table {
     let n_rows = 100_000_000;
 
-    // Use from_iter to avoid extend overhead
-    let extra_data: Vec64<u32> = (0..n_rows).map(|i| (i % 1000) as u32).collect();
-    let int_data: Vec64<i64> = (0..n_rows).map(|i| i as i64).collect();
-    let float_data: Vec64<f64> = (0..n_rows).map(|i| i as f64 * 0.1).collect();
+    let ids: Vec64<i64> = (0..n_rows as i64).collect();
+    let measurements: Vec64<f64> = (0..n_rows).map(|i| i as f64 * 0.1).collect();
+    let extras: Vec64<u32> = (0..n_rows).map(|i| (i % 1000) as u32).collect();
+    let evens: Vec64<bool> = (0..n_rows).map(|i| i % 2 == 0).collect();
 
-    let mut bitmask = Bitmask::with_capacity(n_rows);
-    for i in 0..n_rows {
-        bitmask.set(i, i % 2 == 0);
-    }
-    // Build table with pre-created buffers
-    let int_array = Arc::new(IntegerArray::new(Buffer::from(int_data), None));
-    let float_array = Arc::new(FloatArray::new(Buffer::from(float_data), None));
-    let extra_array = Arc::new(IntegerArray::new(Buffer::from(extra_data), None));
-    let bool_array = Arc::new(BooleanArray::new(bitmask, None));
-
-    Table {
-        name: "large_aligned_data".to_string(),
-        n_rows,
-        cols: vec![
-            FieldArray::new(
-                Field {
-                    name: "id".into(),
-                    dtype: ArrowType::Int64,
-                    nullable: false,
-                    metadata: Default::default(),
-                },
-                int_array.into(),
-            ),
-            FieldArray::new(
-                Field {
-                    name: "measurement".into(),
-                    dtype: ArrowType::Float64,
-                    nullable: false,
-                    metadata: Default::default(),
-                },
-                Array::NumericArray(NumericArray::Float64(float_array)),
-            ),
-            FieldArray::new(
-                Field {
-                    name: "extra".into(),
-                    dtype: ArrowType::UInt32,
-                    nullable: false,
-                    metadata: Default::default(),
-                },
-                Array::NumericArray(NumericArray::UInt32(extra_array)),
-            ),
-            FieldArray::new(
-                Field {
-                    name: "is_even".into(),
-                    dtype: ArrowType::Boolean,
-                    nullable: false,
-                    metadata: Default::default(),
-                },
-                Array::BooleanArray(bool_array),
-            ),
-        ],
-    }
+    Table::new(
+        "large_aligned_data".to_string(),
+        Some(vec![
+            FieldArray::from_arr("id", arr_i64!(ids)),
+            FieldArray::from_arr("measurement", arr_f64!(measurements)),
+            FieldArray::from_arr("extra", arr_u32!(extras)),
+            FieldArray::from_arr("is_even", arr_bool!(evens)),
+        ]),
+    )
 }
 
 /// Write table to Arrow IPC File format

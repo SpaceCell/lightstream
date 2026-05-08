@@ -1,6 +1,6 @@
-//! # Lightstream — Streaming Arrow IPC, TLV, and Parquet I/O for Minarrow
+//! # Lightstream - Streaming Arrow IPC, TLV, and Parquet I/O and Transport for Extreme Performance Data
 //!
-//! **Lightstream** provides composable building blocks for high-performance data I/O in Rust.
+//! **Lightstream** includes composable building blocks for high-performance data I/O in Rust.
 //!
 //! It extends [Minarrow](https://crates.io/crates/minarrow) with a set of modular, format-aware components for:
 //!
@@ -8,17 +8,26 @@
 //! - Framed decoders and sinks for `IPC`, `TLV`, `CSV`, and opt-in `Parquet`
 //! - Zero-Copy memory-mapped Arrow file reads
 //! - Direct Tokio integration with zero-copy buffers
-//! - 64-byte SIMD aligned readers and writers *(the only Arrow crate that provides this in 2025)*
+//! - 64-byte SIMD aligned readers and writers - *(not generally available in the Arrow ecosystem)*
 //!
-//! ## Design Principles
-//!
-//! - **Customisable** - ***You own the buffer*** – No hidden buffering or lifecycle surprises. All streaming is pull-based or sink-driven.
-//! - **Composable** - ***Layerable codecs*** – Each encoder, decoder, sink, and stream adapter is layerable, and your bytestream propagates up.
-//! - **Control** - ***Wire-level framing*** – Arrow IPC, TLV, CSV, and Parquet handled at the transport boundary, not fused into business logic.
-//! - **Power** - **64-byte aligned by default** – All buffers use 64-byte aligned memory via [`Vec64`] for deterministic SIMD - not re-allocating
-//! during hotloop calculations where you need it fast.
-//! - **Extensible** - all primitives are provided to create your own data wire formats, and customise it to your stack. We also welcome contributions.
-//!
+//! Then, on top of that, it includes the high performance Lightstream protocol and out of the box support for
+//!     - Arrow IPC (including mmap, File and Stream protocols)
+//!     - CSV
+//!     - Parquet
+//!     - QUIC
+//!     - IOUring for kernel bypass    
+//!     - Stdin/StdOut
+//!     - TCP
+//!     - UDS
+//!     - Websocket 
+//!     - Webtransport
+//!     - Memory Mapped IPC Readers/Writers + Parquet
+//!     
+//! These are built via a consistent interface where the protocol is agnostic to the transport, making adding new ones trivial.
+//! 
+//! Additionally, it is highly customisable as the layered architecture allows opting up to the desired level for modifying and/or implementing
+//! new protocols as needed.
+//! 
 //! ## Highlights
 //!
 //! - ✅ Fully async-compatible with [`tokio::io::AsyncWrite`]  
@@ -26,9 +35,9 @@
 //! - ✅ Arrow IPC framing with dictionary + schema support  
 //! - ✅ Categorical dictionary support
 //! - ✅ Compatible with [`minarrow::Table`] and [`minarrow::SuperTable`]  
-//! - ✅ Optional support for `parquet`, `zstd`, `snappy`, and `mmap`  
+//! - ✅ Feature flags for `parquet`, `zstd`, `snappy`, compression and `mmap`  
 //!
-//! ## Example — Arrow Table Writer
+//! ## Example - Arrow Table Writer
 //!
 //! ```rust,no_run
 //! use minarrow::{arr_i32, arr_str32, vec64, FieldArray, Table};
@@ -41,10 +50,9 @@
 //! let col2 = FieldArray::from_arr("names", arr_str32!["a", "b", "c"]);
 //! let table = Table::new("example".to_string(), vec![col1, col2].into());
 //!
-//! let schema: Vec<_> = table.schema().iter().map(|f| (**f).clone()).collect();
 //! let file = File::create("out.arrow").await?;
 //!
-//! let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+//! let mut writer = TableWriter::from_schema(file, table.schema(), IPCMessageProtocol::File)?;
 //! writer.write_table(table).await?;
 //! writer.finish().await?;
 //! # Ok(()) }
@@ -88,16 +96,7 @@ pub mod models {
     /// Encoders for Arrow IPC, TLV, CSV, and optionally Parquet
     pub mod encoders {
         /// Arrow IPC encoders
-        pub mod ipc {
-            /// IPC protocol framing
-            pub mod protocol;
-
-            /// IPC schema serialisation.
-            pub mod schema;
-
-            /// Stream encoder for Arrow tables
-            pub mod table_stream;
-        }
+        pub mod ipc;
 
         /// Parquet encoders (if `parquet` feature is enabled)
         #[cfg(feature = "parquet")]
@@ -110,13 +109,7 @@ pub mod models {
         }
 
         /// TLV wire format encoders
-        pub mod tlv {
-            /// TLV framing protocol
-            pub mod protocol;
-
-            /// Buffered TLV stream writer
-            pub mod tlv_stream;
-        }
+        pub mod tlv;
 
         /// CSV encoder for tables and supertables
         pub mod csv;
@@ -125,16 +118,7 @@ pub mod models {
     /// Decoders for Arrow IPC, CSV, TLV, and optionally Parquet
     pub mod decoders {
         /// Arrow IPC decoders
-        pub mod ipc {
-            /// FlatBuffer parser for record batches
-            pub mod parser;
-
-            /// IPC protocol parser
-            pub mod protocol;
-
-            /// Streaming decoder for Arrow tables
-            pub mod table_stream;
-        }
+        pub mod ipc;
 
         /// CSV-to-table decoder
         pub mod csv;
@@ -147,7 +131,7 @@ pub mod models {
         pub mod tlv;
     }
 
-    /// Frame structures for IPC and TLV
+    /// Frame structures for IPC, TLV, and WebSocket
     pub mod frames {
         /// IPC message wrappers
         pub mod ipc_message;
@@ -157,7 +141,11 @@ pub mod models {
 
         /// Lightstream protocol message types
         #[cfg(feature = "protocol")]
-        pub mod protocol_message;
+        pub mod lightstream_message;
+
+        /// WebSocket binary frame header parsing and unmasking
+        #[cfg(feature = "websocket")]
+        pub mod websocket;
     }
 
     /// Readers for files, mmap, and async streams
@@ -173,9 +161,6 @@ pub mod models {
 
             /// Streamed IPC table reader
             pub mod table_reader;
-
-            /// Stream adapter yielding Arrow tables
-            pub mod table_stream_reader;
         }
 
         /// CSV reader utilities.
@@ -262,6 +247,9 @@ pub mod models {
 
     /// Stream adapters and sources.
     pub mod streams {
+        /// Zero-allocation stream arena for network I/O.
+        pub mod stream_arena;
+
         /// Generic async byte stream adapter for any `AsyncRead` source.
         pub mod async_read;
 
@@ -296,8 +284,10 @@ pub mod models {
         pub mod stdio;
     }
 
-    /// Lightstream protocol: multiplexed messages and Arrow IPC tables over a single stream.
-    #[cfg(feature = "protocol")]
+    /// Codecs for Arrow IPC and Lightstream protocol.
+    pub mod codecs;
+
+    /// Protocol modules for Arrow IPC and the Lightstream multiplexer.
     pub mod protocol;
 
     /// Arrow and Parquet type mappings.
@@ -310,6 +300,10 @@ pub mod models {
     /// Custom Memory-map implementation
     #[cfg(feature = "mmap")]
     pub mod mmap;
+
+    /// io_uring-based UDS transport
+    #[cfg(feature = "io_uring")]
+    pub mod io_uring;
 }
 
 /// FlatBuffers-compiled Arrow IPC metadata support.

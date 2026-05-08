@@ -2,7 +2,7 @@
 name = "lightstream"
 version = "0.4.2"
 edition = "2024"
-license = "MIT"
+license = "LICENSE"
 keywords = [
     "arrow",
     "apache-arrow",
@@ -29,7 +29,8 @@ futures-util = { version = "0.3", features = ["sink"] }
 flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
-minarrow = { version = "0.9.1", features = ["chunked", "views", "large_string"] }
+minarrow = { path = "../minarrow", features = ["chunked", "views", "large_string", "arena", "vmap64"] }
+vec64 = { path = "../vec64", features = ["mmap"] }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 zstd = { version = "0.13", optional = true }
@@ -39,6 +40,9 @@ prost = { version = "0.14", optional = true }
 rmp-serde = { version = "1", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }
 tracing = "0.1.44"
+tokio-uring = { version = "0.5", optional = true }
+arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
+polars = { version = "0.53", optional = true, default-features = false, features = ["ipc"] }
 
 [dev-dependencies]
 tempfile = "3.26.0"
@@ -47,12 +51,25 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
-name = "transport_throughput"
+name = "file_throughput"
+harness = false
+
+[[bench]]
+name = "ipc_throughput"
+harness = false
+
+[[bench]]
+name = "stream_throughput"
+harness = false
+
+[[bench]]
+name = "lightstream_throughput"
 harness = false
 required-features = ["protocol", "tcp", "uds"]
 
 [features]
-extended_categorical = ["minarrow/extended_categorical"]
+default_categorical_8 = ["minarrow/default_categorical_8"]
+extended_categorical = ["default_categorical_8", "minarrow/extended_categorical"]
 large_string = ["minarrow/large_string"]
 datetime = ["minarrow/datetime"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
@@ -71,6 +88,8 @@ quic = ["tokio/net", "quinn"]
 webtransport = ["tokio/net", "wtransport"]
 # Unix domain socket transport
 uds = ["tokio/net"]
+# io_uring-based UDS transport (Linux only)
+io_uring = ["uds", "tokio-uring"]
 # Stdin/stdout transport
 stdio = ["tokio/io-std"]
 
@@ -86,7 +105,12 @@ snappy = ["snap"]
 # Adds zstd compression option
 zstd = ["dep:zstd"]
 
-default = []
+# Enable arrow-rs comparison in benchmarks
+bench_arrow = ["arrow"]
+# Enable polars comparison in benchmarks
+bench_polars = ["polars"]
+
+default = ["default_categorical_8"]
 
 [[example]]
 name = "lightstream"

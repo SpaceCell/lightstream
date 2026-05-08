@@ -5,7 +5,7 @@ mod parquet_writer_integration_tests {
         compression::Compression,
         models::{
             readers::parquet_reader::read_parquet_table,
-            writers::parquet_writer::{PAGE_CHUNK_SIZE, write_parquet_table},
+            writers::parquet_writer::{PARQUET_PAGE_CHUNK_SIZE, write_parquet_table},
         },
     };
     use minarrow::{
@@ -247,7 +247,7 @@ mod parquet_writer_integration_tests {
 
     #[test]
     fn write_and_read_max_chunk_boundary() {
-        let n = PAGE_CHUNK_SIZE + 17;
+        let n = PARQUET_PAGE_CHUNK_SIZE + 17;
         let values: Vec<i32> = (0..n as i32).collect();
         let arr = Array::from_int32(IntegerArray::from_slice(&values));
         let table = Table::new(

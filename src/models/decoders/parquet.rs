@@ -10,7 +10,7 @@ use crate::error::IoError;
 use minarrow::Vec64;
 use std::io::Read;
 
-// Primitive decoders
+// ************************ Primitive decoders ************************ 
 
 /// Decode a plain `INT32` buffer into a `Vec64<i32>`.
 pub fn decode_int32_plain(buf: &[u8]) -> Result<Vec64<i32>, IoError> {
@@ -152,7 +152,7 @@ pub fn decode_large_string_plain(
     Ok((offsets, values))
 }
 
-// temporal aliases
+// ************************  temporal aliases ************************ 
 
 /// Decode a plain `DATE32`/`TIME32` buffer into a `Vec64<i32>`.
 pub fn decode_datetime32_plain(buf: &[u8]) -> Result<Vec64<i32>, IoError> {
@@ -168,7 +168,7 @@ pub fn decode_datetime64_plain(buf: &[u8]) -> Result<Vec64<i64>, IoError> {
 
 /// Decode the `RLE_DICTIONARY` index stream into a `Vec64<u32>`.
 ///
-/// * `len` – number of logical indices expected.
+/// * `len` - number of logical indices expected.
 pub fn decode_dictionary_indices_rle(buf: &[u8], len: usize) -> Result<Vec64<u32>, IoError> {
     if buf.is_empty() {
         return Err(IoError::Format("empty dictionary index stream".to_owned()));

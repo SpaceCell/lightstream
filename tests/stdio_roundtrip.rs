@@ -61,6 +61,7 @@ fn make_test_table() -> Table {
         )))),
     );
 
+    #[cfg(not(feature = "default_categorical_8"))]
     let dict_col = FieldArray::new(
         Field {
             name: "category".into(),
@@ -70,6 +71,24 @@ fn make_test_table() -> Table {
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[0u32, 1, 2, 0])),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(4, true)),
+        }))),
+    );
+    #[cfg(feature = "default_categorical_8")]
+    let dict_col = FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 2, 0])),
             unique_values: Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
@@ -98,7 +117,7 @@ fn make_schema(table: &Table) -> Vec<Field> {
 fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
     use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
 
-    let mut writer = TableStreamWriter::<Vec<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
+    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
 
     // Register dictionary for categorical column
     writer.register_dictionary(
@@ -121,7 +140,7 @@ fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
 fn encode_tables_to_bytes(tables: &[&Table], schema: &[Field]) -> Vec<u8> {
     use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
 
-    let mut writer = TableStreamWriter::<Vec<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
+    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
 
     writer.register_dictionary(
         3,
@@ -212,7 +231,7 @@ async fn test_stdio_encode_decode_roundtrip() {
 
     // Decode from bytes
     let stream = ByteVecStream::new(bytes);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     assert_eq!(tables.len(), 1);
@@ -247,11 +266,18 @@ async fn test_stdio_encode_decode_roundtrip() {
 
     // Verify categorical column values
     match &t.cols[3].array {
+        #[cfg(not(feature = "default_categorical_8"))]
         Array::TextArray(TextArray::Categorical32(arr)) => {
             let cats: Vec<_> = arr.iter_str().collect();
             assert_eq!(cats, &["red", "green", "blue", "red"]);
         }
-        other => panic!("Expected Categorical32, got {:?}", other),
+        #[cfg(feature = "default_categorical_8")]
+        Array::TextArray(TextArray::Categorical8(arr)) => {
+            let cats: Vec<_> = arr.iter_str().collect();
+            assert_eq!(cats, &["red", "green", "blue", "red"]);
+        }
+        #[allow(unreachable_patterns)]
+        other => panic!("Expected categorical, got {:?}", other),
     }
 }
 
@@ -291,7 +317,7 @@ async fn test_stdio_cat_roundtrip() {
 
     // Decode and verify
     let stream = ByteVecStream::new(output);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     assert_eq!(tables.len(), 1);
@@ -330,7 +356,7 @@ async fn test_stdio_multi_table_cat_roundtrip() {
 
     // Decode
     let stream = ByteVecStream::new(output);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     assert_eq!(tables.len(), 3);

@@ -19,7 +19,7 @@ use minarrow::{Field, SuperTable, Table};
 ///
 /// Implementors must also implement `Stream<Item = io::Result<Table>>`, which
 /// is enforced by the supertrait bound.
-pub trait TransportReader: Stream<Item = io::Result<Table>> + Sized {
+pub trait IPCTransportReader: Stream<Item = io::Result<Table>> + Sized {
     /// Read all tables from the stream until it closes.
     fn read_all_tables(self) -> impl Future<Output = io::Result<Vec<Table>>> + Send;
 

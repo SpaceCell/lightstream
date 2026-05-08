@@ -43,7 +43,10 @@ fn make_schema() -> Vec<Field> {
         },
         Field {
             name: "category".into(),
+            #[cfg(not(feature = "default_categorical_8"))]
             dtype: ArrowType::Dictionary(CategoricalIndexType::UInt32),
+            #[cfg(feature = "default_categorical_8")]
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
             nullable: true,
             metadata: Default::default(),
         },
@@ -91,6 +94,7 @@ fn make_test_table() -> Table {
         )))),
     );
 
+    #[cfg(not(feature = "default_categorical_8"))]
     let dict_col = FieldArray::new(
         Field {
             name: "category".into(),
@@ -100,6 +104,24 @@ fn make_test_table() -> Table {
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[0u32, 1, 2, 0])),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(4, true)),
+        }))),
+    );
+    #[cfg(feature = "default_categorical_8")]
+    let dict_col = FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 2, 0])),
             unique_values: Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
@@ -130,7 +152,7 @@ async fn test_protocol_mixed_roundtrip() {
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         let (_read, write) = stream.into_split();
-        let mut writer = LightstreamWriter::<_, Vec<u8>>::new(write);
+        let mut writer = LightstreamWriter::<_, Vec64<u8>>::new(write);
         writer.register_message("Ping");
         writer.register_table("Events", write_schema);
 
@@ -146,8 +168,7 @@ async fn test_protocol_mixed_roundtrip() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let (read_half, _write_half) = socket.into_split();
-    let stream = TcpByteStream::from_read_half(read_half, BufferChunkSize::Http);
-    let mut reader = LightstreamReader::<_, Vec<u8>>::new(stream);
+    let mut reader = LightstreamReader::<Vec64<u8>>::new(read_half);
     reader.register_message("Ping");
     reader.register_table("Events", schema);
 
@@ -170,7 +191,7 @@ async fn test_protocol_mixed_roundtrip() {
     assert!(msg.is_message());
     assert_eq!(msg.payload().unwrap(), b"world");
 
-    // 4. Second table — uses persistent schema from first table
+    // 4. Second table - uses persistent schema from first table
     let msg = reader.next().await.unwrap().unwrap();
     assert!(msg.is_table());
     let tbl = msg.into_table().unwrap();
@@ -237,7 +258,7 @@ async fn test_protocol_connection_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Protobuf types — equivalent to what prost-build generates from a .proto file
+// Protobuf types - equivalent to what prost-build generates from a .proto file
 // ---------------------------------------------------------------------------
 
 /// Equivalent to:
@@ -332,7 +353,7 @@ async fn test_protocol_protobuf_roundtrip() {
     conn.register_message("Trade");
     conn.register_message("Heartbeat");
 
-    // 1. First trade — decode by reference
+    // 1. First trade - decode by reference
     let msg = conn.recv().await.unwrap().unwrap();
     assert!(msg.is_message());
     let trade: TradeEvent = msg.decode_payload().unwrap();
@@ -342,7 +363,7 @@ async fn test_protocol_protobuf_roundtrip() {
     assert_eq!(trade.quantity, 100);
     assert!(trade.is_buy);
 
-    // 2. Heartbeat — decode by consuming
+    // 2. Heartbeat - decode by consuming
     let msg = conn.recv().await.unwrap().unwrap();
     assert!(msg.is_message());
     let hb: Heartbeat = msg.into_decoded_payload().unwrap();
@@ -426,7 +447,7 @@ async fn test_protocol_protobuf_mixed_with_tables() {
     assert_eq!(trade2.symbol, "AMZN");
     assert!(!trade2.is_buy);
 
-    // 4. Table — second batch, reuses persistent schema
+    // 4. Table - second batch, reuses persistent schema
     let msg = conn.recv().await.unwrap().unwrap();
     assert!(msg.is_table());
     assert_eq!(msg.into_table().unwrap().n_rows, 4);
@@ -435,7 +456,7 @@ async fn test_protocol_protobuf_mixed_with_tables() {
     writer_handle.await.unwrap();
 }
 
-/// Send only messages — no tables.
+/// Send only messages - no tables.
 #[tokio::test]
 async fn test_protocol_messages_only() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -477,7 +498,7 @@ struct SensorReading {
     timestamp_ms: u64,
     temperature: f64,
     tags: Vec<String>,
-    /// Binary blob — exercises BytesMode::ForceAll.
+    /// Binary blob - exercises BytesMode::ForceAll.
     raw_payload: Vec<u8>,
 }
 
@@ -541,7 +562,7 @@ async fn test_protocol_msgpack_roundtrip() {
     let mut conn = TcpLightstreamConnection::from_tcp(socket);
     conn.register_message("Sensor");
 
-    // 1. First reading — decode by reference
+    // 1. First reading - decode by reference
     let msg = conn.recv().await.unwrap().unwrap();
     assert!(msg.is_message());
     let reading: SensorReading = msg.decode_msgpack().unwrap();
@@ -554,7 +575,7 @@ async fn test_protocol_msgpack_roundtrip() {
         vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF]
     );
 
-    // 2. Second reading — decode by consuming
+    // 2. Second reading - decode by consuming
     let msg = conn.recv().await.unwrap().unwrap();
     let reading2: SensorReading = msg.into_decoded_msgpack().unwrap();
     assert_eq!(reading2.device_id, "thermo-43");
@@ -698,7 +719,7 @@ async fn test_protocol_msgpack_mixed_with_tables() {
     assert_eq!(reading2.device_id, "probe-2");
     assert!(reading2.raw_payload.is_empty());
 
-    // 4. Table — second batch, reuses persistent schema
+    // 4. Table - second batch, reuses persistent schema
     let msg = conn.recv().await.unwrap().unwrap();
     assert!(msg.is_table());
     assert_eq!(msg.into_table().unwrap().n_rows, 4);

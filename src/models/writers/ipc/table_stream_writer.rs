@@ -10,8 +10,8 @@
 //! - Frames can be pulled incrementally (`next_frame`) or drained all at once
 //!
 //! ## Async Helpers
-//! - [`write_tables_to_stream`] – write a sequence of tables to an async sink.
-//! - [`write_table_to_stream`] – write a single table to an async sink.
+//! - [`write_tables_to_stream`] - write a sequence of tables to an async sink.
+//! - [`write_table_to_stream`] - write a single table to an async sink.
 //!
 //! ## Usage
 //! ```ignore
@@ -25,17 +25,25 @@
 //! }
 //! ```
 
-use crate::enums::IPCMessageProtocol;
-use crate::models::encoders::ipc::table_stream::GTableStreamEncoder;
-use crate::traits::stream_buffer::StreamBuffer;
-use crate::utils::extract_dictionary_values_from_col;
-use futures_core::Stream;
-use minarrow::{Field, Table};
+use std::collections::VecDeque;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+use futures_core::Stream;
+use minarrow::{Field, Table};
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
+
+use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
+use crate::compression::Compression;
+use crate::enums::{IPCMessageProtocol, WriterState};
+use crate::models::encoders::ipc::schema::{FooterBlockMeta, build_flatbuf_footer};
+use crate::models::encoders::ipc::table_stream::TableStreamEncoder;
+use crate::models::encoders::ipc::{IPCFrame, IPCFrameEncoder};
+use crate::traits::frame_encoder::FrameEncoder;
+use crate::traits::stream_buffer::StreamBuffer;
+use crate::utils::dict_values;
 
 /// # Synchronous Arrow IPC Table Writer
 ///
@@ -57,7 +65,23 @@ pub struct TableStreamWriter<B>
 where
     B: StreamBuffer + Unpin + 'static,
 {
-    encoder: GTableStreamEncoder<B>,
+    /// The encoder produces (meta, body) pairs
+    encoder: TableStreamEncoder<B>,
+    /// Queue of framed IPC output buffers
+    out_frames: VecDeque<B>,
+    /// True when finish() has been called and all frames emitted
+    finished: bool,
+    /// Running byte offset for IPC frame alignment
+    global_offset: usize,
+    // ----- File format only -----
+    /// Block metadata for record batches in the footer
+    blocks_record_batches: Vec<FooterBlockMeta>,
+    /// Block metadata for dictionary batches in the footer
+    blocks_dictionaries: Vec<FooterBlockMeta>,
+    /// Frame offsets for footer
+    frame_offsets: Vec<u64>,
+    /// Running total bytes for file offset tracking
+    total_len_offset: u64,
 }
 
 impl<B> TableStreamWriter<B>
@@ -67,11 +91,36 @@ where
     /// Create a new streaming Arrow Table writer with the given schema and protocol.
     pub fn new(schema: Vec<Field>, protocol: IPCMessageProtocol) -> Self {
         Self {
-            encoder: GTableStreamEncoder::<B>::new(schema, protocol),
+            encoder: TableStreamEncoder::new(schema, protocol),
+            out_frames: VecDeque::new(),
+            finished: false,
+            global_offset: 0,
+            blocks_record_batches: Vec::new(),
+            blocks_dictionaries: Vec::new(),
+            frame_offsets: Vec::new(),
+            total_len_offset: 0,
         }
     }
 
-    /// Register a dictionary (for categorical columns).
+    /// Create a new streaming Arrow Table writer with compression.
+    pub fn new_with_compression(
+        schema: Vec<Field>,
+        protocol: IPCMessageProtocol,
+        compression: Compression,
+    ) -> Self {
+        Self {
+            encoder: TableStreamEncoder::new_with_compression(schema, protocol, compression),
+            out_frames: VecDeque::new(),
+            finished: false,
+            global_offset: 0,
+            blocks_record_batches: Vec::new(),
+            blocks_dictionaries: Vec::new(),
+            frame_offsets: Vec::new(),
+            total_len_offset: 0,
+        }
+    }
+
+    /// Register a dictionary for categorical columns.
     pub fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
         self.encoder.register_dictionary(dict_id, values);
     }
@@ -79,39 +128,144 @@ where
     /// Write a single Table as a record batch frame.
     /// Emits schema and any required dictionaries as needed.
     pub fn write(&mut self, table: &Table) -> io::Result<()> {
-        self.encoder.write_record_batch_frame(table)
+        if self.encoder.state == WriterState::Closed {
+            return Err(io::Error::new(io::ErrorKind::Other, "writer already finished"));
+        }
+        if table.cols.len() != self.encoder.schema.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "table column count mismatch with writer schema",
+            ));
+        }
+
+        // Emit schema on first write
+        if self.encoder.state == WriterState::Fresh {
+            let meta = self.encoder.encode_schema()?;
+            let body = B::with_capacity(0);
+            self.emit_frame(meta, body, fbm::MessageHeader::Schema);
+        }
+
+        // Emit any pending dictionaries
+        let dict_ids = self.encoder.pending_dict_ids();
+        for dict_id in dict_ids {
+            if let Some((meta, body_vec)) = self.encoder.encode_dictionary(dict_id)? {
+                let mut body = B::with_capacity(body_vec.len());
+                body.extend_from_slice(&body_vec);
+                self.emit_frame(meta, body, fbm::MessageHeader::DictionaryBatch);
+            }
+        }
+
+        // Encode and emit the record batch
+        let (meta, body) = self.encoder.encode_record_batch(table)?;
+        self.emit_frame(meta, body, fbm::MessageHeader::RecordBatch);
+        Ok(())
     }
 
     /// Emit Arrow footer/EOS marker, finalising the stream.
     /// This must be called before draining all frames.
     pub fn finish(&mut self) -> io::Result<()> {
-        self.encoder.finish()
+        if self.encoder.state == WriterState::Closed {
+            return Ok(());
+        }
+        match self.encoder.protocol {
+            IPCMessageProtocol::File => {
+                let is_first = self.frame_offsets.is_empty();
+                let footer_bytes = build_flatbuf_footer(
+                    &mut self.encoder.fbb,
+                    &self.encoder.schema,
+                    &self.blocks_dictionaries,
+                    &self.blocks_record_batches,
+                )?;
+                let frame = IPCFrame {
+                    meta: &[],
+                    body: &[],
+                    protocol: IPCMessageProtocol::File,
+                    is_first,
+                    is_last: true,
+                    footer_bytes: Some(&footer_bytes),
+                };
+                let (footer_frame, _) =
+                    IPCFrameEncoder::encode::<B>(&mut self.global_offset, &frame)?;
+                self.out_frames.push_back(footer_frame);
+            }
+            IPCMessageProtocol::Stream => {
+                // Only emit EOS marker if we actually wrote something
+                if self.encoder.state != WriterState::Fresh {
+                    let frame = IPCFrame {
+                        meta: &[],
+                        body: &[],
+                        protocol: IPCMessageProtocol::Stream,
+                        is_first: false,
+                        is_last: true,
+                        footer_bytes: None,
+                    };
+                    let (eos_frame, _) =
+                        IPCFrameEncoder::encode::<B>(&mut self.global_offset, &frame)?;
+                    self.out_frames.push_back(eos_frame);
+                }
+            }
+        }
+        self.encoder.state = WriterState::Closed;
+        self.finished = true;
+        Ok(())
     }
 
-    /// Poll the next encoded Arrow IPC frame (as a buffer chunk).
+    /// Poll the next encoded Arrow IPC frame as a buffer chunk.
     /// Returns None when all frames are emitted and finished.
     pub fn next_frame(&mut self) -> Option<io::Result<B>> {
-        self.encoder.out_frames.pop_front().map(Ok)
+        self.out_frames.pop_front().map(Ok)
     }
 
     /// Drain all remaining encoded frames to a Vec.
-    /// This is a utility for "all-at-once" use cases (e.g., tests).
     pub fn drain_all_frames(&mut self) -> Vec<B> {
-        let mut out = Vec::new();
-        while let Some(frame) = self.encoder.out_frames.pop_front() {
-            out.push(frame);
-        }
-        out
+        self.out_frames.drain(..).collect()
     }
 
-    /// Return true if the stream is finished (no more frames).
+    /// Return true if the stream is finished and no more frames remain.
     pub fn is_finished(&self) -> bool {
-        self.encoder.finished && self.encoder.out_frames.is_empty()
+        self.finished && self.out_frames.is_empty()
     }
 
     /// Access current writer schema.
     pub fn schema(&self) -> &[Field] {
         &self.encoder.schema
+    }
+
+    /// Frame a (meta, body) pair as an IPC frame and queue it.
+    /// Tracks file protocol block metadata for footer generation.
+    fn emit_frame(&mut self, meta: Vec<u8>, body: B, header_type: fbm::MessageHeader) {
+        let is_first = self.encoder.protocol == IPCMessageProtocol::File
+            && self.frame_offsets.is_empty();
+
+        let frame = IPCFrame {
+            meta: &meta,
+            body: body.as_ref(),
+            protocol: self.encoder.protocol,
+            is_first,
+            is_last: false,
+            footer_bytes: None,
+        };
+
+        let (encoded, ipc_frame_metadata) =
+            IPCFrameEncoder::encode::<B>(&mut self.global_offset, &frame)
+                .expect("IPC frame encoding failed");
+
+        if self.encoder.protocol == IPCMessageProtocol::File {
+            let block = FooterBlockMeta {
+                offset: self.total_len_offset,
+                metadata_len: ipc_frame_metadata.metadata_total_len() as u32
+                    + ipc_frame_metadata.header_len as u32,
+                body_len: ipc_frame_metadata.body_total_len() as u64,
+            };
+            match header_type {
+                fbm::MessageHeader::DictionaryBatch => self.blocks_dictionaries.push(block),
+                fbm::MessageHeader::RecordBatch => self.blocks_record_batches.push(block),
+                _ => {}
+            }
+            self.frame_offsets.push(self.total_len_offset);
+            self.total_len_offset += ipc_frame_metadata.frame_len() as u64;
+        }
+        self.out_frames.push_back(encoded);
     }
 }
 
@@ -123,9 +277,9 @@ where
 
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        if let Some(frame) = this.encoder.out_frames.pop_front() {
+        if let Some(frame) = this.out_frames.pop_front() {
             Poll::Ready(Some(Ok(frame)))
-        } else if this.encoder.finished {
+        } else if this.finished {
             Poll::Ready(None)
         } else {
             Poll::Pending
@@ -133,12 +287,12 @@ where
     }
 }
 
-/// Write a sequence of `Table`s to an arbitrary async stream (socket, pipe, etc.).
+/// Write a sequence of `Table`s to an arbitrary async stream (e.g., socket, pipe, etc.).
 ///
-/// * `stream`      – the destination async byte sink
-/// * `tables`      – the batches to write (each a `Table`)
-/// * `schema`      – the common schema (must match each `Table`)
-/// * `protocol`    – IPC protocol to use (File or Stream)
+/// * `stream`      - the destination async byte sink
+/// * `tables`      - the batches to write (each a `Table`, i.e., Arrow `RecordBatch`)
+/// * `schema`      - the common schema (must match each `Table`)
+/// * `protocol`    - IPC protocol to use (File or Stream)
 pub async fn write_tables_to_stream<W, B>(
     mut stream: W,
     tables: &[Table],
@@ -153,7 +307,7 @@ where
 
     for table in tables {
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = extract_dictionary_values_from_col(col) {
+            if let Some(values) = dict_values(col) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
@@ -169,12 +323,12 @@ where
     Ok(())
 }
 
-/// Write a single `Table` to an arbitrary async stream (socket, pipe, etc.).
+/// Write a single `Table` to an arbitrary async stream (i.e., socket, pipe, etc.).
 ///
-/// * `stream`      – the destination async byte sink
-/// * `table`       – the batch to write (a `Table`)
-/// * `schema`      – the schema (must match the table)
-/// * `protocol`    – IPC protocol to use (File or Stream)
+/// * `stream`      - the destination async byte sink
+/// * `table`       - the batch to write (a `Table`)
+/// * `schema`      - the schema (must match the table)
+/// * `protocol`    - IPC protocol to use (File or Stream)
 pub async fn write_table_to_stream<W, B>(
     mut stream: W,
     table: &Table,
@@ -189,7 +343,7 @@ where
 
     // Register dictionaries (if any categorical columns present)
     for (col_idx, col) in table.cols.iter().enumerate() {
-        if let Some(values) = extract_dictionary_values_from_col(col) {
+        if let Some(values) = dict_values(col) {
             writer.register_dictionary(col_idx as i64, values);
         }
     }
@@ -240,7 +394,7 @@ mod tests {
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = extract_dictionary_values_from_col(col) {
+            if let Some(values) = dict_values(col) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
@@ -270,7 +424,7 @@ mod tests {
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table1.cols.iter().enumerate() {
-            if let Some(values) = extract_dictionary_values_from_col(col) {
+            if let Some(values) = dict_values(col) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
@@ -332,7 +486,7 @@ mod tests {
         let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = extract_dictionary_values_from_col(col) {
+            if let Some(values) = dict_values(col) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }

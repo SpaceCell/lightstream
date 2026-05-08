@@ -5,10 +5,10 @@
 //! 4-row fixtures spanning the supported logical types.
 //!
 //! Feature flags gate optional types:
-//! - `datetime` – date/datetime arrays
-//! - `large_string` – 64-bit offset strings
-//! - `extended_categorical` – 8/16/64-bit categorical indices
-//! - `extended_numeric_types` – 8/16-bit integer families
+//! - `datetime` - date/datetime arrays
+//! - `large_string` - 64-bit offset strings
+//! - `extended_categorical` - 8/16/64-bit categorical indices
+//! - `extended_numeric_types` - 8/16-bit integer families
 
 use std::sync::Arc;
 
@@ -165,7 +165,8 @@ pub(crate) fn string32_col() -> FieldArray {
     )
 }
 
-/// Build a nullable `Dictionary32` column with values `[1,0,2,1]` and uniques `["apple","banana","pear"]`.
+/// Build a nullable dictionary column with values `[1,0,2,1]` and uniques `["apple","banana","pear"]`.
+#[cfg(not(feature = "default_categorical_8"))]
 pub(crate) fn dict32_col() -> FieldArray {
     FieldArray::new(
         Field {
@@ -176,6 +177,28 @@ pub(crate) fn dict32_col() -> FieldArray {
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[1u32, 0, 2, 1])),
+            unique_values: Vec64::from(vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "pear".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(4, true)),
+        }))),
+    )
+}
+
+/// Build a nullable dictionary column with values `[1,0,2,1]` and uniques `["apple","banana","pear"]`.
+#[cfg(feature = "default_categorical_8")]
+pub(crate) fn dict8_default_col() -> FieldArray {
+    FieldArray::new(
+        Field {
+            name: "dict8".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
             unique_values: Vec64::from(vec![
                 "apple".to_string(),
                 "banana".to_string(),
@@ -243,12 +266,12 @@ pub(crate) fn string64_col() -> FieldArray {
 }
 
 #[cfg(feature = "extended_categorical")]
-/// Build a nullable `Dictionary8` column with small categorical index.
-pub(crate) fn dict8_col() -> FieldArray {
+/// Build a nullable `Dictionary8` column with small categorical index for extended tests.
+pub(crate) fn dict8_extended_col() -> FieldArray {
     use minarrow::ffi::arrow_dtype::CategoricalIndexType::*;
     FieldArray::new(
         Field {
-            name: "dict8".into(),
+            name: "dict8_ext".into(),
             dtype: ArrowType::Dictionary(UInt8),
             nullable: true,
             metadata: Default::default(),
@@ -385,8 +408,11 @@ pub(crate) fn make_all_types_table() -> Table {
         float64_col(),
         bool_col(),
         string32_col(),
-        dict32_col(),
     ];
+    #[cfg(not(feature = "default_categorical_8"))]
+    cols.push(dict32_col());
+    #[cfg(feature = "default_categorical_8")]
+    cols.push(dict8_default_col());
     #[cfg(feature = "datetime")]
     {
         cols.push(dt32_col());
@@ -396,7 +422,7 @@ pub(crate) fn make_all_types_table() -> Table {
     cols.push(string64_col());
     #[cfg(feature = "extended_categorical")]
     {
-        cols.push(dict8_col());
+        cols.push(dict8_extended_col());
         cols.push(dict16_col());
         cols.push(dict64_col());
     }

@@ -28,13 +28,13 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use minarrow::{Field, SuperTable, Table};
+use minarrow::{Field, SuperTable, Table, Vec64};
 use tokio::net::ToSocketAddrs;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
 use crate::models::streams::tcp::TcpByteStream;
-use crate::traits::transport_reader::TransportReader;
+use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over a TCP connection.
 ///
@@ -43,16 +43,16 @@ use crate::traits::transport_reader::TransportReader;
 ///
 /// Implements `Stream<Item = io::Result<Table>>` for continuous streaming.
 pub struct TcpTableReader {
-    inner: TableReader<TcpByteStream, Vec<u8>>,
+    inner: TableReader<Vec64<u8>>,
 }
 
 impl TcpTableReader {
     /// Connect to a TCP server streaming Arrow IPC and return a table reader.
     ///
-    /// Uses `IPCMessageProtocol::Stream` and a 64 KiB initial decode capacity.
+    /// Uses 8-byte alignment for compatibility with all Arrow producers.
     pub async fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
         let stream = TcpByteStream::connect(addr).await?;
-        let inner = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
         Ok(Self { inner })
     }
 
@@ -63,18 +63,18 @@ impl TcpTableReader {
         protocol: IPCMessageProtocol,
     ) -> io::Result<Self> {
         let stream = TcpByteStream::connect(addr).await?;
-        let inner = TableReader::new(stream, chunk_size.chunk_size(), protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol);
         Ok(Self { inner })
     }
 
     /// Wrap an existing `TcpByteStream` as a table reader.
     pub fn from_stream(stream: TcpByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
         Self { inner }
     }
 }
 
-impl TransportReader for TcpTableReader {
+impl IPCTransportReader for TcpTableReader {
     /// Read all tables from the stream until it closes.
     async fn read_all_tables(self) -> io::Result<Vec<Table>> {
         self.inner.read_all_tables().await

@@ -1,11 +1,11 @@
 //! # Byte Stream Traits
 //!
 //! Simple trait aliases that let you plug **any async stream of bytes** into this crate.
-//! Choose regular `Vec<u8>` or 64-byte aligned `Vec64<u8>` when you care about SIMD.
+//! Choose regular `Vec<u8>` or 64-byte SIMD aligned `Vec64<u8>`.
 //!
 //! **Why this is useful**
-//! - Works with any `futures_core::Stream<Result<_, io::Error>>` (files, sockets, in-memory).
-//! - No extra layers or boxing—just trait bounds.
+//! - Works with any `futures_core::Stream<Result<_, io::Error>>` for files, sockets, in-memory etc.
+//! - No extra layers or boxing.
 //! - Optional `ByteStream64` avoids re-allocations when you need aligned buffers.
 //!
 //! Backpressure and scheduling are handled by your underlying stream.
@@ -26,7 +26,8 @@ impl<T> ByteStream for T where T: Stream<Item = Result<Vec<u8>, io::Error>> + Se
 ///
 /// This is a special case for scenarios where both the producer and consumer are under
 /// your control and SIMD alignment is required end-to-end (e.g. disk or network paths that
-/// preserve alignment). Using this avoids later re-allocation purely to fix alignment.
+/// preserve alignment). Using this avoids later re-allocation before SIMD operations.
+/// Note that this incurs a padding cost on the wire.
 ///
 /// Implemented automatically for any [`Stream`] yielding `Result<Vec64<u8>, io::Error>`
 /// and supporting `Send` + `Unpin`.

@@ -1,47 +1,39 @@
 //! # Asynchronous TCP byte stream
 //!
-//! Wraps a TCP connection's read half in a [`Stream`] that yields
-//! fixed-size byte chunks.
+//! Wraps a TCP connection's read half as both [`AsyncRead`] and [`Stream`].
 //!
-//! ## Overview
-//! - Splits a [`TcpStream`] and reads from the [`OwnedReadHalf`].
-//! - Supports async backpressure via `poll_next`.
-//! - Yields unaligned `Vec<u8>` chunks — alignment is deferred to the
-//!   Arrow decoding layer where it matters.
-//! - Chunk size controlled by [`BufferChunkSize`].
+//! ## AsyncRead
+//! The direct decode path uses `AsyncRead` for zero-copy reads into the
+//! decoder's managed buffers. This is the internal fast path.
 //!
-//! ## Use cases
-//! - Receive Arrow IPC streams over TCP without loading them fully into memory.
-//! - Feed network I/O directly into async Arrow decoding pipelines.
+//! ## Stream
+//! Yields [`SharedBuffer`] windows from a [`StreamArena`] for zero-allocation
+//! streaming. Each poll reads into the arena's spare capacity and yields an
+//! immutable view of the filled region. In steady state, one arena allocation
+//! is reused forever.
 
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use tokio::io::{AsyncRead, BufReader, ReadBuf};
+use minarrow::structs::shared_buffer::SharedBuffer;
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use crate::enums::BufferChunkSize;
+use crate::models::streams::stream_arena::StreamArena;
 
-/// A `Stream` that reads a TCP connection in fixed-size byte chunks.
+/// A byte stream over a TCP connection.
 ///
-/// ### Includes:
-/// - Tokio TCP + `BufReader` based
-/// - Async back-pressure support via `poll_next`
-/// - Control of chunk size via `BufferChunkSize`
-///
-/// ### Use cases:
-/// - Receive Arrow IPC data over TCP without loading the full stream into memory
-/// - Integrate network I/O into async Arrow decoding pipelines
+/// Implements `AsyncRead` for the direct decode path and `Stream` for
+/// zero-allocation SharedBuffer-based streaming.
 pub struct TcpByteStream {
-    /// Buffered reader over the TCP read half.
-    reader: BufReader<OwnedReadHalf>,
-    /// End-of-stream flag, prevents further reads after completion.
+    reader: OwnedReadHalf,
     eof: bool,
-    /// Configured chunk size in bytes.
     chunk_size: usize,
+    arena: StreamArena,
 }
 
 impl TcpByteStream {
@@ -60,17 +52,17 @@ impl TcpByteStream {
     /// Use this when you need to manage the split yourself,
     /// e.g. for bidirectional communication on the same socket.
     pub fn from_read_half(read_half: OwnedReadHalf, size: BufferChunkSize) -> Self {
-        let chunk_size = size.chunk_size();
         Self {
-            reader: BufReader::with_capacity(chunk_size, read_half),
+            reader: read_half,
             eof: false,
-            chunk_size,
+            chunk_size: size.chunk_size(),
+            arena: StreamArena::new(),
         }
     }
 }
 
 impl Stream for TcpByteStream {
-    type Item = Result<Vec<u8>, io::Error>;
+    type Item = Result<SharedBuffer, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.get_mut();
@@ -79,26 +71,36 @@ impl Stream for TcpByteStream {
             return Poll::Ready(None);
         }
 
-        let mut buf = vec![0u8; me.chunk_size];
-        let mut read_buf = ReadBuf::new(&mut buf);
-
-        match Pin::new(&mut me.reader).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => {
-                let n = read_buf.filled().len();
-                if n == 0 {
-                    me.eof = true;
-                    Poll::Ready(None)
-                } else {
-                    buf.truncate(n);
-                    Poll::Ready(Some(Ok(buf)))
-                }
-            }
-            Poll::Ready(Err(e)) => {
-                me.eof = true;
-                Poll::Ready(Some(Err(e)))
-            }
-            Poll::Pending => Poll::Pending,
+        // Recycle or roll over if the arena is full
+        if me.arena.remaining() < me.chunk_size {
+            me.arena.recycle_or_reset();
         }
+
+        // Read into the arena's spare capacity
+        let chunk_start = me.arena.write_pos();
+        let n = {
+            let spare = me.arena.spare_mut();
+            let read_len = spare.len().min(me.chunk_size);
+            let mut read_buf = ReadBuf::new(&mut spare[..read_len]);
+            match Pin::new(&mut me.reader).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => read_buf.filled().len(),
+                Poll::Ready(Err(e)) => {
+                    me.eof = true;
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        };
+
+        if n == 0 {
+            me.eof = true;
+            return Poll::Ready(None);
+        }
+
+        me.arena.advance(n);
+        let shared = me.arena.window(chunk_start, n);
+        me.arena.align();
+        Poll::Ready(Some(Ok(shared)))
     }
 }
 

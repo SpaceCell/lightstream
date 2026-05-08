@@ -1,10 +1,23 @@
-//! # Arrow IPC Frame Encoder
+//! # Arrow IPC Encoders
 //!
-//! Encodes Arrow IPC messages and bodies into file or stream frames, handling
-//! continuation markers, padding, alignment, and optional file footers.
-//!
-//! Consistent with the official [Apache Arrow IPC specification](https://arrow.apache.org/docs/format/Columnar.html#serialisation-and-interprocess-communication-ipc).
-//! This module performs no allocation beyond the chosen `StreamBuffer` and writes within the provided buffer.
+//! Frame-level encoding, schema serialisation, and record batch writing
+//! for the Arrow IPC wire format (file and stream protocols).
+
+/// IPC schema serialisation.
+pub mod schema;
+
+/// Record batch encoding with zero intermediate allocations.
+pub mod record_batch;
+
+/// Stream encoder for Arrow tables.
+pub mod table_stream;
+
+// ---------------------------------------------------------------------------
+// IPC Frame Encoder
+//
+// Encodes Arrow IPC messages and bodies into file or stream frames,
+// handling continuation markers, padding, alignment, and file footers.
+// ---------------------------------------------------------------------------
 
 use std::io;
 
@@ -18,21 +31,7 @@ use crate::traits::frame_encoder::FrameEncoder;
 use crate::traits::stream_buffer::StreamBuffer;
 use crate::utils::align_to;
 
-/// IPC frame inputs used by [`IPCFrameEncoder`].
-pub struct IPCFrame<'a> {
-    /// Flatbuffer message bytes - Arrow `Message`.
-    pub meta: &'a [u8],
-    /// Optional message body payload.
-    pub body: &'a [u8],
-    /// IPC protocol -  file (bounded) or stream (unbounded).
-    pub protocol: IPCMessageProtocol,
-    /// Whether this is the first frame (emits opening magic in file mode).
-    pub is_first: bool,
-    /// Whether this is the last frame (emits EOS, and footer+closing magic in file mode).
-    pub is_last: bool,
-    /// File footer bytes (required when `protocol == File` and `is_last == true`).
-    pub footer_bytes: Option<&'a [u8]>,
-}
+pub use crate::models::frames::ipc_message::IPCFrame;
 
 /// Encodes a message + body as a valid Arrow IPC frame (file or stream).
 ///

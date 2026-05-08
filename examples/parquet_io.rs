@@ -16,11 +16,8 @@ use lightstream::{
 };
 
 #[cfg(feature = "parquet")]
-use minarrow::ffi::arrow_dtype::ArrowType;
-#[cfg(feature = "parquet")]
 use minarrow::{
-    Array, Bitmask, BooleanArray, Buffer, Field, FieldArray, FloatArray, IntegerArray,
-    NumericArray, StringArray, Table, TextArray, Vec64,
+    arr_bool, arr_f32, arr_f64, arr_i32, arr_i64, arr_str32, FieldArray, Table, Vec64,
 };
 #[cfg(feature = "parquet")]
 use std::fs::File;
@@ -29,7 +26,6 @@ use std::io::{Cursor, Seek, SeekFrom};
 #[cfg(feature = "parquet")]
 use std::path::Path;
 #[cfg(feature = "parquet")]
-use std::sync::Arc;
 #[cfg(feature = "parquet")]
 use tempfile::tempdir;
 
@@ -286,56 +282,23 @@ async fn large_dataset_example(file_path: &Path) -> Result<(), Box<dyn std::erro
 }
 
 #[cfg(feature = "parquet")]
-/// Create a simple table for basic testing
 fn create_simple_table() -> Table {
-    let n_rows = 1000;
-
-    // Integer column
-    let int_data: Vec<i32> = (0..n_rows).map(|i| i as i32).collect();
-    let int_array = Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
-        data: Buffer::from(Vec64::from_slice(&int_data)),
-        null_mask: None,
-    })));
-    let int_field = FieldArray::new(
-        Field {
-            name: "id".into(),
-            dtype: ArrowType::Int32,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        int_array,
-    );
-
-    // Float column
-    let float_data: Vec<f64> = (0..n_rows).map(|i| (i as f64) * 0.1 + 3.14).collect();
-    let float_array = Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
-        data: Buffer::from(Vec64::from_slice(&float_data)),
-        null_mask: None,
-    })));
-    let float_field = FieldArray::new(
-        Field {
-            name: "value".into(),
-            dtype: ArrowType::Float64,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        float_array,
-    );
-
-    Table {
-        name: "simple_test".to_string(),
-        n_rows,
-        cols: vec![int_field, float_field],
-    }
+    let n = 1000;
+    let ids: Vec64<i32> = (0..n as i32).collect();
+    let values: Vec64<f64> = (0..n).map(|i| (i as f64) * 0.1 + 3.14).collect();
+    Table::new(
+        "simple_test".to_string(),
+        Some(vec![
+            FieldArray::from_arr("id", arr_i32!(ids)),
+            FieldArray::from_arr("value", arr_f64!(values)),
+        ]),
+    )
 }
 
 #[cfg(feature = "parquet")]
-/// Create a table with lots of string data for compression testing
 fn create_large_string_table() -> Table {
-    let n_rows = 5000;
-
-    // Create repetitive string data that compresses well
-    let individual_strings: Vec<String> = (0..n_rows)
+    let n = 5000;
+    let strings: Vec64<String> = (0..n)
         .map(|i| match i % 10 {
             0..=2 => "Common string pattern that appears frequently in the data".to_string(),
             3..=5 => format!("Variable content item number {}", i % 100),
@@ -343,185 +306,54 @@ fn create_large_string_table() -> Table {
             _ => format!("Unique entry {}", i),
         })
         .collect();
-
-    let mut str_data = Vec::new();
-    let mut offsets = Vec::with_capacity(n_rows + 1);
-    offsets.push(0u32);
-    for s in &individual_strings {
-        str_data.extend_from_slice(s.as_bytes());
-        offsets.push(str_data.len() as u32);
-    }
-    let str_array = Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-        Buffer::from(Vec64::from_slice(&str_data)),
-        None,
-        Buffer::from(Vec64::from_slice(&offsets)),
-    ))));
-    let str_field = FieldArray::new(
-        Field {
-            name: "description".into(),
-            dtype: ArrowType::String,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        str_array,
-    );
-
-    Table {
-        name: "compression_test".to_string(),
-        n_rows,
-        cols: vec![str_field],
-    }
+    let refs: Vec64<&str> = strings.iter().map(String::as_str).collect();
+    Table::new(
+        "compression_test".to_string(),
+        Some(vec![FieldArray::from_arr("description", arr_str32!(refs))]),
+    )
 }
 
 #[cfg(feature = "parquet")]
-/// Create a table with various complex data types
 fn create_complex_types_table() -> Table {
-    let n_rows = 500;
-
-    // Integer column
-    let int_data: Vec<i64> = (0..n_rows).map(|i| i as i64 * 7 + 42).collect();
-    let int_array = Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
-        data: Buffer::from(Vec64::from_slice(&int_data)),
-        null_mask: None,
-    })));
-    let int_field = FieldArray::new(
-        Field {
-            name: "large_id".into(),
-            dtype: ArrowType::Int64,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        int_array,
-    );
-
-    // Float column
-    let float_data: Vec<f32> = (0..n_rows).map(|i| (i as f32) * 0.01 - 25.5).collect();
-    let float_array = Array::NumericArray(NumericArray::Float32(Arc::new(FloatArray {
-        data: Buffer::from(Vec64::from_slice(&float_data)),
-        null_mask: None,
-    })));
-    let float_field = FieldArray::new(
-        Field {
-            name: "measurement".into(),
-            dtype: ArrowType::Float32,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        float_array,
-    );
-
-    // String column with varied lengths
-    let individual_strings: Vec<String> = (0..n_rows)
+    let n = 500;
+    let ids: Vec64<i64> = (0..n).map(|i| i as i64 * 7 + 42).collect();
+    let measurements: Vec64<f32> = (0..n).map(|i| (i as f32) * 0.01 - 25.5).collect();
+    let strings: Vec64<String> = (0..n)
         .map(|i| match i % 5 {
             0 => "A".to_string(),
             1 => "Short".to_string(),
             2 => "Medium length string".to_string(),
-            3 => "This is a considerably longer string for testing variable-length encoding"
-                .to_string(),
+            3 => "This is a considerably longer string for testing variable-length encoding".to_string(),
             _ => format!("Generated string number {} with some content", i),
         })
         .collect();
-
-    let mut str_data = Vec::new();
-    let mut offsets = Vec::with_capacity(n_rows + 1);
-    offsets.push(0u32);
-    for s in &individual_strings {
-        str_data.extend_from_slice(s.as_bytes());
-        offsets.push(str_data.len() as u32);
-    }
-    let str_array = Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-        Buffer::from(Vec64::from_slice(&str_data)),
-        None,
-        Buffer::from(Vec64::from_slice(&offsets)),
-    ))));
-    let str_field = FieldArray::new(
-        Field {
-            name: "variable_text".into(),
-            dtype: ArrowType::String,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        str_array,
-    );
-
-    // Boolean column
-    let bool_data: Vec<bool> = (0..n_rows).map(|i| (i * 3 + 1) % 7 < 3).collect();
-    let bitmask_bytes = {
-        let mut bytes = vec![0u8; (n_rows + 7) / 8];
-        for (i, &value) in bool_data.iter().enumerate() {
-            if value {
-                bytes[i / 8] |= 1 << (i % 8);
-            }
-        }
-        bytes
-    };
-    let bool_array = Array::BooleanArray(Arc::new(BooleanArray {
-        data: Bitmask::from_bytes(&bitmask_bytes, n_rows),
-        null_mask: None,
-        len: n_rows,
-        _phantom: std::marker::PhantomData,
-    }));
-    let bool_field = FieldArray::new(
-        Field {
-            name: "flag".into(),
-            dtype: ArrowType::Boolean,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        bool_array,
-    );
-
-    Table {
-        name: "complex_types".to_string(),
-        n_rows,
-        cols: vec![int_field, float_field, str_field, bool_field],
-    }
+    let refs: Vec64<&str> = strings.iter().map(String::as_str).collect();
+    let flags: Vec64<bool> = (0..n).map(|i| (i * 3 + 1) % 7 < 3).collect();
+    Table::new(
+        "complex_types".to_string(),
+        Some(vec![
+            FieldArray::from_arr("large_id", arr_i64!(ids)),
+            FieldArray::from_arr("measurement", arr_f32!(measurements)),
+            FieldArray::from_arr("variable_text", arr_str32!(refs)),
+            FieldArray::from_arr("flag", arr_bool!(flags)),
+        ]),
+    )
 }
 
 #[cfg(feature = "parquet")]
-/// Create a large table for performance testing
 fn create_large_performance_table() -> Table {
-    let n_rows = 50_000;
-
-    // Simple integer sequence
-    let int_data: Vec<i32> = (0..n_rows).map(|i| i as i32).collect();
-    let int_array = Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
-        data: Buffer::from(Vec64::from_slice(&int_data)),
-        null_mask: None,
-    })));
-    let int_field = FieldArray::new(
-        Field {
-            name: "sequence".into(),
-            dtype: ArrowType::Int32,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        int_array,
-    );
-
-    // Computed float values
-    let float_data: Vec<f64> = (0..n_rows)
+    let n = 50_000;
+    let ids: Vec64<i32> = (0..n as i32).collect();
+    let values: Vec64<f64> = (0..n)
         .map(|i| (i as f64).sin() * 1000.0 + (i as f64) * 0.001)
         .collect();
-    let float_array = Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
-        data: Buffer::from(Vec64::from_slice(&float_data)),
-        null_mask: None,
-    })));
-    let float_field = FieldArray::new(
-        Field {
-            name: "computed_value".into(),
-            dtype: ArrowType::Float64,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        float_array,
-    );
-
-    Table {
-        name: "large_performance".to_string(),
-        n_rows,
-        cols: vec![int_field, float_field],
-    }
+    Table::new(
+        "large_performance".to_string(),
+        Some(vec![
+            FieldArray::from_arr("sequence", arr_i32!(ids)),
+            FieldArray::from_arr("computed_value", arr_f64!(values)),
+        ]),
+    )
 }
 
 #[cfg(feature = "parquet")]

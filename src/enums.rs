@@ -1,5 +1,3 @@
-use crate::traits::stream_buffer::StreamBuffer;
-
 /// The outcome of a single frame decoder step.
 ///
 /// Communicates whether a full frame has been detected, whether more bytes are
@@ -16,53 +14,6 @@ pub enum DecodeResult<F> {
     ///
     /// No bytes should be removed from the buffer.
     NeedMore,
-}
-
-/// Arrow IPC decoding state machine.
-///
-/// Encodes all protocol progress and marker consumption for both file and
-/// streaming modes.
-#[derive(Debug, Clone)]
-pub enum DecodeState<B: StreamBuffer> {
-    /// Initial state before reading any bytes.
-    Initial,
-
-    /// **File Mode Only**: After reading the file magic header.
-    AfterMagic,
-
-    /// After reading a stream continuation marker.
-    AfterContMarker,
-
-    /// Currently reading continuation size.
-    ReadingContinuationSize,
-
-    /// Ready to read message length prefix.
-    ReadingMessageLength,
-
-    /// Currently reading a message body of the given length.
-    ReadingMessage {
-        /// Length of the message payload in bytes.
-        msg_len: usize,
-    },
-
-    /// Currently reading a record body.
-    ReadingBody {
-        /// Length of the body in bytes.
-        body_len: usize,
-        /// Buffer holding the message being assembled.
-        message: B,
-    },
-
-    /// Currently reading a footer section.
-    ReadingFooter {
-        /// Length of the footer in bytes.
-        footer_len: usize,
-        /// Offset into the footer (for partial reads).
-        footer_offset: usize,
-    },
-
-    /// Decoding complete.
-    Done,
 }
 
 /// Specifies chunk sizing strategies for `DiskByteStream` and other stream sources.
@@ -93,11 +44,11 @@ impl BufferChunkSize {
     /// Returns the configured chunk size in bytes.
     pub fn chunk_size(self) -> usize {
         match self {
-            BufferChunkSize::FileIO => 1 * 1024 * 1024, // 1 MiB
-            BufferChunkSize::Http => 64 * 1024,         // 64 KiB
-            BufferChunkSize::WebSocket => 32 * 1024,    // 32 KiB
-            BufferChunkSize::WebTransport => 64 * 1024, // 64 KiB
-            BufferChunkSize::InMemory => 512 * 1024,    // 512 KiB
+            BufferChunkSize::FileIO => crate::constants::file_io_chunk_size(),
+            BufferChunkSize::Http => crate::constants::http_chunk_size(),
+            BufferChunkSize::WebSocket => crate::constants::websocket_chunk_size(),
+            BufferChunkSize::WebTransport => crate::constants::webtransport_chunk_size(),
+            BufferChunkSize::InMemory => crate::constants::inmemory_chunk_size(),
             BufferChunkSize::Custom(n) => n,
         }
     }

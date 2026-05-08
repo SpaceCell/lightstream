@@ -18,10 +18,10 @@ mod helpers;
 use helpers::{make_table, table_schema};
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::websocket::WebSocketTableReader;
-use lightstream::models::streams::websocket::WebSocketByteStream;
+use lightstream::models::streams::websocket::{WsRead, WsWrite};
 use lightstream::models::writers::websocket::WebSocketTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use tokio::net::TcpListener;
 use tokio_tungstenite::MaybeTlsStream;
 
@@ -50,9 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
         println!("WebSocket handshake complete.");
 
-        let (_, read_half) = futures_util::StreamExt::split(ws_stream);
-        let byte_stream = WebSocketByteStream::new(read_half);
-        let reader = WebSocketTableReader::from_stream(byte_stream, IPCMessageProtocol::Stream);
+        let raw = ws_stream.into_inner();
+        let (read_half, write_half) = tokio::io::split(raw);
+        let (shared_writer, _ws_write) = WsWrite::new(write_half);
+        let ws_read = WsRead::new(read_half, shared_writer);
+        let reader = WebSocketTableReader::from_raw_stream(ws_read, IPCMessageProtocol::Stream);
         let tables = reader.read_all_tables().await.unwrap();
 
         for table in &tables {

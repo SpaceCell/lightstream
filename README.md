@@ -1,3 +1,5 @@
+TODO - Fix/Rewrite README make it much better
+
 # Lightstream
 
 **Zero-copy Arrow streaming over any transport.**

@@ -2,13 +2,10 @@
 //!
 //! Turn a growing byte buffer into **discrete messages** without allocating.
 //!
-//! **Why this is useful**
-//! - Cleanly split a raw byte stream (from files/sockets) into protocol frames.
-//! - Minimal overhead: the decoder only *looks* at bytes and tells you what to consume.
-//! - Easy to test and reuse across transports.
+//! Enables cleanly splitting a raw byte stream (from files/sockets) into protocol frames.
 //!
 //! Implement `FrameDecoder` for your wire format; call `decode()` as chunks arrive.
-//! On a full frame, you get `{ frame, consumed }`; on `NeedMore`, just read more bytes.
+//! On a full frame, one gets `{ frame, consumed }`; on `NeedMore`, read more bytes.
 //!
 //! See the IPC, TLV cases as examples.
 
@@ -26,7 +23,7 @@ use std::io;
 ///
 /// ### Safety Contract
 /// - The decoder musn't mutate or take ownership of the input buffer.
-/// - It must not remove bytes itself—return `consumed`, the caller will drop them.
+/// - It must not remove bytes itself-return `consumed`, the caller will drop them.
 /// - It should always leave the buffer unchanged if returning `NeedMore`.
 pub trait FrameDecoder {
     /// The type of frame yielded by this decoder.

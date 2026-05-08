@@ -9,8 +9,8 @@ use crate::traits::stream_buffer::StreamBuffer;
 /// In streaming IPC each logical message may be preceded by eight bytes:
 ///
 /// ```text
-///   0xFFFF_FFFF  – 4‑byte sentinel
-///   N            – 32‑bit little‑endian size of the actual FlatBuffer
+///   0xFFFF_FFFF  - 4‑byte sentinel
+///   N            - 32‑bit little‑endian size of the actual FlatBuffer
 /// ```
 ///
 /// If the prefix is present we return the slice *after* the marker.
@@ -74,15 +74,18 @@ macro_rules! debug_println {
 }
 
 // Helper supporting dictionary columns for tables
-pub(crate) fn extract_dictionary_values_from_col(
-    col: &minarrow::FieldArray,
-) -> Option<Vec<String>> {
+/// Return the dictionary values for a categorical column, or None if not categorical.
+pub(crate) fn dict_values(col: &minarrow::FieldArray) -> Option<Vec<String>> {
     use minarrow::TextArray::*;
     match &col.array {
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         minarrow::Array::TextArray(Categorical32(arr)) => {
             Some(arr.unique_values.iter().cloned().collect())
         }
-        #[cfg(feature = "extended_categorical")]
+        #[cfg(feature = "default_categorical_8")]
         minarrow::Array::TextArray(Categorical8(arr)) => {
             Some(arr.unique_values.iter().cloned().collect())
         }
@@ -136,28 +139,3 @@ pub fn unpack_bits(buf: &[u8], len: usize) -> Vec<bool> {
         .collect()
 }
 
-// SliceWrapper - Temporary workaround for SIMD alignment preservation
-
-// TODO[3]: Use MinArrow SharedBuffer directly and test zero-copy.
-
-use std::sync::Arc;
-
-/// Wrapper that preserves 64-byte alignment for memory-mapped data by holding
-/// a reference to the owner and providing a slice view.
-/// This is a temporary workaround until SharedBuffer::from_owner is fixed to preserve alignment.
-pub struct SliceWrapper<M: ?Sized> {
-    pub _owner: Arc<M>,
-    pub offset: usize,
-    pub len: usize,
-}
-
-impl<M: AsRef<[u8]> + ?Sized> AsRef<[u8]> for SliceWrapper<M> {
-    fn as_ref(&self) -> &[u8] {
-        let full = self._owner.as_ref();
-        let slice = full.as_ref();
-        &slice[self.offset..self.offset + self.len]
-    }
-}
-
-unsafe impl<M: Send + Sync + ?Sized> Send for SliceWrapper<M> {}
-unsafe impl<M: Send + Sync + ?Sized> Sync for SliceWrapper<M> {}

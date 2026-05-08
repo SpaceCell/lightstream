@@ -2,7 +2,7 @@
 //!
 //! - Accepts a CSV byte slice or any [`BufRead`].
 //! - Infers schema or uses a provided schema (optional).
-//! - Supports: `Int32`, `Int64`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Boolean`, `String32`, `Categorical32`.
+//! - Supports: `Int32`, `Int64`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Boolean`, `String32`, `Categorical32`, `Categorical8`.
 //! - Custom delimiter, nulls, quoting, and dictionary mapping for categoricals.
 //! - Produces a single [`Table`] via [`decode_csv`], or multiple batches via repeated calls to [`decode_csv_batch`].
 //! - No external dependencies.
@@ -367,7 +367,10 @@ fn infer_schema(
         } else if is_f32 {
             ArrowType::Float32
         } else if is_cat {
-            ArrowType::Dictionary(CategoricalIndexType::UInt32)
+            #[cfg(not(feature = "default_categorical_8"))]
+            { ArrowType::Dictionary(CategoricalIndexType::UInt32) }
+            #[cfg(feature = "default_categorical_8")]
+            { ArrowType::Dictionary(CategoricalIndexType::UInt8) }
         } else {
             ArrowType::String
         };
@@ -507,6 +510,7 @@ fn parse_string_column(values: &[Option<&str>], null_mask: &[bool]) -> io::Resul
     )))
 }
 
+#[cfg(not(feature = "default_categorical_8"))]
 fn parse_categorical_column(values: &[Option<&str>], null_mask: &[bool]) -> io::Result<Array> {
     let mut uniques: Vec<String> = Vec::new();
     let mut dict: HashMap<&str, u32> = HashMap::new();
@@ -529,6 +533,38 @@ fn parse_categorical_column(values: &[Option<&str>], null_mask: &[bool]) -> io::
         codes[i] = code;
     }
     Ok(Array::TextArray(TextArray::Categorical32(
+        minarrow::CategoricalArray {
+            data: Buffer::from(codes),
+            unique_values: uniques.into(),
+            null_mask: Some(mask_to_bitmask(null_mask)),
+        }
+        .into(),
+    )))
+}
+
+#[cfg(feature = "default_categorical_8")]
+fn parse_categorical_column(values: &[Option<&str>], null_mask: &[bool]) -> io::Result<Array> {
+    let mut uniques: Vec<String> = Vec::new();
+    let mut dict: HashMap<&str, u8> = HashMap::new();
+    let mut codes = vec64![0u8; values.len()];
+
+    for (i, v) in values.iter().enumerate() {
+        if !null_mask[i] {
+            // Arrow: false=null, so skip nulls
+            continue;
+        }
+        let s = v.unwrap();
+        let code = if let Some(&idx) = dict.get(s) {
+            idx
+        } else {
+            let idx = uniques.len() as u8;
+            dict.insert(s, idx);
+            uniques.push(s.to_string());
+            idx
+        };
+        codes[i] = code;
+    }
+    Ok(Array::TextArray(TextArray::Categorical8(
         minarrow::CategoricalArray {
             data: Buffer::from(codes),
             unique_values: uniques.into(),

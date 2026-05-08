@@ -7,13 +7,8 @@
 
 use lightstream::models::readers::csv_reader::CsvReader;
 use lightstream::models::writers::csv_writer::CsvWriter;
-use minarrow::ffi::arrow_dtype::ArrowType;
-use minarrow::{
-    Array, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray, StringArray, Table,
-    TextArray, Vec64,
-};
+use minarrow::{arr_f64, arr_i32, arr_str32, FieldArray, Table, Vec64};
 use std::path::Path;
-use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::main]
@@ -49,63 +44,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Create a sample table with various data types
+/// Create a sample table with various data types.
 fn create_sample_table() -> Table {
-    let n_rows = 5;
+    let ids: Vec64<i32> = Vec64::from_slice(&[1, 2, 3, 4, 5]);
+    let names: Vec64<&str> = Vec64::from(vec!["Alice", "Bob", "Charlies", "Diana", "Eve"]);
+    let scores: Vec64<f64> = Vec64::from_slice(&[1.1, 2.2, 3.3, 4.4, 5.5]);
 
-    // Create integer column
-    let int_array = Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
-        data: Buffer::from(Vec64::from_slice(&[1i32, 2, 3, 4, 5])),
-        null_mask: None,
-    })));
-    let int_field = FieldArray::new(
-        Field {
-            name: "id".into(),
-            dtype: ArrowType::Int32,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        int_array,
-    );
-
-    // Create string column
-    let str_data = "AliceBobCharliesDianaEve".as_bytes();
-    let offsets = [0u32, 5, 8, 16, 21, 24];
-    let str_array = Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-        Buffer::from(Vec64::from_slice(str_data)),
-        None,
-        Buffer::from(Vec64::from_slice(&offsets)),
-    ))));
-    let str_field = FieldArray::new(
-        Field {
-            name: "name".into(),
-            dtype: ArrowType::String,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        str_array,
-    );
-
-    // Create float column
-    let float_array = Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
-        data: Buffer::from(Vec64::from_slice(&[1.1f64, 2.2, 3.3, 4.4, 5.5])),
-        null_mask: None,
-    })));
-    let float_field = FieldArray::new(
-        Field {
-            name: "score".into(),
-            dtype: ArrowType::Float64,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        float_array,
-    );
-
-    Table {
-        name: "sample_data".to_string(),
-        n_rows,
-        cols: vec![int_field, str_field, float_field],
-    }
+    Table::new(
+        "sample_data".to_string(),
+        Some(vec![
+            FieldArray::from_arr("id", arr_i32!(ids)),
+            FieldArray::from_arr("name", arr_str32!(names)),
+            FieldArray::from_arr("score", arr_f64!(scores)),
+        ]),
+    )
 }
 
 /// Write a table to CSV file

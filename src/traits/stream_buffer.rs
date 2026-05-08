@@ -1,41 +1,71 @@
-//! # Stream Buffer Abstraction
+//! # Stream Buffer - Wire Alignment Abstraction
 //!
-//! Lightweight abstraction over byte buffers for frame-based streaming in Lightstream.
+//! Controls the alignment of Arrow IPC frame boundaries on the wire.
 //!
-//! ## Purpose
-//! Integrate different lower-level byte abstractions (e.g. `Vec<u8>`, `minarrow::Vec64<u8>`, or
-//! third-party buffers) with Minarrow/Lightstream readers and writers without coupling framing
-//! logic to a concrete container.
+//! ## Wire alignment parameter `B`
 //!
-//! ## Notes
-//! - Implementors must support common `Vec`-like operations: draining, appending, length queries,
-//!   and slice access.
-//! - `ALIGN` communicates the buffer alignment requirement so framing layers can insert padding
-//!   when necessary (e.g. to maintain 64-byte SIMD alignment for Arrow buffers).
+//! Throughout the library, the generic parameter `B: StreamBuffer` determines
+//! how Arrow IPC frames are padded on the wire:
 //!
-//! This module provides trait bounds only; concrete buffers are supplied by callers.
+//! - **`Vec64<u8>` (ALIGN=64)** - 64-byte SIMD-aligned frames. Use for
+//!   lightstream-to-lightstream communication where both sides are this
+//!   library. Column buffers land on 64-byte boundaries, enabling zero-copy
+//!   `Buffer::from_shared` without alignment fixup copies. This is the
+//!   recommended default.
+//!
+//! - **`Vec<u8>` (ALIGN=8)** - Standard 8-byte aligned frames. Use when
+//!   reading Arrow IPC data produced by external tools (incl. PyArrow, Arrow C++,
+//!   etc.) that use the minimum spec alignment. Also safe for writing data
+//!   consumed by external readers.
+//!
+//! ## Receiver side
+//!
+//! On the decode side, the library always reads body data into a `Vec64<u8>`
+//! internally, regardless of `B`. The `B` parameter only affects frame
+//! boundary calculations (where metadata padding and body padding land).
+//! Column data is mapped via `SharedBuffer` for zero-copy access.
+//! This allows compatibility with bytes from a different sources whilst 
+//! ensuring data is captured into 64-byte aligned SIMD-ready vectors.
+//!
+//! ## Wire padding overhead
+//!
+//! With `Vec64<u8>`, metadata and body sections are padded to 64-byte
+//! boundaries. This adds at most 63 bytes of padding per section compared
+//! to the 8-byte minimum. For a typical record batch of tens of KB or
+//! more, this is well under 1% overhead on the wire. The trade-off is
+//! worthwhile when targeting SIMD cache alignment because the receiver can map 
+//! column buffers directly from the SharedBuffer without alignment fixup copies, 
+//! which would otherwise cost far more than the extra padding bytes. Consequently,
+//! SIMD calculations are available on the buffers permanently via `Minarrow`.
+//!
+//! With `Vec<u8>`, padding follows the Arrow spec minimum of 8 bytes.
+//! Column buffers may not be 64-byte aligned on arrival, so
+//! `Buffer::from_shared` will copy into an aligned Vec64, as this is enforced by Minarrow
+//! to support its central SIMD compatibility and cache-optimal promise.
+//! This means that if data was written via an 8-byte Arrow implementation there is one memory copy, 
+//! to resolve high-performance data buffers once at source ingest.
+//!
+//! ## Choosing B
+//!
+//! - Lightstream protocol connections: `Vec64<u8>` - both sides are controlled
+//! - Arrow IPC transport for internal use: `Vec64<u8>` - best performance
+//! - Arrow IPC transport for interop with external readers: `Vec<u8>` - spec minimum alignment
 
 use minarrow::Vec64;
+use minarrow::structs::shared_buffer::SharedBuffer;
 
-/// Abstraction over a byte buffer for frame-based streaming.
+/// Wire alignment buffer for Arrow IPC frame encoding and decoding.
 ///
-/// This trait defines the required interface for internal buffers used by `Minarrow` stream readers
-/// and the IO framing layers that support them.
+/// The `ALIGN` constant controls how IPC frames are padded on the wire.
+/// This is the single parameter that determines whether frames use
+/// 64-byte SIMD alignment or standard 8-byte Arrow spec alignment.
 ///
-/// It is implemented for standard `Vec<u8>` and `minarrow::Vec64<u8>`, but can also be implemented
-/// for alternative byte buffer types (e.g., Tokio's `Bytes`).
-///
-/// This allows integration of different lower-level byte abstractions with `Minarrow`'s `TableStreamReader` and `TableStreamWriter`,
-/// supporting scenarios where the byte-level IO stack is fixed or externally controlled,
-/// or where an alternative buffer implementation is preferred, enabling flexibility in the underlying
-/// buffer representation without requiring changes to the framing logic.
-///
-/// Implementors must support the following standard `Vec` operations:
-/// - Draining consumed bytes
-/// - Appending new bytes
-/// - Querying the current buffer length
-/// - Accessing the internal byte slice
-pub trait StreamBuffer: AsRef<[u8]> + Default + Extend<u8> + Send + Sync + 'static {
+/// Implemented for `Vec<u8>` with ALIGN=8 and `Vec64<u8>` with ALIGN=64.
+/// The receiver always reads body data into a Vec64 internally -
+/// `B` only affects frame boundary padding calculations.
+pub trait StreamBuffer:
+    AsRef<[u8]> + AsMut<[u8]> + Default + Extend<u8> + Send + Sync + 'static
+{
     /// What alignment should the data buffer use?
     /// This is a data point that can be used for enforcing the alignment
     /// constraint via padding when necessary.
@@ -66,10 +96,14 @@ pub trait StreamBuffer: AsRef<[u8]> + Default + Extend<u8> + Send + Sync + 'stat
 
     /// Create a buffer from a slice (copies the bytes).
     fn from_slice(data: &[u8]) -> Self;
+
+    /// Convert into a SharedBuffer for zero-copy Arrow decode.
+    /// Both Vec<u8> and Vec64<u8> are wrapped without copying data.
+    fn into_shared_buffer(self) -> SharedBuffer;
 }
 
 impl StreamBuffer for Vec<u8> {
-    /// Common Arrow ecosystem alignment for metadata and non-SIMD payloads.
+    /// Common Arrow ecosystem alignment for metadata and non-SIMD sources.
     const ALIGN: usize = 8;
 
     #[inline]
@@ -79,13 +113,11 @@ impl StreamBuffer for Vec<u8> {
 
     #[inline]
     fn reserve(&mut self, additional: usize) {
-        // Call inherent Vec::reserve to avoid recursion.
         Vec::<u8>::reserve(self, additional);
     }
 
     #[inline]
     fn drain(&mut self, range: std::ops::Range<usize>) {
-        // Call Vec::<T>::drain, ignore the returned Drain iterator.
         Vec::<u8>::drain(self, range);
     }
 
@@ -108,6 +140,11 @@ impl StreamBuffer for Vec<u8> {
     fn from_slice(data: &[u8]) -> Self {
         data.to_vec()
     }
+
+    #[inline]
+    fn into_shared_buffer(self) -> SharedBuffer {
+        SharedBuffer::from_vec(self)
+    }
 }
 
 impl StreamBuffer for Vec64<u8> {
@@ -116,7 +153,7 @@ impl StreamBuffer for Vec64<u8> {
     /// non-payload sections continue to use 8-byte alignment.
     ///
     /// By default, `Vec64` allocates buffers with 64-byte alignment. Setting
-    /// this constant communicates to the framing layer: *“pad me to 64 bytes”*.
+    /// this constant communicates to the framing layer: *”pad me to 64 bytes”*.
     /// This ensures that when an Arrow buffer is allocated, its starting offset
     /// is 64-byte aligned and SIMD-ready, enabling zero-copy use
     /// with `Minarrow` or any other consumer.
@@ -159,5 +196,10 @@ impl StreamBuffer for Vec64<u8> {
     #[inline]
     fn from_slice(data: &[u8]) -> Self {
         Vec64::from_slice(data)
+    }
+
+    #[inline]
+    fn into_shared_buffer(self) -> SharedBuffer {
+        SharedBuffer::from_vec64(self)
     }
 }

@@ -3,7 +3,7 @@
 //! Wraps a file in a [`Stream`] that yields fixed-size byte chunks.
 //!
 //! ## Overview
-//! - Uses Tokio [`File`] + [`BufReader`] under the hood.
+//! - Uses Tokio [`File`].
 //! - Supports async backpressure via `poll_next`.
 //! - One copy into a `Vec64<u8>` output buffer per chunk.
 //! - Chunk size controlled by [`BufferChunkSize`].
@@ -20,23 +20,21 @@ use std::task::{Context, Poll};
 use futures_core::Stream;
 use minarrow::{Vec64, vec64};
 use tokio::fs::File;
-use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::enums::BufferChunkSize;
 
 /// A `Stream` that reads a file in fixed-size byte chunks.
 ///
-/// ### Includes:
-/// - Tokio + `BufReader` based
-/// - Async back-pressure support via `poll_next`
-/// - One copy to Vec<u8> output buffer
-/// - control of chunk size via `BufferChunkSize`
+/// Each `poll_next` reads up to `chunk_size` bytes into a reusable
+/// `Vec64<u8>` staging buffer.
+///
 /// ### Use cases:
 /// - Ingest large files without loading the full content into memory
 /// - Integrate disk I/O into async pipelines
 pub struct DiskByteStream {
-    /// Buffered reader over the file.
-    reader: BufReader<File>,
+    /// The file handle.
+    file: File,
     /// End-of-file flag, prevents further reads after completion.
     eof: bool,
     /// Reusable buffer to avoid reallocating per `poll_next`.
@@ -59,7 +57,7 @@ impl DiskByteStream {
         let chunk_size = size.chunk_size();
         let file = File::open(path).await?;
         Ok(Self {
-            reader: BufReader::with_capacity(chunk_size, file),
+            file,
             eof: false,
             buf: vec64![0u8; chunk_size],
             chunk_size,
@@ -70,7 +68,7 @@ impl DiskByteStream {
 impl Stream for DiskByteStream {
     /// Yield the next chunk of bytes from the file.
     ///
-    /// - On success: returns `Ok(Vec<u8>)` containing up to `chunk_size` bytes.
+    /// - On success: returns `Ok(Vec64<u8>)` containing up to `chunk_size` bytes.
     /// - On EOF: returns `None`.
     /// - On I/O error: returns `Err(io::Error)`.
     type Item = Result<Vec64<u8>, io::Error>;
@@ -82,10 +80,9 @@ impl Stream for DiskByteStream {
             return Poll::Ready(None);
         }
 
-        // read directly into the internal staging buffer
+        // Read directly into the internal staging buffer.
         let read = {
-            // safety: we never move `reader`
-            let mut fut = Box::pin(me.reader.read(&mut me.buf[..me.chunk_size]));
+            let mut fut = Box::pin(me.file.read(&mut me.buf[..me.chunk_size]));
             futures_core::ready!(fut.as_mut().poll(cx))
         };
 
@@ -95,7 +92,7 @@ impl Stream for DiskByteStream {
                 Poll::Ready(None) // EOF
             }
             Ok(n) => {
-                // move the filled buffer out
+                // Move the filled buffer out.
                 let mut out = std::mem::replace(
                     &mut me.buf,
                     vec64![0u8; me.chunk_size], // new staging buf
@@ -111,16 +108,14 @@ impl Stream for DiskByteStream {
     }
 }
 
-// Implement AsyncRead for DiskByteStream by forwarding to BufReader<File>
 impl AsyncRead for DiskByteStream {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        // Safety: it is safe to get mutable access because Unpin is implemented.
         let me = self.get_mut();
-        Pin::new(&mut me.reader).poll_read(cx, buf)
+        Pin::new(&mut me.file).poll_read(cx, buf)
     }
 }
 
@@ -142,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_disk_bytestream_fileio_chunks() {
-        const FILE_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+        const FILE_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
         let path = create_test_file(FILE_SIZE, 0xAA);
 
@@ -176,8 +171,8 @@ mod tests {
 
     #[test]
     fn test_disk_bytestream_custom_chunk() {
-        const FILE_SIZE: usize = 1 * 1024 * 1024; // 1 MiB
-        const CHUNK: usize = 128 * 1024; // 128 KiB
+        const FILE_SIZE: usize = 1 * 1024 * 1024; // 1 MiB
+        const CHUNK: usize = 128 * 1024; // 128 KiB
 
         let path = create_test_file(FILE_SIZE, 0x55);
 

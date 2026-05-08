@@ -8,7 +8,86 @@
 //!
 //! These are internal, low-level components used by the IPC encoders and writers.
 
+use std::ops::Range;
+
+use crate::enums::IPCMessageProtocol;
 use crate::traits::stream_buffer::StreamBuffer;
+
+/// IPC frame inputs for encoding.
+///
+/// Carries the flatbuffer message, body, and protocol flags needed
+/// to encode a single Arrow IPC frame.
+pub struct IPCFrame<'a> {
+    /// Flatbuffer message bytes.
+    pub meta: &'a [u8],
+    /// Message body payload.
+    pub body: &'a [u8],
+    /// IPC protocol - file or stream.
+    pub protocol: IPCMessageProtocol,
+    /// Whether this is the first frame (emits opening magic in file mode).
+    pub is_first: bool,
+    /// Whether this is the last frame (emits EOS, and footer+closing magic in file mode).
+    pub is_last: bool,
+    /// File footer bytes (required when `protocol == File` and `is_last == true`).
+    pub footer_bytes: Option<&'a [u8]>,
+}
+
+
+/// Result of parsing an IPC frame header without requiring the body.
+/// Used by the zero-copy decoder to learn the body length before reading
+/// the body directly into a dedicated buffer.
+pub enum IPCFrameHeader {
+    /// Need more data in the buffer to parse the frame header/metadata.
+    NeedMore,
+    /// End-of-stream or empty frame detected.
+    EndOfStream { consumed: usize },
+    /// A complete frame whose body is already in the buffer.
+    /// Used for schema, dictionary, and small frames.
+    Complete {
+        frame: ArrowIPCFrameRanges,
+        consumed: usize,
+    },
+    /// A frame whose metadata has been parsed but the body is not yet
+    /// in the buffer. The caller should read `body_len` bytes directly
+    /// from the transport into a dedicated buffer.
+    BodyPending {
+        /// Byte range of the flatbuffer metadata within the decode buffer.
+        message_range: std::ops::Range<usize>,
+        /// Number of bytes to consume from the buffer before reading the body.
+        /// This includes the frame prefix + metadata + metadata padding.
+        header_consumed: usize,
+        /// Number of body bytes to read from the transport.
+        body_len: usize,
+        /// Padding bytes after the body that must be skipped.
+        body_pad: usize,
+    },
+}
+
+/// Result of decoding a single IPC frame.
+pub enum IPCFrameResult {
+    /// Schema learned.
+    Schema,
+    /// Dictionary accumulated.
+    Dictionary,
+    /// Record batch decoded into a Table with zero-copy column views.
+    Batch(minarrow::Table),
+    /// End-of-stream marker.
+    EndOfStream,
+}
+
+/// Non-owning descriptor for an Arrow IPC frame within a contiguous buffer.
+///
+/// Instead of copying message and body bytes into owned buffers,
+/// this records their byte ranges within the original decode buffer.
+/// Used by the direct reader path to avoid intermediate allocations.
+#[derive(Debug, Clone)]
+pub struct ArrowIPCFrameRanges {
+    /// Byte range of the flatbuffer message within the decode buffer.
+    pub message_range: Range<usize>,
+    /// Byte range of the body within the decode buffer.
+    /// Empty range when the frame has no body.
+    pub body_range: Range<usize>,
+}
 
 /// Arrow IPC message component of a frame.
 ///

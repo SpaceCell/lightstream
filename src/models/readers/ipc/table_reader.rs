@@ -9,7 +9,7 @@
 //! (e.g. `Vec<u8>` or `Vec64<u8>`), and both Arrow IPC protocols (File/Stream).
 
 use crate::enums::IPCMessageProtocol;
-use crate::models::decoders::ipc::table_stream::GTableStreamDecoder;
+use crate::models::decoders::ipc::table_stream_decoder::TableStreamDecoder;
 use crate::traits::stream_buffer::StreamBuffer;
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -20,47 +20,47 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::AsyncRead;
 
-/// High-level async table reader over a framed Arrow IPC stream.
+/// High-level async table reader over an Arrow IPC stream.
 ///
-/// Drives a [`GTableStreamDecoder`] and exposes convenience methods to pull
-/// batches, aggregate into a `SuperTable`, or concatenate into a single `Table`.
-pub struct TableReader<S, B>
-where
-    S: Stream<Item = Result<B, io::Error>> + AsyncRead + Unpin + Send + Sync + 'static,
-    B: StreamBuffer + Unpin + 'static,
-{
-    /// Underlying framed decoder yielding Arrow `Table` batches
-    decoder: GTableStreamDecoder<S, B>,
+/// Wraps a [`TableStreamDecoder`] with zero-copy record batch decoding
+/// and exposes convenience methods to pull batches, aggregate into a
+/// `SuperTable`, or concatenate into a single `Table`.
+pub struct TableReader<B: StreamBuffer + Unpin + 'static = Vec<u8>> {
+    inner: TableStreamDecoder<B>,
 }
 
-impl<S, B> TableReader<S, B>
-where
-    S: Stream<Item = Result<B, io::Error>> + AsyncRead + Unpin + Send + Sync + 'static,
-    B: StreamBuffer + Unpin + 'static,
-{
-    /// Construct a new reader over `stream` with `initial_capacity` and IPC `protocol`
-    pub fn new(stream: S, initial_capacity: usize, protocol: IPCMessageProtocol) -> Self {
+impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
+    /// Create a new reader from an AsyncRead source.
+    ///
+    /// Reads frame headers into a small accumulation buffer, then reads
+    /// record batch bodies directly into a Vec64 for SharedBuffer
+    /// zero-copy column mapping. Each batch is yielded individually.
+    pub fn new(
+        stream: impl AsyncRead + Unpin + Send + 'static,
+        initial_capacity: usize,
+        protocol: IPCMessageProtocol,
+    ) -> Self {
         Self {
-            decoder: GTableStreamDecoder::new(stream, initial_capacity, protocol),
+            inner: TableStreamDecoder::new(stream, initial_capacity, protocol),
         }
     }
 
-    /// Read all available Arrow tables (batches) from the stream.
+    /// Read all available Arrow tables from the stream.
     pub async fn read_all_tables(mut self) -> io::Result<Vec<Table>> {
         let mut tables = Vec::new();
-        while let Some(batch) = self.decoder.next().await {
+        while let Some(batch) = self.next().await {
             tables.push(batch?);
         }
         Ok(tables)
     }
 
-    /// Read up to `n` Arrow tables
+    /// Read up to `n` Arrow tables.
     ///
-    /// If `n` is `None` read until EOS
+    /// If `n` is `None` read until EOS.
     pub async fn read_tables(mut self, n: Option<usize>) -> io::Result<Vec<Table>> {
         let mut tables = Vec::new();
         let mut count = 0usize;
-        while let Some(batch) = self.decoder.next().await {
+        while let Some(batch) = self.next().await {
             let batch = batch?;
             tables.push(batch);
             count += 1;
@@ -85,7 +85,7 @@ where
         let mut schema: Option<Vec<std::sync::Arc<Field>>> = None;
         let mut n_rows = 0usize;
         let mut count = 0usize;
-        while let Some(batch) = self.decoder.next().await {
+        while let Some(batch) = self.next().await {
             let batch = batch?;
             if schema.is_none() {
                 schema = Some(batch.cols.iter().map(|f| f.field.clone()).collect());
@@ -107,40 +107,31 @@ where
         })
     }
 
-    /// Read all batches and concatenate into a single `Table` row-wise
+    /// Read all batches and concatenate into a single `Table` row-wise.
     pub async fn combine_to_table(mut self, name: Option<String>) -> io::Result<Table> {
         let mut all_batches = Vec::new();
-        while let Some(batch) = self.decoder.next().await {
+        while let Some(batch) = self.next().await {
             all_batches.push(batch?);
         }
         combine_batches_to_table(all_batches, name)
     }
 
-    /// Return the decoded schema if available after first schema message
+    /// Return the decoded schema if available after first schema message.
     pub fn schema(&self) -> Option<&[Field]> {
-        if !self.decoder.fields.is_empty() {
-            Some(&self.decoder.fields)
-        } else {
-            None
-        }
+        self.inner.schema()
     }
 
-    /// Read the next `Table` from the stream, or `None` on EOS
+    /// Read the next `Table` from the stream, or `None` on EOS.
     pub async fn read_next(&mut self) -> io::Result<Option<Table>> {
-        self.decoder.next().await.transpose()
+        self.next().await.transpose()
     }
 }
 
-impl<S, B> Stream for TableReader<S, B>
-where
-    S: Stream<Item = Result<B, io::Error>> + AsyncRead + Unpin + Send + Sync + 'static,
-    B: StreamBuffer + Unpin + 'static,
-{
+impl<B: StreamBuffer + Unpin + 'static> Stream for TableReader<B> {
     type Item = io::Result<Table>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let me = self.get_mut();
-        Pin::new(&mut me.decoder).poll_next(cx)
+        Pin::new(&mut self.get_mut().inner).poll_next(cx)
     }
 }
 
@@ -202,7 +193,7 @@ mod tests {
     use crate::test_helpers::{make_all_types_table, make_schema_all_types};
     use crate::utils;
     use futures_core::Stream;
-    use minarrow::{SuperTable, Table};
+    use minarrow::{SuperTable, Table, Vec64};
     use std::io;
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -214,7 +205,7 @@ mod tests {
         table: &Table,
     ) {
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = utils::extract_dictionary_values_from_col(col) {
+            if let Some(values) = utils::dict_values(col) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
@@ -269,7 +260,7 @@ mod tests {
         println!("Schema:");
         println!("{:?}", schema);
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -284,7 +275,8 @@ mod tests {
 
         let combined = Combined { reader: rx };
 
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let out = reader.read_all_tables().await.unwrap();
         assert_eq!(out.len(), 2);
         for batch in out {
@@ -299,7 +291,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         register_dictionaries_for_table(&mut writer, &table);
         // three batches
         writer.write(&table).unwrap();
@@ -315,7 +307,8 @@ mod tests {
 
         let combined = Combined { reader: rx };
 
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let out = reader.read_tables(Some(2)).await.unwrap();
         assert_eq!(out.len(), 2);
     }
@@ -326,7 +319,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -340,7 +333,8 @@ mod tests {
 
         let combined = Combined { reader: rx };
 
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let st: SuperTable = reader
             .read_to_super_table(Some("my_window".into()), None)
             .await
@@ -356,7 +350,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -370,7 +364,8 @@ mod tests {
 
         let combined = Combined { reader: rx };
 
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let t: Table = reader.combine_to_table(Some("all".into())).await.unwrap();
         assert_eq!(t.n_rows, table.n_rows * 2);
         assert_eq!(t.name, "all");
@@ -384,7 +379,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.finish().unwrap();
@@ -411,11 +406,44 @@ mod tests {
 
         let combined = Combined { reader: rx };
 
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let result = reader.read_all_tables().await;
         match result {
             Ok(tables) => println!("Success: {} tables", tables.len()),
             Err(e) => println!("Error: {}", e),
+        }
+    }
+
+    /// Round-trip test for the direct Arena-based decode path.
+    /// Encodes a table, reads it back via `new_direct`, and verifies values.
+    #[tokio::test]
+    async fn test_direct_read_all_tables() {
+        let table = make_all_types_table();
+        let schema = make_schema_all_types();
+        let mut writer =
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+        register_dictionaries_for_table(&mut writer, &table);
+        writer.write(&table).unwrap();
+        writer.write(&table).unwrap();
+        writer.finish().unwrap();
+        let frames = writer.drain_all_frames();
+
+        let all_bytes: Vec<u8> = frames.iter().flat_map(|v| v.iter().cloned()).collect();
+        let (mut tx, rx) = duplex(64 * 1024);
+        tx.write_all(&all_bytes).await.unwrap();
+        drop(tx);
+
+        let combined = Combined { reader: rx };
+
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let out = reader.read_all_tables().await.unwrap();
+        // Each batch yields individually - no concatenation
+        assert_eq!(out.len(), 2);
+        for batch in &out {
+            assert_eq!(batch.n_rows, table.n_rows);
+            assert_eq!(batch.cols.len(), table.cols.len());
         }
     }
 
@@ -424,7 +452,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.finish().unwrap();
@@ -437,11 +465,8 @@ mod tests {
 
         let combined = Combined { reader: rx };
 
-        let mut reader = TableReader::new(
-            /* stream = */ combined,
-            /* cap = */ 1024,
-            IPCMessageProtocol::Stream,
-        );
+        let mut reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
 
         // schema is only known after seeing the first message
         assert!(reader.schema().is_none());

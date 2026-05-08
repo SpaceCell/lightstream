@@ -12,10 +12,13 @@
 /// - **Speed**: Prefer the mmap variant [`MmapTableReader`] when zero-copy performance is required -
 /// for e.g., the MMAP version can read millions of rows in microseconds, microseconds, and very large volumes in milliseconds.
 /// - **Flexibility**: this standard reader is more flexible as it is not tied to memory-mapped shared memory.
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use minarrow::Vec64;
+use minarrow::structs::shared_buffer::SharedBuffer;
 
 use flatbuffers::Vector;
 use minarrow::{Field, SuperTable, Table};
@@ -24,8 +27,7 @@ use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
 use crate::constants::ARROW_MAGIC_NUMBER;
 use crate::models::decoders::ipc::parser::{
-    RecordBatchParser, convert_fb_field_to_arrow, handle_dictionary_batch,
-    handle_record_batch_shared,
+    convert_fb_field_to_arrow, decode_record_batch, handle_dictionary_batch,
 };
 #[cfg(any(feature = "zstd", feature = "snappy"))]
 use crate::models::decoders::ipc::parser::{decompress_sequential_body, is_body_compressed};
@@ -50,8 +52,8 @@ struct IPCFileBlock {
 /// shared memory.
 #[derive(Clone)]
 pub struct FileTableReader {
-    /// Entire file contents pinned in heap memory
-    data: Arc<[u8]>,
+    /// Path for on-demand batch reads
+    path: PathBuf,
     /// Arrow schema fields from the file footer
     schema: Vec<Arc<Field>>,
     /// Footer-declared dictionary block table
@@ -65,50 +67,46 @@ pub struct FileTableReader {
 impl FileTableReader {
     /// Open an Arrow IPC file into heap memory and parse footer/schema/block tables.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path)?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        let len = buf.len();
+        let file_len = file.metadata()?.len() as usize;
 
-        if len < 12 {
+        if file_len < 12 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "file too small for Arrow",
             ));
         }
-        if &buf[..6] != ARROW_MAGIC_NUMBER {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing opening magic",
-            ));
-        }
-        if &buf[len - 6..] != ARROW_MAGIC_NUMBER {
+
+        // Read only the trailing 10 bytes: footer_len (4) + closing magic (6)
+        let mut tail = [0u8; 10];
+        file.seek(SeekFrom::End(-10))?;
+        file.read_exact(&mut tail)?;
+
+        if &tail[4..] != ARROW_MAGIC_NUMBER {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "missing closing magic",
             ));
         }
 
-        let footer_len_offset = len - 6 - 4;
-        let footer_len = u32::from_le_bytes(
-            buf[footer_len_offset..footer_len_offset + 4]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        let footer_start = footer_len_offset - footer_len;
-        let footer_end = footer_start + footer_len;
-        if footer_start < 8 || footer_end > len {
+        let footer_len = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
+        let footer_start = file_len - 10 - footer_len;
+        if footer_start < 8 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "footer out of bounds",
             ));
         }
 
-        let footer_msg: &fbf::Footer = {
-            &flatbuffers::root::<fbf::Footer>(&buf[footer_start..footer_end]).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("bad footer: {e}"))
-            })?
-        };
+        // Read just the footer
+        let mut footer_buf = vec![0u8; footer_len];
+        file.seek(SeekFrom::Start(footer_start as u64))?;
+        file.read_exact(&mut footer_buf)?;
+
+        let footer_msg = flatbuffers::root::<fbf::Footer>(&footer_buf).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("bad footer: {e}"))
+        })?;
 
         let fb_schema = footer_msg
             .schema()
@@ -141,10 +139,8 @@ impl FileTableReader {
             })
             .collect::<Vec<_>>();
 
-        let data: Arc<[u8]> = buf.into();
-
         let mut rdr = Self {
-            data,
+            path,
             schema: fields,
             dict_blocks,
             record_blocks,
@@ -173,7 +169,21 @@ impl FileTableReader {
             .record_blocks
             .get(idx)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
-        self.parse_batch_block(blk)
+        self.parse_batch_block(blk, None)
+    }
+
+    /// Read the `idx`th record batch, materialising only the named columns.
+    ///
+    /// Column names must match schema field names. Returns an error if any
+    /// name is not found. The returned Table contains only the projected
+    /// columns, in schema order.
+    pub fn read_columns(&self, idx: usize, columns: &[&str]) -> io::Result<Table> {
+        let blk = self
+            .record_blocks
+            .get(idx)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
+        let projection = self.resolve_column_indices(columns)?;
+        self.parse_batch_block(blk, Some(&projection))
     }
 
     /// Alias of [`read_batch`]
@@ -188,130 +198,120 @@ impl FileTableReader {
     pub fn into_supertable(&self, name_override: Option<String>) -> io::Result<SuperTable> {
         let mut batches = Vec::with_capacity(self.record_blocks.len());
         for blk in &self.record_blocks {
-            batches.push(Arc::new(self.parse_batch_block(blk)?));
+            batches.push(Arc::new(self.parse_batch_block(blk, None)?));
         }
         Ok(SuperTable::from_batches(batches, name_override))
     }
 
-    /// Load and materialise all dictionary batches declared in the footer
-    fn load_all_dictionaries(&mut self) -> io::Result<()> {
-        let mut new_dicts = std::collections::HashMap::<i64, Vec<String>>::new();
-        for blk in &self.dict_blocks {
-            let msg = self.slice_message(blk)?;
-            let fb_msg: &fbm::Message = &flatbuffers::root::<fbm::Message>(msg).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("bad dict msg: {e}"))
-            })?;
-            let dict_batch = fb_msg.header_as_dictionary_batch().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "expected DictionaryBatch")
-            })?;
-            RecordBatchParser::check_dictionary_delta(&dict_batch)?;
-            let body = &self.data
-                [blk.offset + blk.meta_bytes..blk.offset + blk.meta_bytes + blk.body_bytes];
-            handle_dictionary_batch(&dict_batch, body, &mut new_dicts)?;
-        }
-        self.dictionaries = new_dicts;
-        Ok(())
+    /// Read a block from disk into 64-byte aligned memory
+    fn read_block(&self, blk: &IPCFileBlock) -> io::Result<Vec64<u8>> {
+        let total = blk.meta_bytes + blk.body_bytes;
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(blk.offset as u64))?;
+        let mut buf = Vec64::with_capacity(total);
+        unsafe { buf.set_len(total); }
+        file.read_exact(&mut buf)?;
+        Ok(buf)
     }
 
-    /// Parse a record batch block into a `Table`
-    fn parse_batch_block(&self, blk: &IPCFileBlock) -> io::Result<Table> {
-        let meta_slice = self.slice_message(blk)?;
-        let body_offset = blk.offset + blk.meta_bytes;
-        let body_len = blk.body_bytes;
-        let fb_msg: &fbm::Message =
-            &flatbuffers::root::<fbm::Message>(meta_slice).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("bad record msg: {e}"))
-            })?;
-        let rec = fb_msg.header_as_record_batch().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "expected RecordBatch header")
-        })?;
-
-        // Check if we need to decompress the body data
-        #[cfg(any(feature = "zstd", feature = "snappy"))]
-        {
-            let body_data = &self.data.as_ref().as_ref()[body_offset..body_offset + body_len];
-            let buffers = rec
-                .buffers()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
-            if is_body_compressed(&buffers, body_data) {
-                let (decompressed_body, _offsets) =
-                    decompress_sequential_body(&buffers, body_data)?;
-                let arc_data = Arc::new(decompressed_body.clone());
-                handle_record_batch_shared(
-                    &rec,
-                    &self
-                        .schema
-                        .iter()
-                        .map(|a| a.as_ref().clone())
-                        .collect::<Vec<_>>(),
-                    &self.dictionaries,
-                    arc_data,
-                    0, // decompressed data starts at offset 0
-                    decompressed_body.len(),
-                )
-            } else {
-                handle_record_batch_shared(
-                    &rec,
-                    &self
-                        .schema
-                        .iter()
-                        .map(|a| a.as_ref().clone())
-                        .collect::<Vec<_>>(),
-                    &self.dictionaries,
-                    self.data.clone(),
-                    body_offset,
-                    body_len,
-                )
-            }
+    /// Parse the IPC frame header from a block buffer, returning the
+    /// metadata slice. Validates the continuation marker.
+    fn parse_frame_header<'a>(buf: &'a [u8]) -> io::Result<&'a [u8]> {
+        if buf.len() < 8 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "block too short"));
         }
-        #[cfg(not(any(feature = "zstd", feature = "snappy")))]
-        {
-            handle_record_batch_shared(
-                &rec,
-                &self
-                    .schema
-                    .iter()
-                    .map(|a| a.as_ref().clone())
-                    .collect::<Vec<_>>(),
-                &self.dictionaries,
-                self.data.clone(),
-                body_offset,
-                body_len,
-            )
-        }
-    }
-
-    /// Slice and validate the FlatBuffers message at the given block
-    ///
-    /// Checks continuation + size
-    fn slice_message(&self, blk: &IPCFileBlock) -> io::Result<&[u8]> {
-        if blk.offset + 8 > self.data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "block header OOB",
-            ));
-        }
-        let cont = u32::from_le_bytes(self.data[blk.offset..blk.offset + 4].try_into().unwrap());
+        let cont = u32::from_le_bytes(buf[..4].try_into().unwrap());
         if cont != 0xFFFF_FFFF {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("bad continuation marker: {cont:#X}"),
             ));
         }
-        let meta_len = u32::from_le_bytes(
-            self.data[blk.offset + 4..blk.offset + 8]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        let start = blk.offset + 8;
-        let end = start + meta_len;
-        if end > self.data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "msg slice OOB",
-            ));
+        let meta_len = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
+        let end = 8 + meta_len;
+        if end > buf.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "metadata OOB"));
         }
-        Ok(&self.data[start..end])
+        Ok(&buf[8..end])
+    }
+
+    /// Load and materialise all dictionary batches declared in the footer
+    fn load_all_dictionaries(&mut self) -> io::Result<()> {
+        let mut new_dicts = std::collections::HashMap::<i64, Vec<String>>::new();
+        for blk in &self.dict_blocks {
+            let buf = self.read_block(blk)?;
+            let meta = Self::parse_frame_header(&buf)?;
+            let fb_msg = flatbuffers::root::<fbm::Message>(meta).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("bad dict msg: {e}"))
+            })?;
+            let dict_batch = fb_msg.header_as_dictionary_batch().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "expected DictionaryBatch")
+            })?;
+            let body = &buf[blk.meta_bytes..blk.meta_bytes + blk.body_bytes];
+            handle_dictionary_batch(&dict_batch, body, &mut new_dicts)?;
+        }
+        self.dictionaries = new_dicts;
+        Ok(())
+    }
+
+    /// Resolve column names to their schema indices, erroring on unknown names.
+    fn resolve_column_indices(&self, columns: &[&str]) -> io::Result<HashSet<usize>> {
+        let mut indices = HashSet::with_capacity(columns.len());
+        for name in columns {
+            let idx = self.schema.iter().position(|f| f.name == *name)
+                .ok_or_else(|| io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("column '{}' not found in schema", name),
+                ))?;
+            indices.insert(idx);
+        }
+        Ok(indices)
+    }
+
+    /// Parse a record batch block by reading it from disk on demand.
+    /// When `projection` is `Some`, only the specified columns are materialised.
+    fn parse_batch_block(
+        &self,
+        blk: &IPCFileBlock,
+        projection: Option<&HashSet<usize>>,
+    ) -> io::Result<Table> {
+        let buf = self.read_block(blk)?;
+        let body_offset = blk.meta_bytes;
+        let body_len = blk.body_bytes;
+        let fields: Vec<_> = self.schema.iter().map(|a| a.as_ref().clone()).collect();
+
+        // Wrap in SharedBuffer first, then parse metadata from the slice.
+        // This avoids a borrow-then-move conflict on buf.
+        let shared = SharedBuffer::from_vec64(buf);
+        let meta = Self::parse_frame_header(shared.as_slice())?;
+        let fb_msg = flatbuffers::root::<fbm::Message>(meta).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("bad record msg: {e}"))
+        })?;
+        let rec = fb_msg.header_as_record_batch().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "expected RecordBatch header")
+        })?;
+
+        #[cfg(any(feature = "zstd", feature = "snappy"))]
+        {
+            let body_data = &shared.as_slice()[body_offset..body_offset + body_len];
+            let buffers = rec
+                .buffers()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
+            if is_body_compressed(&buffers, body_data) {
+                let (decompressed_body, _offsets) =
+                    decompress_sequential_body(&buffers, body_data)?;
+                let decompressed_shared = SharedBuffer::from_vec64(Vec64::from_slice(&decompressed_body));
+                let (table, _) = decode_record_batch(
+                    &rec, &fields, &self.dictionaries, decompressed_shared, 0, decompressed_body.len(), projection,
+                )?;
+                return Ok(table);
+            }
+        }
+
+        let (table, _) = decode_record_batch(
+            &rec, &fields, &self.dictionaries, shared.clone(), body_offset, body_len, projection,
+        )?;
+        Ok(table)
     }
 }
 
@@ -458,8 +458,9 @@ mod tests {
                     TextArray::String32(arr) if arr.data.is_shared() => shared_count += 1,
                     #[cfg(feature = "large_string")]
                     TextArray::String64(arr) if arr.data.is_shared() => shared_count += 1,
+                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                     TextArray::Categorical32(arr) if arr.data.is_shared() => shared_count += 1,
-                    #[cfg(feature = "extended_categorical")]
+                    #[cfg(feature = "default_categorical_8")]
                     TextArray::Categorical8(arr) if arr.data.is_shared() => shared_count += 1,
                     #[cfg(feature = "extended_categorical")]
                     TextArray::Categorical16(arr) if arr.data.is_shared() => shared_count += 1,
@@ -483,4 +484,5 @@ mod tests {
         assert_eq!(table2.n_rows, 4);
         assert_eq!(table2.cols.len(), table.cols.len());
     }
+
 }

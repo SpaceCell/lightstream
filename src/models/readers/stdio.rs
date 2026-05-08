@@ -37,12 +37,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use minarrow::{Field, SuperTable, Table};
+use minarrow::{Field, SuperTable, Table, Vec64};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
 use crate::models::streams::stdio::{StdinByteStream, from_stdin, from_stdin_default};
-use crate::traits::transport_reader::TransportReader;
+use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over stdin.
 ///
@@ -51,7 +51,7 @@ use crate::traits::transport_reader::TransportReader;
 ///
 /// Implements `Stream<Item = io::Result<Table>>` for continuous streaming.
 pub struct StdinTableReader {
-    inner: TableReader<StdinByteStream, Vec<u8>>,
+    inner: TableReader<Vec64<u8>>,
 }
 
 impl StdinTableReader {
@@ -60,25 +60,25 @@ impl StdinTableReader {
     /// Uses `IPCMessageProtocol::Stream` and a 64 KiB chunk size.
     pub fn new() -> Self {
         let stream = from_stdin_default();
-        let inner = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
         Self { inner }
     }
 
     /// Create a stdin table reader with explicit chunk size and protocol.
     pub fn new_with(chunk_size: BufferChunkSize, protocol: IPCMessageProtocol) -> Self {
         let stream = from_stdin(chunk_size);
-        let inner = TableReader::new(stream, chunk_size.chunk_size(), protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol);
         Self { inner }
     }
 
     /// Wrap an existing `StdinByteStream` as a table reader.
     pub fn from_stream(stream: StdinByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
         Self { inner }
     }
 }
 
-impl TransportReader for StdinTableReader {
+impl IPCTransportReader for StdinTableReader {
     /// Read all tables from stdin until EOF.
     async fn read_all_tables(self) -> io::Result<Vec<Table>> {
         self.inner.read_all_tables().await

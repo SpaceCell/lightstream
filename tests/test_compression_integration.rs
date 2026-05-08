@@ -83,7 +83,7 @@ async fn test_compression_none_integration() {
     // Write with no compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -117,7 +117,7 @@ async fn test_snappy_compression_integration() {
     // Write with Snappy compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -155,7 +155,7 @@ async fn test_zstd_compression_integration() {
     // Write with Zstd compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -192,7 +192,7 @@ async fn test_compression_size_comparison() {
     // Write uncompressed
     {
         let file = File::create(temp_none.path()).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -208,7 +208,7 @@ async fn test_compression_size_comparison() {
     #[cfg(feature = "snappy")]
     {
         let file = File::create(_temp_snappy.path()).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -225,7 +225,7 @@ async fn test_compression_size_comparison() {
     #[cfg(feature = "zstd")]
     {
         let file = File::create(_temp_zstd.path()).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -264,7 +264,7 @@ async fn test_stream_protocol_with_compression() {
     // Write with Stream protocol and compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::Stream,
@@ -298,7 +298,7 @@ async fn test_multiple_tables_with_compression() {
     // Write multiple tables with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,

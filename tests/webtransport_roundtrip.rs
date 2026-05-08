@@ -13,8 +13,8 @@ use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::readers::webtransport::WebTransportTableReader;
 use lightstream::models::streams::webtransport::WebTransportByteStream;
 use lightstream::models::writers::webtransport::WebTransportTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
@@ -64,6 +64,7 @@ fn make_test_table() -> Table {
         )))),
     );
 
+    #[cfg(not(feature = "default_categorical_8"))]
     let dict_col = FieldArray::new(
         Field {
             name: "category".into(),
@@ -73,6 +74,24 @@ fn make_test_table() -> Table {
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[0u32, 1, 2, 0])),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(4, true)),
+        }))),
+    );
+    #[cfg(feature = "default_categorical_8")]
+    let dict_col = FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 2, 0])),
             unique_values: Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
@@ -100,7 +119,7 @@ fn make_schema(table: &Table) -> Vec<Field> {
 /// Create a self-signed identity for testing.
 ///
 /// Returns the identity and its certificate hash so the client can verify
-/// the server using `with_server_certificate_hashes` — the standard
+/// the server using `with_server_certificate_hashes` - the standard
 /// WebTransport certificate pinning mechanism.
 fn make_test_identity() -> (Identity, Sha256Digest) {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"]).unwrap();
@@ -162,7 +181,7 @@ async fn test_webtransport_single_table_roundtrip() {
     let recv = conn.accept_uni().await.unwrap();
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
     drop(conn);
 
@@ -213,7 +232,7 @@ async fn test_webtransport_multi_table_roundtrip() {
     let recv = conn.accept_uni().await.unwrap();
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
     drop(conn);
 

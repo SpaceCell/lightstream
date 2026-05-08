@@ -1,6 +1,6 @@
 //! # Asynchronous TLV sink
 //!
-//! Wraps any `AsyncWrite` and streams Type–Length–Value (TLV) frames produced
+//! Wraps any `AsyncWrite` and streams Type-Length-Value (TLV) frames produced
 //! by [`TLVStreamWriter`].
 //!
 //! ## Overview:

@@ -11,17 +11,15 @@
 //! `QuicTableReader` implements `Stream<Item = io::Result<Table>>`, so it
 //! can be used with `StreamExt` for infinite or long-lived streams:
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use futures_util::StreamExt;
-//! # async fn run() -> std::io::Result<()> {
-//! # use lightstream::models::readers::quic::QuicTableReader;
-//! # let recv_stream: quinn::RecvStream = todo!();
+//! use lightstream::models::readers::quic::QuicTableReader;
+//!
 //! let mut reader = QuicTableReader::from_recv(recv_stream);
 //! while let Some(result) = reader.next().await {
 //!     let table = result?;
 //!     // process each batch as it arrives
 //! }
-//! # Ok(()) }
 //! ```
 
 use std::io;
@@ -29,12 +27,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use minarrow::{Field, SuperTable, Table};
+use minarrow::{Field, SuperTable, Table, Vec64};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
 use crate::models::streams::quic::QuicByteStream;
-use crate::traits::transport_reader::TransportReader;
+use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over a QUIC receive stream.
 ///
@@ -43,7 +41,7 @@ use crate::traits::transport_reader::TransportReader;
 ///
 /// Implements `Stream<Item = io::Result<Table>>` for continuous streaming.
 pub struct QuicTableReader {
-    inner: TableReader<QuicByteStream, Vec<u8>>,
+    inner: TableReader<Vec64<u8>>,
 }
 
 impl QuicTableReader {
@@ -53,7 +51,7 @@ impl QuicTableReader {
     /// The default chunk size is `BufferChunkSize::WebTransport` (64 KiB).
     pub fn from_recv(recv: quinn::RecvStream) -> Self {
         let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-        let inner = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
         Self { inner }
     }
 
@@ -64,18 +62,18 @@ impl QuicTableReader {
         protocol: IPCMessageProtocol,
     ) -> Self {
         let stream = QuicByteStream::new(recv, chunk_size);
-        let inner = TableReader::new(stream, chunk_size.chunk_size(), protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol);
         Self { inner }
     }
 
     /// Wrap an existing `QuicByteStream` as a table reader.
     pub fn from_stream(stream: QuicByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
         Self { inner }
     }
 }
 
-impl TransportReader for QuicTableReader {
+impl IPCTransportReader for QuicTableReader {
     /// Read all tables from the stream until it closes.
     async fn read_all_tables(self) -> io::Result<Vec<Table>> {
         self.inner.read_all_tables().await

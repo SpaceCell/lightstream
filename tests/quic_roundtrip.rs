@@ -13,8 +13,8 @@ use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::readers::quic::QuicTableReader;
 use lightstream::models::streams::quic::QuicByteStream;
 use lightstream::models::writers::quic::QuicTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
@@ -62,6 +62,7 @@ fn make_test_table() -> Table {
         )))),
     );
 
+    #[cfg(not(feature = "default_categorical_8"))]
     let dict_col = FieldArray::new(
         Field {
             name: "category".into(),
@@ -71,6 +72,24 @@ fn make_test_table() -> Table {
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[0u32, 1, 2, 0])),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(4, true)),
+        }))),
+    );
+    #[cfg(feature = "default_categorical_8")]
+    let dict_col = FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 2, 0])),
             unique_values: Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
@@ -100,7 +119,7 @@ fn make_server_config() -> quinn::ServerConfig {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert);
     let key_der =
-        rustls::pki_types::PrivateKeyDer::try_from(cert.key_pair.serialize_der()).unwrap();
+        rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der()).unwrap();
 
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -208,7 +227,7 @@ async fn test_quic_single_table_roundtrip() {
     let conn = endpoint.accept().await.unwrap().await.unwrap();
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
 
@@ -254,7 +273,7 @@ async fn test_quic_multi_table_roundtrip() {
     let conn = endpoint.accept().await.unwrap().await.unwrap();
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
 

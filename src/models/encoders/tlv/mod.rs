@@ -1,9 +1,16 @@
-//! # TLV Frame Encoder
+//! # TLV Encoders
 //!
-//! Encodes Type–Length–Value frames with a 1-byte type and a little-endian `u32` length,
-//! writing into any [`StreamBuffer`].
-//!
-//! No alignment padding is added.
+//! TLV frame encoding and buffered stream writing.
+
+/// Buffered TLV stream writer.
+pub mod tlv_stream;
+
+// ---------------------------------------------------------------------------
+// TLV Frame Encoder
+//
+// Encodes Type-Length-Value frames with a 1-byte type and a little-endian
+// u32 length, writing into any StreamBuffer.
+// ---------------------------------------------------------------------------
 
 use crate::models::frames::tlv_frame::TLVFrame;
 use crate::traits::frame_encoder::FrameEncoder;

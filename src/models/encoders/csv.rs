@@ -111,12 +111,13 @@ pub fn encode_table_csv<W: Write>(
             Array::NumericArray(arr) => null_masks.push(arr.null_mask()),
             Array::BooleanArray(arr) => null_masks.push(arr.null_mask.as_ref()),
             Array::TextArray(TextArray::String32(arr)) => null_masks.push(arr.null_mask.as_ref()),
+            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
                 null_masks.push(arr.null_mask.as_ref())
             }
             #[cfg(feature = "large_string")]
             Array::TextArray(TextArray::String64(arr)) => null_masks.push(arr.null_mask.as_ref()),
-            #[cfg(feature = "extended_categorical")]
+            #[cfg(feature = "default_categorical_8")]
             Array::TextArray(TextArray::Categorical8(arr)) => {
                 null_masks.push(arr.null_mask.as_ref())
             }
@@ -145,10 +146,11 @@ pub fn encode_table_csv<W: Write>(
     let mut cat_maps: Vec<Option<&[String]>> = Vec::with_capacity(table.cols.len());
     for col in &table.cols {
         match &col.array {
+            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
                 cat_maps.push(Some(&arr.unique_values))
             }
-            #[cfg(feature = "extended_categorical")]
+            #[cfg(feature = "default_categorical_8")]
             Array::TextArray(TextArray::Categorical8(arr)) => {
                 cat_maps.push(Some(&arr.unique_values))
             }
@@ -283,8 +285,9 @@ pub fn encode_table_csv<W: Write>(
                     let q = escape_and_quote(&s, delimiter, quote);
                     writer.write_all(q.as_bytes())?;
                 }
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 Array::TextArray(TextArray::Categorical32(arr)) => {
-                    // dictionary lookup—always a clean UTF-8
+                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
                     let val = arr
                         .unique_values
@@ -294,9 +297,9 @@ pub fn encode_table_csv<W: Write>(
                     let q = escape_and_quote(val, delimiter, quote);
                     writer.write_all(q.as_bytes())?;
                 }
-                #[cfg(feature = "extended_categorical")]
+                #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(arr)) => {
-                    // dictionary lookup—always a clean UTF-8
+                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
                     let val = arr
                         .unique_values
@@ -308,7 +311,7 @@ pub fn encode_table_csv<W: Write>(
                 }
                 #[cfg(feature = "extended_categorical")]
                 Array::TextArray(TextArray::Categorical16(arr)) => {
-                    // dictionary lookup—always a clean UTF-8
+                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
                     let val = arr
                         .unique_values
@@ -320,7 +323,7 @@ pub fn encode_table_csv<W: Write>(
                 }
                 #[cfg(feature = "extended_categorical")]
                 Array::TextArray(TextArray::Categorical64(arr)) => {
-                    // dictionary lookup—always a clean UTF-8
+                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
                     let val = arr
                         .unique_values

@@ -7,7 +7,7 @@
 //! ```
 //!
 //! After decoding, frames are represented as [`LightstreamMessage`] variants
-//! — either an opaque message or a decoded Arrow table.
+//! - either an opaque message or a decoded Arrow table.
 //!
 //! With the `protobuf` feature enabled, message variants gain typed decode
 //! methods via prost: [`decode_payload`] and [`into_decoded_payload`].
@@ -24,7 +24,7 @@ pub const FRAME_HEADER_SIZE: usize = 5;
 
 /// The category of a registered Lightstream type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameKind {
+pub enum FrameType {
     /// Opaque binary message payload.
     Message,
     /// Arrow IPC-encoded table.

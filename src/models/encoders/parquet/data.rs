@@ -71,7 +71,7 @@ pub fn encode_float64_plain(data: &[f64], out: &mut Vec<u8>) {
     }
 }
 
-// Boolean – bit-packed “plain” encoding
+// Boolean - bit-packed “plain” encoding
 //
 // We only support RLE encoding for Categorical types at the present time.
 
@@ -130,10 +130,10 @@ pub fn encode_string_plain(
     Ok(())
 }
 
-#[cfg(feature = "large_string")]
 /// Encode LargeString (i.e., UTF-8, 64-bit offsets) as length-prefix (u32 LE)
 ///
 /// Nulls emit zero length.
+#[cfg(feature = "large_string")]
 pub fn encode_large_string_plain(
     offsets: &[u64],
     values: &[u8],
@@ -267,7 +267,7 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
             }
         }
 
-        // byte-align – if bit_width * groups isn’t a multiple of 8 add zeros
+        // byte-align - if bit_width * groups isn’t a multiple of 8 add zeros
         let bytes_this_run = bit_width as usize * groups;
         if bytes_this_run % 1 != 0 {
             unreachable!(); // construction guarantees whole bytes

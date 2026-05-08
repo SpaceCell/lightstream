@@ -185,7 +185,7 @@ async fn write_and_read_roundtrip(compression: Compression) -> (Table, Table) {
     // Write with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -245,7 +245,7 @@ async fn test_compression_multiple_tables_roundtrip() {
     // Write with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -310,7 +310,7 @@ async fn test_compression_large_table_roundtrip() {
     // Test with compression that should be effective on repetitive data
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -344,7 +344,7 @@ async fn test_stream_protocol_compression_roundtrip() {
     // Write with Stream protocol and compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::Stream,
@@ -406,7 +406,7 @@ async fn test_compression_data_integrity() {
     // Write with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -455,4 +455,151 @@ async fn test_compression_data_integrity() {
     }
 
     println!("✓ Compression data integrity test passed");
+}
+
+/// Roundtrip test for dictionary/categorical columns with zstd compression.
+/// Verifies that compressed dictionary batches and record batches with
+/// dictionary-encoded columns decompress correctly.
+#[cfg(feature = "zstd")]
+#[tokio::test]
+async fn test_zstd_dictionary_roundtrip() {
+    use minarrow::ffi::arrow_dtype::CategoricalIndexType;
+    use minarrow::CategoricalArray;
+
+    let temp_file = NamedTempFile::new().unwrap();
+    let file_path = temp_file.path();
+    let n_rows = 500;
+
+    // Integer column for reference
+    let int_data: Vec64<i64> = (0..n_rows).map(|i| i as i64).collect();
+    let int_array = Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+        data: Buffer::from(int_data.clone()),
+        null_mask: None,
+    })));
+    let int_field = Field {
+        name: "id".into(),
+        dtype: ArrowType::Int64,
+        nullable: false,
+        metadata: Default::default(),
+    };
+
+    // Categorical column with dictionary encoding
+    let dict_values = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+
+    #[cfg(not(feature = "default_categorical_8"))]
+    let (dict_field, dict_array) = {
+        let indices: Vec64<u32> = (0..n_rows).map(|i| (i % 3) as u32).collect();
+        let field = Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt32),
+            nullable: false,
+            metadata: Default::default(),
+        };
+        let array = Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
+            data: Buffer::from(indices),
+            unique_values: Vec64::from(dict_values.clone()),
+            null_mask: None,
+        })));
+        (field, array)
+    };
+
+    #[cfg(feature = "default_categorical_8")]
+    let (dict_field, dict_array) = {
+        let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
+        let field = Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: false,
+            metadata: Default::default(),
+        };
+        let array = Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(indices),
+            unique_values: Vec64::from(dict_values.clone()),
+            null_mask: None,
+        })));
+        (field, array)
+    };
+
+    let schema = vec![int_field.clone(), dict_field.clone()];
+    let original_table = Table {
+        name: "dict_compression_test".to_string(),
+        n_rows,
+        cols: vec![
+            FieldArray::new(int_field, int_array),
+            FieldArray::new(dict_field, dict_array),
+        ],
+    };
+
+    // Write with zstd compression
+    {
+        let file = File::create(file_path).await.unwrap();
+        let mut writer = TableWriter::new_with_compression(
+            file,
+            schema.clone(),
+            IPCMessageProtocol::File,
+            Compression::Zstd,
+        )
+        .unwrap();
+        writer.register_dictionary(1, dict_values.clone());
+        writer
+            .write_all_tables(vec![original_table.clone()])
+            .await
+            .unwrap();
+    }
+
+    // Read back
+    let reader = FileTableReader::open(file_path).unwrap();
+    let tables = read_all_tables(&reader).unwrap();
+    assert_eq!(tables.len(), 1);
+    let rt = &tables[0];
+
+    // Verify structure
+    assert_eq!(rt.n_rows, n_rows);
+    assert_eq!(rt.cols.len(), 2);
+    assert_eq!(rt.cols[0].field.name, "id");
+    assert_eq!(rt.cols[1].field.name, "category");
+
+    // Verify integer data survived compression roundtrip
+    if let Array::NumericArray(NumericArray::Int64(arr)) = &rt.cols[0].array {
+        for i in 0..n_rows {
+            assert_eq!(arr.data[i], i as i64, "int value mismatch at row {}", i);
+        }
+    } else {
+        panic!("Expected Int64 array for id column");
+    }
+
+    // Verify dictionary data survived compression roundtrip
+    #[cfg(not(feature = "default_categorical_8"))]
+    if let Array::TextArray(TextArray::Categorical32(arr)) = &rt.cols[1].array {
+        assert_eq!(
+            arr.unique_values.as_slice(),
+            &["alpha", "beta", "gamma"],
+            "Dictionary values should match"
+        );
+        for i in 0..n_rows {
+            assert_eq!(
+                arr.data[i], (i % 3) as u32,
+                "category index mismatch at row {}", i
+            );
+        }
+    } else {
+        panic!("Expected Categorical32 array for category column");
+    }
+
+    #[cfg(feature = "default_categorical_8")]
+    if let Array::TextArray(TextArray::Categorical8(arr)) = &rt.cols[1].array {
+        assert_eq!(
+            arr.unique_values.as_slice(),
+            &["alpha", "beta", "gamma"],
+            "Dictionary values should match"
+        );
+        for i in 0..n_rows {
+            assert_eq!(
+                arr.data[i], (i % 3) as u8,
+                "category index mismatch at row {}", i
+            );
+        }
+    } else {
+        panic!("Expected Categorical8 array for category column");
+    }
 }

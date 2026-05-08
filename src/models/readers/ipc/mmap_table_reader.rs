@@ -18,11 +18,11 @@
 //! Follows the Arrow IPC specification
 //! <https://arrow.apache.org/docs/format/Columnar.html#ipc-file-format>.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::debug;
 
 use flatbuffers::Vector;
 use minarrow::{Field, SuperTable, Table};
@@ -31,9 +31,10 @@ use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
 use crate::constants::ARROW_MAGIC_NUMBER;
 use crate::debug_println;
+use minarrow::structs::shared_buffer::SharedBuffer;
+
 use crate::models::decoders::ipc::parser::{
-    RecordBatchParser, convert_fb_field_to_arrow, handle_dictionary_batch,
-    handle_record_batch_shared,
+    convert_fb_field_to_arrow, decode_record_batch, handle_dictionary_batch,
 };
 use crate::models::mmap::MemMap;
 
@@ -69,6 +70,24 @@ impl AsRef<[u8]> for MmapBytes {
         &self.mmap
     }
 }
+
+/// Wrapper enabling `Arc<MmapBytes>` to be used with `SharedBuffer::from_owner`.
+///
+/// `SharedBuffer::from_owner` requires `AsRef<[u8]> + Send + Sync + 'static`.
+/// `Arc<T>` only implements `AsRef<T>`, not `AsRef<[u8]>`, so we delegate
+/// through this wrapper which keeps the mmap alive via the inner Arc.
+struct MmapRegionOwner(Arc<MmapBytes>);
+
+impl AsRef<[u8]> for MmapRegionOwner {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+// Safety: the inner File is only held to keep the mmap alive. It is never
+// read from after construction, so sharing across threads is safe.
+unsafe impl Send for MmapRegionOwner {}
+unsafe impl Sync for MmapRegionOwner {}
 
 /// Zero-copy Arrow IPC file reader backed by a memory map
 ///
@@ -241,7 +260,24 @@ impl MmapTableReader {
             .record_blocks
             .get(idx)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
-        self.parse_batch_block(blk)
+        self.parse_batch_block(blk, None)
+    }
+
+    /// Read the `idx`th record batch, materialising only the named columns.
+    ///
+    /// Column names must match schema field names. Returns an error if any
+    /// name is not found. The returned Table contains only the projected
+    /// columns, in schema order.
+    ///
+    /// For the mmap reader, this means pages backing skipped columns are
+    /// never faulted in - a significant win for wide tables on cold reads.
+    pub fn read_columns(&self, idx: usize, columns: &[&str]) -> io::Result<Table> {
+        let blk = self
+            .record_blocks
+            .get(idx)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
+        let projection = self.resolve_column_indices(columns)?;
+        self.parse_batch_block(blk, Some(&projection))
     }
 
     /// Alias of [`read_batch`].
@@ -256,7 +292,7 @@ impl MmapTableReader {
     pub fn into_supertable(&self, name_override: Option<String>) -> io::Result<SuperTable> {
         let mut batches = Vec::with_capacity(self.record_blocks.len());
         for blk in &self.record_blocks {
-            batches.push(Arc::new(self.parse_batch_block(blk)?));
+            batches.push(Arc::new(self.parse_batch_block(blk, None)?));
         }
         Ok(SuperTable::from_batches(batches, name_override))
     }
@@ -276,8 +312,6 @@ impl MmapTableReader {
                 io::Error::new(io::ErrorKind::InvalidData, "expected DictionaryBatch")
             })?;
 
-            RecordBatchParser::check_dictionary_delta(&dict_batch)?;
-
             let body =
                 &data[blk.offset + blk.meta_bytes..blk.offset + blk.meta_bytes + blk.body_bytes];
 
@@ -287,8 +321,28 @@ impl MmapTableReader {
         Ok(())
     }
 
-    /// Parse a record batch block into a `Table` - zero-copy over the mmap region
-    fn parse_batch_block(&self, blk: &IPCFileBlock) -> io::Result<Table> {
+    /// Resolve column names to their schema indices, erroring on unknown names.
+    fn resolve_column_indices(&self, columns: &[&str]) -> io::Result<HashSet<usize>> {
+        let mut indices = HashSet::with_capacity(columns.len());
+        for name in columns {
+            let idx = self.schema.iter().position(|f| f.name == *name)
+                .ok_or_else(|| io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("column '{}' not found in schema", name),
+                ))?;
+            indices.insert(idx);
+        }
+        Ok(indices)
+    }
+
+    /// Parse a record batch block into a `Table` - zero-copy over the mmap region.
+    /// When `projection` is `Some`, only the specified columns are materialised,
+    /// so mmap pages backing skipped columns are never faulted in.
+    fn parse_batch_block(
+        &self,
+        blk: &IPCFileBlock,
+        projection: Option<&HashSet<usize>>,
+    ) -> io::Result<Table> {
         let data = self.region.as_ref();
         let meta_slice = self.slice_message(data, blk)?;
         let original_body_offset = blk.offset + blk.meta_bytes;
@@ -315,19 +369,20 @@ impl MmapTableReader {
             io::Error::new(io::ErrorKind::InvalidData, "expected RecordBatch header")
         })?;
 
-        // Use shared handler that supports both Arc<[u8]> and mmap zero-copy.
-        handle_record_batch_shared(
+        // Wrap the mmap region as a SharedBuffer for zero-copy column decoding
+        let shared = SharedBuffer::from_owner(MmapRegionOwner(self.region.clone()));
+        let fields: Vec<_> = self.schema.iter().map(|a| a.as_ref().clone()).collect();
+
+        let (table, _shared) = decode_record_batch(
             &rec,
-            &self
-                .schema
-                .iter()
-                .map(|a| a.as_ref().clone())
-                .collect::<Vec<_>>(),
+            &fields,
             &self.dictionaries,
-            self.region.clone(),
+            shared,
             body_offset,
             body_len,
-        )
+            projection,
+        )?;
+        Ok(table)
     }
 
     /// Slice and validate the FlatBuffers message at the given block - checks continuation + size.
@@ -505,7 +560,16 @@ mod tests {
                         owned_count += 1;
                     }
                 }
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
+                    if a.data.is_shared() {
+                        shared_count += 1;
+                    } else {
+                        owned_count += 1;
+                    }
+                }
+                #[cfg(feature = "default_categorical_8")]
+                Array::TextArray(TextArray::Categorical8(a)) => {
                     if a.data.is_shared() {
                         shared_count += 1;
                     } else {
@@ -591,10 +655,18 @@ mod tests {
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.bits.is_shared());
                     }
+                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                     Array::TextArray(TextArray::Categorical32(arr)) => {
-                        // Note: May be owned or shared depending on alignment
                         if arr.data.is_shared() {
                             debug!("Categorical32 is shared");
+                        }
+                        let owned = arr.data.to_owned_copy();
+                        assert!(!owned.is_shared());
+                    }
+                    #[cfg(feature = "default_categorical_8")]
+                    Array::TextArray(TextArray::Categorical8(arr)) => {
+                        if arr.data.is_shared() {
+                            debug!("Categorical8 is shared");
                         }
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.is_shared());
@@ -613,4 +685,5 @@ mod tests {
         let err = rdr.read_batch(1000).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
+
 }

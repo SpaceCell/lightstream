@@ -1,12 +1,12 @@
-//! # IPC FlatBuffers Builders (internal)
-//!
-//! Helpers that construct FlatBuffer-encoded Arrow IPC artefacts used by the encoder.
+//! # IPC FlatBuffers Builders
+//! 
+//! Internal Helpers that construct FlatBuffer-encoded Arrow IPC artefacts used by the encoder.
 //! This includes schema messages, record batches, dictionary batches, and the file footer with block metadata.
 //!
 //! Follows the IPC protocol as outlined
 //! [here](https://arrow.apache.org/docs/format/Columnar.html#serialisation-and-interprocess-communication-ipc).
 //!
-//! Uses the generated FlatBuffers types under `src/arrow/*` (built from `src/flatb/*`).
+//! Uses the generated FlatBuffers types under `src/arrow/*`, that are built from `src/flatb/*`.
 
 use std::io::{self};
 
@@ -62,8 +62,8 @@ pub fn build_flatbuf_schema<'a>(
     Ok(flatbuffers)
 }
 
-/// Build a vector of Arrow schema `Field` objects (for Arrow IPC message section),
-/// using the message-specific FlatBuffers definitions.
+/// Build a vector of Arrow schema `Field` objects using the message-specific 
+/// FlatBuffers definitions.
 ///
 /// This constructs FlatBuffers offsets for each Arrow field, with each field
 /// encoded using the `fbm` (message) schema types.
@@ -91,8 +91,7 @@ fn build_flatbuf_fields<'fbb>(
     Ok(fb_fields)
 }
 
-/// Build a single Arrow schema `Field` object (for Arrow IPC message section),
-/// using message-specific FlatBuffers definitions.
+/// Build a single Arrow schema `Field` object using message-specific FlatBuffers definitions.
 ///
 /// This encodes all Arrow logical types as a FlatBuffer offset, for use in Arrow IPC message metadata.
 ///
@@ -259,13 +258,14 @@ fn build_flatbuf_field<'fbb>(
         ArrowType::Dictionary(idx_ty) => {
             // Build index type for dictionary
             let idx_width = match idx_ty {
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 CategoricalIndexType::UInt32 => 32,
+                #[cfg(feature = "default_categorical_8")]
+                CategoricalIndexType::UInt8 => 8,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt64 => 64,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt16 => 16,
-                #[cfg(feature = "extended_categorical")]
-                CategoricalIndexType::UInt8 => 8,
             };
 
             // Create the index type Int
@@ -338,17 +338,27 @@ pub(crate) fn build_flatbuf_recordbatch<'a>(
     fb_field_nodes: &[fbm::FieldNode],
     fb_buffers: &[fbm::Buffer],
     body_len: usize,
+    compression: Option<fbm::CompressionType>,
 ) -> io::Result<Vec<u8>> {
     fbb.reset();
     let fb_nodes_vec = fbb.create_vector(fb_field_nodes);
     let fb_buffers_vec = fbb.create_vector(fb_buffers);
+    let fb_compression = compression.map(|codec| {
+        fbm::BodyCompression::create(
+            fbb,
+            &fbm::BodyCompressionArgs {
+                codec,
+                method: fbm::BodyCompressionMethod::BUFFER,
+            },
+        )
+    });
     let rb = fbm::RecordBatch::create(
         fbb,
         &fbm::RecordBatchArgs {
             length: n_rows as i64,
             nodes: Some(fb_nodes_vec),
             buffers: Some(fb_buffers_vec),
-            compression: None,
+            compression: fb_compression,
             variadicBufferCounts: None,
         },
     );
@@ -650,13 +660,14 @@ fn build_flatbuf_field_file<'fbb>(
         }
         ArrowType::Dictionary(idx_ty) => {
             let idx_width = match idx_ty {
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 CategoricalIndexType::UInt32 => 32,
+                #[cfg(feature = "default_categorical_8")]
+                CategoricalIndexType::UInt8 => 8,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt64 => 64,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt16 => 16,
-                #[cfg(feature = "extended_categorical")]
-                CategoricalIndexType::UInt8 => 8,
             };
 
             let index_type = fbf::Int::create(

@@ -11,9 +11,9 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::ipc::table_reader::TableReader;
-use lightstream::models::streams::websocket::WebSocketByteStream;
+use lightstream::models::streams::websocket::{WsRead, WsWrite};
 use lightstream::models::writers::websocket::WebSocketTableWriter;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
@@ -63,6 +63,7 @@ fn make_test_table() -> Table {
         )))),
     );
 
+    #[cfg(not(feature = "default_categorical_8"))]
     let dict_col = FieldArray::new(
         Field {
             name: "category".into(),
@@ -72,6 +73,24 @@ fn make_test_table() -> Table {
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[0u32, 1, 2, 0])),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(4, true)),
+        }))),
+    );
+    #[cfg(feature = "default_categorical_8")]
+    let dict_col = FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 2, 0])),
             unique_values: Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
@@ -96,17 +115,17 @@ fn make_schema(table: &Table) -> Vec<Field> {
         .collect()
 }
 
-/// Accept a TCP connection and upgrade it to a WebSocket, returning the
-/// read half wrapped as a `WebSocketByteStream` for Arrow IPC decoding.
+/// Accept a TCP connection and upgrade it to a WebSocket, returning
+/// a WsRead adapter for Arrow IPC decoding.
 async fn accept_ws_reader(
     listener: &TcpListener,
-) -> WebSocketByteStream<
-    futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>>,
-> {
+) -> WsRead<tokio::io::ReadHalf<tokio::net::TcpStream>, tokio::io::WriteHalf<tokio::net::TcpStream>> {
     let (socket, _) = listener.accept().await.unwrap();
     let ws = accept_async(socket).await.unwrap();
-    let (_, read_half) = futures_util::StreamExt::split(ws);
-    WebSocketByteStream::new(read_half)
+    let raw = ws.into_inner();
+    let (read_half, write_half) = tokio::io::split(raw);
+    let (shared_writer, _ws_write) = WsWrite::new(write_half);
+    WsRead::new(read_half, shared_writer)
 }
 
 /// Basic roundtrip: write one table over WebSocket, read it back.
@@ -134,7 +153,7 @@ async fn test_ws_single_table_roundtrip() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -171,7 +190,7 @@ async fn test_ws_multi_table_roundtrip() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -209,7 +228,8 @@ async fn test_ws_stream_trait() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let mut reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let mut reader =
+        TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
 
     let mut count = 0;
     while let Some(result) = reader.next().await {
@@ -248,7 +268,7 @@ async fn test_ws_read_to_super_table() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
     let super_table = reader
         .read_to_super_table(Some("merged".into()), None)
         .await

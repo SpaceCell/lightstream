@@ -6,9 +6,9 @@ mod integration {
     use ::lightstream::enums::BufferChunkSize;
     use ::lightstream::enums::DecodeResult;
     use ::lightstream::enums::IPCMessageProtocol;
-    use ::lightstream::models::decoders::ipc::protocol::ArrowIPCFrameDecoder;
+    use ::lightstream::models::decoders::ipc::ArrowIPCFrameDecoder;
     use ::lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-    use ::lightstream::models::readers::ipc::table_stream_reader::TableStreamReader64;
+    use ::lightstream::models::readers::ipc::table_reader::TableReader;
     use ::lightstream::models::streams::disk::DiskByteStream;
     use ::lightstream::models::writers::ipc::table_stream_writer::write_tables_to_stream;
     use ::lightstream::models::writers::ipc::table_writer::TableWriter;
@@ -87,14 +87,29 @@ mod integration {
             StringArray::from_vec(ls_refs, None)
         };
 
-        let cat_keys: Vec64<u32> =
-            Vec64::from_slice(&(0..n as u32).map(|i| i % 3).collect::<Vec<_>>());
-        let cat_values: Vec<String> = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let cat32 = CategoricalArray::new(
-            minarrow::Buffer::from(cat_keys),
-            Vec64::from(cat_values.clone()),
-            None,
-        );
+        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        let cat32 = {
+            let cat_keys: Vec64<u32> =
+                Vec64::from_slice(&(0..n as u32).map(|i| i % 3).collect::<Vec<_>>());
+            let cat_values: Vec<String> = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+            CategoricalArray::new(
+                minarrow::Buffer::from(cat_keys),
+                Vec64::from(cat_values.clone()),
+                None,
+            )
+        };
+
+        #[cfg(feature = "default_categorical_8")]
+        let cat8_default = {
+            let cat_keys: Vec64<u8> =
+                Vec64::from_slice(&(0..n as u8).map(|i| (i % 3) as u8).collect::<Vec<_>>());
+            let cat_values: Vec<String> = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+            CategoricalArray::new(
+                minarrow::Buffer::from(cat_keys),
+                Vec64::from(cat_values.clone()),
+                None,
+            )
+        };
 
         #[cfg(feature = "extended_categorical")]
         let cat_u8 = CategoricalArray::new(
@@ -161,16 +176,27 @@ mod integration {
                 Field::new("string", ArrowType::String, false, None),
                 Array::TextArray(TextArray::String32(Arc::new(string32))),
             ),
-            FieldArray::new(
-                Field::new(
-                    "cat32",
-                    ArrowType::Dictionary(CategoricalIndexType::UInt32),
-                    false,
-                    None,
-                ),
-                Array::TextArray(TextArray::Categorical32(Arc::new(cat32))),
-            ),
         ];
+        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        cols.push(FieldArray::new(
+            Field::new(
+                "cat32",
+                ArrowType::Dictionary(CategoricalIndexType::UInt32),
+                false,
+                None,
+            ),
+            Array::TextArray(TextArray::Categorical32(Arc::new(cat32))),
+        ));
+        #[cfg(feature = "default_categorical_8")]
+        cols.push(FieldArray::new(
+            Field::new(
+                "cat8",
+                ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                false,
+                None,
+            ),
+            Array::TextArray(TextArray::Categorical8(Arc::new(cat8_default))),
+        ));
         #[cfg(feature = "large_string")]
         cols.push(FieldArray::new(
             Field::new("large_string", ArrowType::LargeString, false, None),
@@ -219,10 +245,11 @@ mod integration {
             .iter()
             .enumerate()
             .filter_map(|(i, col)| match &col.array {
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 Array::TextArray(TextArray::Categorical32(arr)) => {
                     Some((i as i64, arr.unique_values.clone()))
                 }
-                #[cfg(feature = "extended_categorical")]
+                #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(arr)) => {
                     Some((i as i64, arr.unique_values.clone()))
                 }
@@ -327,10 +354,9 @@ mod integration {
 
                                     // Examine the message header if we got a frame
                                     if let DecodeResult::Frame { frame, .. } = result {
-                                        if !frame.message.is_empty() {
-                                            match flatbuffers::root::<fb::Message>(
-                                                &frame.message.as_ref(),
-                                            ) {
+                                        if !frame.message_range.is_empty() {
+                                            let msg_bytes = &chunk.as_ref()[frame.message_range.clone()];
+                                            match flatbuffers::root::<fb::Message>(msg_bytes) {
                                                 Ok(af_msg) => {
                                                     println!(
                                                         "Message header type: {:?}",
@@ -347,7 +373,7 @@ mod integration {
                                                 ),
                                             }
                                         } else {
-                                            println!("Frame has empty message");
+                                            println!("Frame has empty message range");
                                         }
                                     }
                                 }
@@ -365,27 +391,12 @@ mod integration {
                     .await
                     .unwrap();
                 let mut reader =
-                    TableStreamReader64::new(stream, 128 * 1024, IPCMessageProtocol::Stream);
-
-                // Debug the reader state
-                println!("Reader created, protocol: {:?}", reader.protocol());
-                println!("Reader finished: {}", reader.is_finished());
-                println!("Reader schema: {:?}", reader.schema());
+                    TableReader::<Vec64<u8>>::new(stream, 128 * 1024, IPCMessageProtocol::Stream);
 
                 match reader.next().await {
-                    Some(Ok(table)) => {
-                        println!("Successfully read table with {} rows", table.n_rows);
-                        table
-                    }
+                    Some(Ok(table)) => table,
                     Some(Err(e)) => panic!("Reader error: {}", e),
-                    None => {
-                        println!(
-                            "Reader state after None - finished: {}, error: {:?}",
-                            reader.is_finished(),
-                            reader.last_error()
-                        );
-                        panic!("Reader returned None - no data found")
-                    }
+                    None => panic!("Reader returned None - no data found"),
                 }
             }
         };
@@ -427,7 +438,7 @@ mod integration {
         let (mut tx, rx) = duplex(64 * 1024);
 
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         for (dict_id, unique) in dicts_for_table(&table) {
             writer.register_dictionary(dict_id, unique.to_vec());
         }
@@ -479,7 +490,8 @@ mod integration {
         }
 
         let combined = Combined { reader: rx };
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let tables = reader.read_all_tables().await.unwrap();
 
         assert_eq!(tables.len(), 1);
@@ -509,7 +521,7 @@ mod integration {
         let (mut tx, rx) = duplex(64 * 1024);
 
         let mut writer =
-            TableStreamWriter::<Vec<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
         for (dict_id, unique) in dicts_for_table(&table) {
             writer.register_dictionary(dict_id, unique.to_vec());
         }
@@ -561,7 +573,8 @@ mod integration {
         }
 
         let combined = Combined { reader: rx };
-        let reader = TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+        let reader: TableReader<Vec64<u8>> =
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
         let tables = reader.read_all_tables().await.unwrap();
 
         assert_eq!(tables.len(), 1);
@@ -634,22 +647,43 @@ mod integration {
         ));
 
         // dictionary with mask
-        let keys: Vec64<u32> = Vec64::from_slice(&(0..n as u32).map(|i| i % 2).collect::<Vec<_>>());
         let uniqs: Vec<String> = vec!["A".into(), "B".into()];
-        let cat_arr = CategoricalArray::new(
-            minarrow::Buffer::from(keys),
-            Vec64::from(uniqs.clone()),
-            Some(make_alternating_mask(n)),
-        );
-        cols.push(FieldArray::new(
-            Field::new(
-                "catn",
-                ArrowType::Dictionary(CategoricalIndexType::UInt32),
-                true,
-                None,
-            ),
-            Array::TextArray(TextArray::Categorical32(Arc::new(cat_arr))),
-        ));
+        #[cfg(not(feature = "default_categorical_8"))]
+        {
+            let keys: Vec64<u32> = Vec64::from_slice(&(0..n as u32).map(|i| i % 2).collect::<Vec<_>>());
+            let cat_arr = CategoricalArray::new(
+                minarrow::Buffer::from(keys),
+                Vec64::from(uniqs.clone()),
+                Some(make_alternating_mask(n)),
+            );
+            cols.push(FieldArray::new(
+                Field::new(
+                    "catn",
+                    ArrowType::Dictionary(CategoricalIndexType::UInt32),
+                    true,
+                    None,
+                ),
+                Array::TextArray(TextArray::Categorical32(Arc::new(cat_arr))),
+            ));
+        }
+        #[cfg(feature = "default_categorical_8")]
+        {
+            let keys: Vec64<u8> = Vec64::from_slice(&(0..n as u8).map(|i| (i % 2) as u8).collect::<Vec<_>>());
+            let cat_arr = CategoricalArray::new(
+                minarrow::Buffer::from(keys),
+                Vec64::from(uniqs.clone()),
+                Some(make_alternating_mask(n)),
+            );
+            cols.push(FieldArray::new(
+                Field::new(
+                    "catn",
+                    ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                    true,
+                    None,
+                ),
+                Array::TextArray(TextArray::Categorical8(Arc::new(cat_arr))),
+            ));
+        }
 
         let table = Table {
             cols,
@@ -676,7 +710,15 @@ mod integration {
                 IPCMessageProtocol::Stream => {
                     let mut table_with_dict = table.clone();
                     // Register dictionary in the table's categorical column
+                    #[cfg(not(feature = "default_categorical_8"))]
                     if let Array::TextArray(TextArray::Categorical32(cat_arr)) =
+                        &mut table_with_dict.cols[3].array
+                    {
+                        let cat_arr = Arc::make_mut(cat_arr);
+                        cat_arr.unique_values = Vec64::from(uniqs);
+                    }
+                    #[cfg(feature = "default_categorical_8")]
+                    if let Array::TextArray(TextArray::Categorical8(cat_arr)) =
                         &mut table_with_dict.cols[3].array
                     {
                         let cat_arr = Arc::make_mut(cat_arr);
@@ -700,7 +742,7 @@ mod integration {
                     .await
                     .unwrap();
                 let mut reader =
-                    TableStreamReader64::new(stream, 128 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(stream, 128 * 1024, IPCMessageProtocol::Stream);
                 reader.next().await.unwrap().unwrap()
             }
         };

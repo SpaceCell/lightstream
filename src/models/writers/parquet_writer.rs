@@ -19,7 +19,7 @@
 //!
 //! ## Limitations
 //! - Focused subset of the spec (no nested types, decimals, maps/lists, etc.)
-//! - One row group per file (sufficient for many batch/export workflows)
+//! - One row group per file, which is sufficient for many batch/export workflows
 //!
 //! ## Alternatives
 //! - From `Minarrow`, go `.to_arrow()` and get immediate access to the official writer.
@@ -60,33 +60,28 @@ use crate::models::types::parquet::ParquetLogicalType::{self};
 use crate::models::types::parquet::{ParquetEncoding, arrow_type_to_parquet};
 
 // Chunk size for page splitting
-pub const PAGE_CHUNK_SIZE: usize = 32_768;
+pub const PARQUET_PAGE_CHUNK_SIZE: usize = 32_768;
 
 /// Write the in-memory [`Table`] to `out` in *Parquet v2* format,
 /// supporting chunked/multi-page columns, per spec.
-///
+/// 
 /// # Support
-/// We have essentials Parquet support at this time.
-/// TLDR: **One can write, and read Parquet from `Minarrow`, but reading
-/// external files with more niche encodings may not work**.
-///
-/// **Implemented**:
+/// - This is a straightforward, zero-dependency parquet writer for the
+/// common use case.
+/// - One can write, and read Parquet from `Minarrow`, but reading
+/// external files with more niche encodings may not work.
 /// - Multiple data pages per column are emitted in fixed-size chunks.
 /// - Each dictionary page offset and first data page offset are stored in
 ///   ColumnMetadata.
 /// - Offset is updated after every write, including page headers and page bodies.
-/// - All page-level statistics are computed for that page's chunk only.
+/// - All page-level statistics are computed for that page's chunk.
 /// - `Zstd` and `Snappy` compression options
 /// `Plain` encoding for all types, and `RLE encoding` for *categorical* types.
-///
-/// **Not Implemented**
-/// - Other parquet encodings are not.
-/// - *PR's are welcome!*
 ///
 /// # Alternatives
 /// - When using Minarrow, one can use `.to_arrow()` or `.to_polars() to
 /// bridge over FFI to `arrow-rs`, `polars_arrow`, to immediately access the
-/// full reader/writer ecosystem, but at the penalty of long compile times.
+/// full reader/writer ecosystem, at the penalty of long compile times.
 pub fn write_parquet_table<W: Write + Seek>(
     table: &Table,
     mut out: W,
@@ -123,7 +118,7 @@ pub fn write_parquet_table<W: Write + Seek>(
     let n_rows = table.n_rows;
     let n_rows_i64 = n_rows as i64;
 
-    // Column loop (multi-page support)
+    // Column loop, multi-page support
     for col in &table.cols {
         let mut dictionary_page_offset = None;
         let mut encodings = vec![ParquetEncoding::Plain];
@@ -132,7 +127,17 @@ pub fn write_parquet_table<W: Write + Seek>(
         if is_dictionary(&col.array) {
             let dict_offset_before = out.stream_position()?;
             match &col.array {
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
+                    write_dictionary_page(
+                        &mut out,
+                        &mut offset,
+                        a.unique_values.iter().map(|s| s.as_bytes()),
+                        compression,
+                    )?;
+                }
+                #[cfg(feature = "default_categorical_8")]
+                Array::TextArray(TextArray::Categorical8(a)) => {
                     write_dictionary_page(
                         &mut out,
                         &mut offset,
@@ -157,7 +162,7 @@ pub fn write_parquet_table<W: Write + Seek>(
         let mut recorded_data_page_offset: Option<i64> = None;
 
         while start < n {
-            let end = usize::min(start + PAGE_CHUNK_SIZE, n);
+            let end = usize::min(start + PARQUET_PAGE_CHUNK_SIZE, n);
             let len = end - start;
 
             // encode the raw values for this slice
@@ -228,8 +233,17 @@ pub fn write_parquet_table<W: Write + Seek>(
 
                     encode_datetime64_plain(&a.data[start..end], &mut values_raw)
                 }
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
                     encode_dictionary_indices_rle(&a.data[start..end], &mut values_raw)?
+                }
+                #[cfg(feature = "default_categorical_8")]
+                Array::TextArray(TextArray::Categorical8(a)) => {
+                    let idx: Vec<u32> = a.data[start..end]
+                        .iter()
+                        .map(|&v| v as u32)
+                        .collect();
+                    encode_dictionary_indices_rle(&idx, &mut values_raw)?
                 }
                 #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
                 Array::TextArray(TextArray::Categorical64(a)) => {
@@ -269,7 +283,7 @@ pub fn write_parquet_table<W: Write + Seek>(
             page_body.extend_from_slice(&def_buf);
             page_body.extend_from_slice(&values_compressed);
 
-            // per-page statistics (stub)
+            // per-page statistics. This only supports null_count at the present time.
             let stats = Statistics {
                 null_count: Some(def_levels.iter().filter(|&&v| !v).count() as i64),
                 distinct_count: None,
@@ -430,12 +444,22 @@ where
 fn is_dictionary(arr: &Array) -> bool {
     matches!(
         arr,
-        Array::TextArray(TextArray::Categorical32(_) | TextArray::Categorical64(_))
+        Array::TextArray(
+            TextArray::Categorical8(_)
+                | TextArray::Categorical32(_)
+                | TextArray::Categorical64(_)
+        )
     )
 }
 
 /// true if the array is a (categorical) dictionary array.
-#[cfg(not(feature = "extended_categorical"))]
+#[cfg(all(feature = "default_categorical_8", not(feature = "extended_categorical")))]
+fn is_dictionary(arr: &Array) -> bool {
+    matches!(arr, Array::TextArray(TextArray::Categorical8(_)))
+}
+
+/// true if the array is a (categorical) dictionary array.
+#[cfg(not(any(feature = "default_categorical_8", feature = "extended_categorical")))]
 fn is_dictionary(arr: &Array) -> bool {
     matches!(arr, Array::TextArray(TextArray::Categorical32(_)))
 }
@@ -607,8 +631,8 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
         }
 
         // Otherwise gather a bit-packed segment up to:
-        //   – next RLE-eligible run, or
-        //   – end of data,
+        //   - next RLE-eligible run, or
+        //   - end of data,
         // but encode at least 8 values (spec) and a multiple of 8.
         let bp_start = i;
         let mut bp_len = 0usize;

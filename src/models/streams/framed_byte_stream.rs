@@ -97,7 +97,7 @@ where
                     return Poll::Ready(Some(Ok(frame)));
                 }
                 Ok(DecodeResult::NeedMore) => {
-                    // Not enough bytes for a frame—read more data.
+                    // Not enough bytes for a frame-read more data.
                 }
                 Err(e) => {
                     me.buf = B::default();

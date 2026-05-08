@@ -20,8 +20,8 @@ use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::tcp::TcpTableReader;
 use lightstream::models::streams::tcp::TcpByteStream;
 use lightstream::models::writers::tcp::TcpTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use tokio::net::TcpListener;
 
 #[tokio::main]

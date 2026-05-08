@@ -6,8 +6,7 @@
 //! Wraps a [`TableSink`] over a TCP write half, hiding the wiring
 //! so callers get a one-liner API.
 //!
-//! Uses `Vec<u8>` (8-byte aligned) encoding, matching the alignment
-//! expected by the standard Arrow IPC frame decoder on the read side.
+//! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding.
 
 use std::io;
 use std::pin::Pin;
@@ -19,31 +18,29 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
-use crate::models::sinks::table_sink::TableSink;
-use crate::traits::transport_writer::TransportWriter;
+use crate::models::sinks::table_sink::TableSink64;
+use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Async Arrow IPC writer over a TCP connection.
 ///
 /// Connects to a remote TCP endpoint and writes Arrow IPC stream
 /// protocol data using the standard encoding pipeline.
 ///
-/// Uses 8-byte aligned buffers to match the frame decoder on the
-/// read side, which always uses 8-byte alignment for frame boundary
-/// calculation.
+/// Uses 64-byte SIMD aligned buffers via Vec64.
 pub struct TcpTableWriter {
-    sink: TableSink<OwnedWriteHalf>,
+    sink: TableSink64<OwnedWriteHalf>,
 }
 
 impl TcpTableWriter {
     /// Connect to a TCP server and prepare to write Arrow IPC tables.
     ///
-    /// Uses `IPCMessageProtocol::Stream` — the unbounded protocol suited
+    /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
     pub async fn connect(addr: impl ToSocketAddrs, schema: Vec<Field>) -> io::Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         let (_read, write) = stream.into_split();
-        let sink = TableSink::new(write, schema, IPCMessageProtocol::Stream)?;
+        let sink = TableSink64::new(write, schema, IPCMessageProtocol::Stream)?;
         Ok(Self { sink })
     }
 
@@ -56,18 +53,18 @@ impl TcpTableWriter {
         let stream = TcpStream::connect(addr).await?;
         let (_read, write) = stream.into_split();
         let sink =
-            TableSink::with_compression(write, schema, IPCMessageProtocol::Stream, compression)?;
+            TableSink64::new_with_compression(write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 
     /// Wrap an existing TCP write half as a table writer.
     pub fn from_write_half(write_half: OwnedWriteHalf, schema: Vec<Field>) -> io::Result<Self> {
-        let sink = TableSink::new(write_half, schema, IPCMessageProtocol::Stream)?;
+        let sink = TableSink64::new(write_half, schema, IPCMessageProtocol::Stream)?;
         Ok(Self { sink })
     }
 }
 
-impl TransportWriter for TcpTableWriter {
+impl IPCTransportWriter for TcpTableWriter {
     /// Get the schema used for this writer.
     fn schema(&self) -> &[Field] {
         &self.sink.schema
@@ -75,7 +72,7 @@ impl TransportWriter for TcpTableWriter {
 
     /// Register a dictionary for categorical columns.
     fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
-        self.sink.inner.register_dictionary(dict_id, values);
+        self.sink.codec.register_dictionary(dict_id, values);
     }
 
     /// Write a single table and flush.

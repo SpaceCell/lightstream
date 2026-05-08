@@ -2,11 +2,11 @@
 //!
 //! High-level async writer that writes Arrow IPC encoded tables to stdout.
 //!
-//! Wraps a [`TableSink`] over `tokio::io::Stdout`, hiding the wiring
+//! Wraps a [`TableSink64`] over `tokio::io::Stdout`, hiding the wiring
 //! so callers get a simple API for CLI tools.
 //!
-//! Uses `Vec<u8>` (8-byte aligned) encoding, matching the alignment
-//! expected by the standard Arrow IPC frame decoder on the read side.
+//! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the
+//! alignment expected by the Arrow IPC frame decoder on the read side.
 //!
 //! ## CLI pipeline example
 //!
@@ -26,30 +26,29 @@ use tokio::io::Stdout;
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
-use crate::models::sinks::table_sink::TableSink;
-use crate::traits::transport_writer::TransportWriter;
+use crate::models::sinks::table_sink::TableSink64;
+use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Async Arrow IPC writer to stdout.
 ///
 /// Writes Arrow IPC stream protocol data to stdout using the standard
 /// encoding pipeline.
 ///
-/// Uses 8-byte aligned buffers to match the frame decoder on the
-/// read side, which always uses 8-byte alignment for frame boundary
-/// calculation.
+/// Uses Vec64<u8> for 64-byte SIMD aligned encoding, matching the
+/// Arrow IPC frame decoder on the read side.
 pub struct StdoutTableWriter {
-    sink: TableSink<Stdout>,
+    sink: TableSink64<Stdout>,
 }
 
 impl StdoutTableWriter {
     /// Create a new stdout table writer with the given schema.
     ///
-    /// Uses `IPCMessageProtocol::Stream` — the unbounded protocol suited
+    /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for pipe-based transport where the total number of batches is not
     /// known up front.
     pub fn new(schema: Vec<Field>) -> io::Result<Self> {
         let stdout = tokio::io::stdout();
-        let sink = TableSink::new(stdout, schema, IPCMessageProtocol::Stream)?;
+        let sink = TableSink64::new(stdout, schema, IPCMessageProtocol::Stream)?;
         Ok(Self { sink })
     }
 
@@ -57,12 +56,12 @@ impl StdoutTableWriter {
     pub fn new_with_compression(schema: Vec<Field>, compression: Compression) -> io::Result<Self> {
         let stdout = tokio::io::stdout();
         let sink =
-            TableSink::with_compression(stdout, schema, IPCMessageProtocol::Stream, compression)?;
+            TableSink64::new_with_compression(stdout, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }
 
-impl TransportWriter for StdoutTableWriter {
+impl IPCTransportWriter for StdoutTableWriter {
     /// Get the schema used for this writer.
     fn schema(&self) -> &[Field] {
         &self.sink.schema
@@ -70,7 +69,7 @@ impl TransportWriter for StdoutTableWriter {
 
     /// Register a dictionary for categorical columns.
     fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
-        self.sink.inner.register_dictionary(dict_id, values);
+        self.sink.codec.register_dictionary(dict_id, values);
     }
 
     /// Write a single table and flush.

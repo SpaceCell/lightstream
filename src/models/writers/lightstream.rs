@@ -3,7 +3,7 @@
 //! Wraps a [`LightstreamCodec`] and an [`AsyncWrite`] destination, providing
 //! methods to send messages and Arrow tables over a single connection.
 //!
-//! Tables are encoded using the Arrow IPC streaming protocol — schema is
+//! Tables are encoded using the Arrow IPC streaming protocol - schema is
 //! sent once per table type, then only record batches after that.
 //!
 //! With the `protobuf` feature, [`send_proto`] provides typed message
@@ -18,7 +18,7 @@ use std::io;
 use minarrow::Field;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::models::protocol::codec::LightstreamCodec;
+use crate::models::codecs::lightstream::LightstreamCodec;
 use crate::traits::stream_buffer::StreamBuffer;
 
 /// Async writer for the Lightstream protocol.
@@ -26,9 +26,14 @@ use crate::traits::stream_buffer::StreamBuffer;
 /// Encodes messages and Arrow tables via the codec and writes the
 /// resulting frames to the underlying `AsyncWrite` destination.
 /// Table payloads use the Arrow IPC streaming protocol internally.
+///
+/// Holds a pooled encode buffer that is reused across `send_table` calls.
+/// After warmup no per-batch allocation occurs for table encoding.
 pub struct LightstreamWriter<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin = Vec<u8>> {
     codec: LightstreamCodec<B>,
     dest: W,
+    /// Pooled buffer for direct table encoding, reused across send_table calls.
+    encode_buf: B,
 }
 
 impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W, B> {
@@ -37,6 +42,7 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
         Self {
             codec: LightstreamCodec::new(),
             dest,
+            encode_buf: B::with_capacity(0),
         }
     }
 
@@ -64,6 +70,10 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
     }
 
     /// Send an Arrow table by type name.
+    ///
+    /// Uses the direct encode path which writes column data from the Table's
+    /// arrays into a pooled buffer in one pass. After warmup the encode buffer
+    /// is reused and no per-batch allocation occurs.
     pub async fn send_table(&mut self, name: &str, table: &minarrow::Table) -> io::Result<()> {
         let tag = self.codec.tag_by_name(name).ok_or_else(|| {
             io::Error::new(
@@ -71,8 +81,8 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
                 format!("unknown type name '{}'", name),
             )
         })?;
-        let frame = self.codec.encode_table(tag, table)?;
-        self.dest.write_all(frame.as_ref()).await?;
+        self.codec.encode_table(tag, table, &mut self.encode_buf)?;
+        self.dest.write_all(self.encode_buf.as_ref()).await?;
         Ok(())
     }
 

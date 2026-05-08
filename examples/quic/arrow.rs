@@ -22,8 +22,8 @@ use std::sync::Arc;
 use helpers::{make_table, table_schema};
 use lightstream::models::readers::quic::QuicTableReader;
 use lightstream::models::writers::quic::QuicTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 
 // ---------------------------------------------------------------------------
 // TLS helpers
@@ -35,6 +35,9 @@ use lightstream::traits::transport_writer::TransportWriter;
 struct SkipVerification;
 
 impl rustls::client::danger::ServerCertVerifier for SkipVerification {
+
+    // Note in a prod setting these of course need to be completed robustly
+    // and extensively, and generally not self-signed
     fn verify_server_cert(
         &self,
         _end_entity: &rustls::pki_types::CertificateDer<'_>,
@@ -80,7 +83,7 @@ fn generate_self_signed_cert() -> (
 ) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert);
-    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
     (
         vec![cert_der],
         rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),

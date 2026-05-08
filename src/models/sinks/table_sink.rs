@@ -10,9 +10,9 @@
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
-use crate::models::encoders::ipc::table_stream::GTableStreamEncoder;
+use crate::models::codecs::ipc::ArrowIpcCodec;
+use crate::models::writers::ipc::table_stream_writer::TableStreamWriter;
 use crate::traits::stream_buffer::StreamBuffer;
-use futures_core::Stream;
 use minarrow::{Field, Table, Vec64};
 use std::io;
 use tokio::io::AsyncWrite;
@@ -48,16 +48,19 @@ pub type TableSink64<W> = GTableSink<W, Vec64<u8>>;
 pub struct GTableSink<W, B>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
-    B: StreamBuffer,
+    B: StreamBuffer + Unpin + 'static,
 {
     pub(crate) schema: Vec<Field>,
-    pub(crate) inner: GTableStreamEncoder<B>,
+    pub(crate) codec: ArrowIpcCodec<B>,
     pub(crate) destination: W,
     pub(crate) protocol: IPCMessageProtocol,
-    pub(crate) schema_written: bool,
     pub(crate) finished: bool,
     pub(crate) frame_buf: Option<B>, // Current frame being written
     pub(crate) frame_pos: usize,     // How many bytes have been written so far
+    /// Pooled encode buffer reused across send_table calls.
+    pub(crate) encode_buf: B,
+    /// Frame-by-frame writer for File protocol with footer tracking
+    pub(crate) file_writer: Option<TableStreamWriter<B>>,
 }
 
 impl<W, B> GTableSink<W, B>
@@ -67,33 +70,45 @@ where
 {
     /// Create a new generic Arrow Table writer.
     pub fn new(sink: W, schema: Vec<Field>, protocol: IPCMessageProtocol) -> io::Result<Self> {
+        let file_writer = if protocol == IPCMessageProtocol::File {
+            Some(TableStreamWriter::new(schema.clone(), protocol))
+        } else {
+            None
+        };
         Ok(Self {
-            inner: GTableStreamEncoder::new(schema.clone(), protocol),
+            codec: ArrowIpcCodec::new(schema.clone(), protocol, Compression::None),
             schema,
             destination: sink,
             protocol,
-            schema_written: false,
             finished: false,
             frame_buf: None,
             frame_pos: 0,
+            encode_buf: B::with_capacity(0),
+            file_writer,
         })
     }
 
-    pub fn with_compression(
+    pub fn new_with_compression(
         sink: W,
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
         compression: Compression,
     ) -> io::Result<Self> {
+        let file_writer = if protocol == IPCMessageProtocol::File {
+            Some(TableStreamWriter::new(schema.clone(), protocol))
+        } else {
+            None
+        };
         Ok(Self {
-            inner: GTableStreamEncoder::with_compression(schema.clone(), protocol, compression),
+            codec: ArrowIpcCodec::new(schema.clone(), protocol, compression),
             schema,
             destination: sink,
             protocol,
-            schema_written: false,
             finished: false,
             frame_buf: None,
             frame_pos: 0,
+            encode_buf: B::with_capacity(0),
+            file_writer,
         })
     }
 
@@ -114,27 +129,43 @@ where
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(mut self: Pin<&mut Self>, table: Table) -> Result<(), Self::Error> {
-        if !self.schema_written {
-            self.inner.write_schema_frame()?;
-            self.schema_written = true;
+    fn start_send(self: Pin<&mut Self>, table: Table) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+
+        if this.protocol == IPCMessageProtocol::Stream {
+            // Stream protocol: encode directly into a pooled buffer
+            let mut buf = std::mem::replace(&mut this.encode_buf, B::with_capacity(0));
+            let len = buf.len();
+            if len > 0 {
+                buf.drain(0..len);
+            }
+            this.codec.encode(&table, &mut buf, 0)?;
+            this.frame_buf = Some(buf);
+            this.frame_pos = 0;
+        } else {
+            // File protocol: use the writer for frame-by-frame encoding
+            // with footer block tracking
+            if let Some(writer) = &mut this.file_writer {
+                writer.write(&table)?;
+            }
         }
-        self.inner.write_record_batch_frame(&table)?;
         Ok(())
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         // drain encoder into sink, honouring partial writes
         loop {
-            // If no frame buffered, poll encoder for next one.
+            // If no frame buffered, pull next from the file writer's queue.
             if self.frame_buf.is_none() {
-                match Pin::new(&mut self.inner).poll_next(cx) {
-                    Poll::Ready(Some(Ok(frame))) => {
+                if let Some(writer) = &mut self.file_writer {
+                    if let Some(Ok(frame)) = writer.next_frame() {
                         self.frame_pos = 0;
                         self.frame_buf = Some(frame);
+                    } else {
+                        break;
                     }
-                    Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(e)),
-                    Poll::Ready(None) | Poll::Pending => break,
+                } else {
+                    break;
                 }
             }
 
@@ -158,11 +189,11 @@ where
                         self.frame_pos += n;
                         if self.frame_pos < buf.as_ref().len() {
                             self.frame_buf = Some(buf);
-                            // Explicitly wake the task to ensure it gets polled again
                             cx.waker().wake_by_ref();
                             return Poll::Pending;
                         } else {
-                            // frame fully written – loop for next
+                            // Frame fully written - reclaim the buffer for reuse
+                            self.encode_buf = buf;
                             self.frame_pos = 0;
                         }
                     }
@@ -180,7 +211,16 @@ where
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         // Emit EOS / footer
         if !self.finished {
-            self.inner.finish()?; // enqueue EOS or footer frame
+            if let Some(writer) = &mut self.file_writer {
+                // File protocol: writer handles footer + EOS
+                writer.finish()?;
+            } else {
+                // Stream protocol: write EOS into a buffer and queue it
+                let mut eos_buf = B::with_capacity(8);
+                self.codec.finish(&mut eos_buf)?;
+                self.frame_buf = Some(eos_buf);
+                self.frame_pos = 0;
+            }
             self.finished = true;
         }
 

@@ -1,9 +1,8 @@
 //! # Arrow <-> Parquet Type Mapping
 //!
-//! This module provides conversions between Arrow/Minarrow types and Parquet physical/logical
+//! This module includes conversions between Arrow/Minarrow types and Parquet physical/logical
 //! types as defined in the Parquet specification.  
-//! It's used during encoding and decoding of Parquet files to ensure type-safe
-//! interoperability.
+//! It's used during encoding and decoding of Parquet files to support type-safe interoperability.
 
 use crate::error::IoError;
 #[cfg(feature = "datetime")]
@@ -278,8 +277,12 @@ pub(crate) fn arrow_type_to_parquet(
                 is_signed: false,
             },
         )),
+        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         ArrowType::Dictionary(CategoricalIndexType::UInt32) => {
-            // TODO[5]: Fix for non Cat32
+            Ok((ParquetPhysicalType::Int32, ParquetLogicalType::NoneType))
+        }
+        #[cfg(feature = "default_categorical_8")]
+        ArrowType::Dictionary(CategoricalIndexType::UInt8) => {
             Ok((ParquetPhysicalType::Int32, ParquetLogicalType::NoneType))
         }
         ArrowType::Float32 => Ok((ParquetPhysicalType::Float, ParquetLogicalType::NoneType)),
@@ -351,9 +354,6 @@ pub(crate) fn arrow_type_to_parquet(
         ArrowType::Interval(_) => panic!("Interval does not map to a parquet type."),
         #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
         &minarrow::ArrowType::Dictionary(
-            minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt8,
-        )
-        | &minarrow::ArrowType::Dictionary(
             minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt16,
         )
         | &minarrow::ArrowType::Dictionary(

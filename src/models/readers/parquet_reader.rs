@@ -1,16 +1,16 @@
 //! # Parquet table reader - *reads into `minarrow::Table`*
 //!
-//! ## Overview
-//! - Supports DataPageV2 and legacy V1 Parquet layouts
+//! ## Features
+//! - Supports DataPageV2 plus the legacy V1 Parquet layout
 //! - Decodes hybrid RLE/bit-packed definition levels and dictionary indices
 //! - Handles `PLAIN` and `RLE_DICTIONARY` value encodings
 //! - Optional feature-gated Snappy / Zstd compression
-//! - Type mapping to Arrow/Minarrow - {i32, i64, u32, u64, f32, f64, bool, utf8
-//!   dictionary<u32/u64 (feature-flagged)>, and date32/date64 via `datetime` feature}
+//! - Type maps to Arrow/Minarrow - {i32, i64, u32, u64, f32, f64, bool, utf8
+//!   dictionary<u32/u64, and date32/date64 via `datetime` feature}
 //! - No nested type support
 //! - Works with any `Read + Seek`
 //! - Reads into memory - no mmap zero-copy like IPC at the present time.
-//!
+//! 
 //! ## Outputs
 //! On success returns a fully materialised `Table`; otherwise yields an `IOError`
 //! for malformed footers/headers, unsupported encodings, or truncated pages.
@@ -45,9 +45,33 @@ use minarrow::{
 #[cfg(feature = "datetime")]
 use minarrow::{DatetimeArray, TemporalArray};
 
-/// Read an entire in‐memory Table from a Parquet v2 file.
-pub fn read_parquet_table<R: Read + Seek>(mut r: R) -> Result<Table, IoError> {
-    // read the 8‐byte footer
+/// Read an entire in-memory Table from a Parquet v2 file.
+pub fn read_parquet_table<R: Read + Seek>(r: R) -> Result<Table, IoError> {
+    read_parquet_impl(r, None)
+}
+
+/// Read only the named columns from a Parquet v2 file.
+///
+/// Column names must match the schema's `path_in_schema` entries. Returns
+/// an error if any name is not found. The returned Table contains only the
+/// projected columns, in schema order.
+///
+/// Because Parquet stores each column at a separate file offset, skipped
+/// columns are never read from disk at all.
+pub fn read_parquet_columns<R: Read + Seek>(r: R, columns: &[&str]) -> Result<Table, IoError> {
+    let projection: std::collections::HashSet<String> =
+        columns.iter().map(|s| s.to_string()).collect();
+    read_parquet_impl(r, Some(projection))
+}
+
+/// Shared implementation for full and projected Parquet reads.
+/// When `projection` is `Some`, only columns whose names appear in the set
+/// are read. Skipped columns never hit disk.
+fn read_parquet_impl<R: Read + Seek>(
+    mut r: R,
+    projection: Option<std::collections::HashSet<String>>,
+) -> Result<Table, IoError> {
+    // read the 8-byte footer
     r.seek(SeekFrom::End(-8))?;
     let mut tail = [0u8; 8];
     r.read_exact(&mut tail)?;
@@ -63,6 +87,17 @@ pub fn read_parquet_table<R: Read + Seek>(mut r: R) -> Result<Table, IoError> {
     let mut cur = std::io::Cursor::new(&footer);
     let meta = parse_file_metadata(&mut cur)?;
 
+    // Validate projection names against schema before reading any data
+    if let Some(ref proj) = projection {
+        for name in proj {
+            if !meta.schema.iter().any(|se| se.name == *name) {
+                return Err(IoError::Format(format!(
+                    "column '{}' not found in schema", name
+                )));
+            }
+        }
+    }
+
     // map Parquet schema -> Arrow types
     let arrow_types: Vec<_> = meta
         .schema
@@ -75,12 +110,21 @@ pub fn read_parquet_table<R: Read + Seek>(mut r: R) -> Result<Table, IoError> {
         })
         .collect::<Result<_, _>>()?;
 
-    // single row‐group, flat schema only
+    // single row-group, flat schema only
     let rg = &meta.row_groups[0];
     let mut columns = Vec::with_capacity(rg.columns.len());
 
     for (col_idx, chunk) in rg.columns.iter().enumerate() {
         let cmeta = &chunk.meta_data;
+        let col_name = &cmeta.path_in_schema[0];
+
+        // Skip columns not in the projection
+        if let Some(ref proj) = projection {
+            if !proj.contains(col_name) {
+                continue;
+            }
+        }
+
         let ty = &arrow_types[col_idx];
 
         // read the DICTIONARY_PAGE if present
@@ -141,7 +185,7 @@ pub fn read_parquet_table<R: Read + Seek>(mut r: R) -> Result<Table, IoError> {
 
         columns.push(FieldArray {
             field: Field {
-                name: chunk.meta_data.path_in_schema[0].clone(),
+                name: col_name.clone(),
                 dtype: ty.clone(),
                 nullable: chunk.meta_data.definition_level >= 1 || def_levels.iter().any(|&b| !b),
                 metadata: Default::default(),
@@ -318,13 +362,27 @@ fn decode_column(
         ArrowType::Dictionary(key_ty) => {
             match (key_ty, enc) {
                 // u32 keys
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 (CategoricalIndexType::UInt32, ParquetEncoding::RleDictionary) => {
                     let idx = decode_dictionary_indices_rle(buf, len)?;
                     build_cat32(idx, dict, mask)
                 }
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 (CategoricalIndexType::UInt32, ParquetEncoding::Plain) => {
                     let idx = decode_uint32_as_int32_plain(buf)?;
                     build_cat32(idx, dict, mask)
+                }
+
+                // u8 keys (default when default_categorical_8 is enabled)
+                #[cfg(feature = "default_categorical_8")]
+                (CategoricalIndexType::UInt8, ParquetEncoding::RleDictionary) => {
+                    let idx = decode_dictionary_indices_rle(buf, len)?;
+                    build_cat8(idx, dict, mask)
+                }
+                #[cfg(feature = "default_categorical_8")]
+                (CategoricalIndexType::UInt8, ParquetEncoding::Plain) => {
+                    let idx = decode_uint32_as_int32_plain(buf)?;
+                    build_cat8(idx, dict, mask)
                 }
 
                 // optional u64 keys
@@ -378,6 +436,7 @@ fn decode_column(
 
 // categorical builders
 
+#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
 fn build_cat32(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> Array {
     let dict = dict_raw
         .iter()
@@ -386,6 +445,21 @@ fn build_cat32(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> 
         .into();
     Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
         data: idx.into(),
+        unique_values: dict,
+        null_mask: mask,
+    })))
+}
+
+#[cfg(feature = "default_categorical_8")]
+fn build_cat8(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> Array {
+    let dict = dict_raw
+        .iter()
+        .map(|b| String::from_utf8(b.clone()).unwrap())
+        .collect::<Vec64<_>>()
+        .into();
+    let idx8: Vec64<u8> = idx.iter().map(|&v| v as u8).collect();
+    Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+        data: idx8.into(),
         unique_values: dict,
         null_mask: mask,
     })))
@@ -1102,16 +1176,14 @@ mod tests {
         let out = super::decode_hybrid(buf, bit_width, expect.len()).unwrap();
         assert_eq!(out.as_slice(), expect.as_slice());
     }
+    #[cfg(not(feature = "default_categorical_8"))]
     #[test]
     fn decode_column_categorical_rle_dictionary() {
         let dict_raw = dict(&["foo", "bar"]);
-        // logical indices
         let idx: Vec<u32> = vec![0, 1, 1, 0];
-        // encode indices with RLE_DICTIONARY
         let mut encoded = Vec::new();
         encode_dictionary_indices_rle(&idx, &mut encoded).unwrap();
 
-        // all values present
         let def_levels = vec![true; idx.len()];
 
         let array = super::decode_column(
@@ -1124,12 +1196,39 @@ mod tests {
         )
         .expect("decode_column failed");
 
-        // Down-cast and verify
         match array {
             Array::TextArray(TextArray::Categorical32(cat)) => {
-                // indices
                 assert_eq!(cat.data.as_slice(), idx.as_slice());
-                // dictionary values
+                let uniq: Vec<_> = cat.unique_values.iter().collect();
+                assert_eq!(uniq, vec!["foo", "bar"]);
+            }
+            _ => panic!("unexpected array variant {:?}", array),
+        }
+    }
+
+    #[cfg(feature = "default_categorical_8")]
+    #[test]
+    fn decode_column_categorical_rle_dictionary() {
+        let dict_raw = dict(&["foo", "bar"]);
+        let idx: Vec<u32> = vec![0, 1, 1, 0];
+        let mut encoded = Vec::new();
+        encode_dictionary_indices_rle(&idx, &mut encoded).unwrap();
+
+        let def_levels = vec![true; idx.len()];
+
+        let array = super::decode_column(
+            &ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            ParquetEncoding::RleDictionary,
+            &dict_raw,
+            &encoded,
+            idx.len(),
+            def_levels,
+        )
+        .expect("decode_column failed");
+
+        match array {
+            Array::TextArray(TextArray::Categorical8(cat)) => {
+                assert_eq!(cat.data.as_slice(), &[0u8, 1, 1, 0]);
                 let uniq: Vec<_> = cat.unique_values.iter().collect();
                 assert_eq!(uniq, vec!["foo", "bar"]);
             }

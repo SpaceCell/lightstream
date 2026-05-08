@@ -14,7 +14,7 @@ use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::{Array, Buffer, Field, FieldArray, IntegerArray, NumericArray, Table, Vec64};
 use std::sync::Arc;
 
-/// Test that TableWriter::with_compression API exists and compiles
+/// Test that TableWriter::new_with_compression API exists and compiles
 #[tokio::test]
 async fn test_compression_api_compilation() {
     let temp_file = NamedTempFile::new().unwrap();
@@ -58,7 +58,7 @@ async fn test_compression_api_compilation() {
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
 
         // Test each compression option compiles
-        let _writer_none = TableWriter::with_compression(
+        let _writer_none = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -69,7 +69,7 @@ async fn test_compression_api_compilation() {
         #[cfg(feature = "snappy")]
         {
             let file = File::create(file_path).await.unwrap();
-            let _writer_snappy = TableWriter::with_compression(
+            let _writer_snappy = TableWriter::new_with_compression(
                 file,
                 schema.clone(),
                 IPCMessageProtocol::File,
@@ -81,7 +81,7 @@ async fn test_compression_api_compilation() {
         #[cfg(feature = "zstd")]
         {
             let file = File::create(file_path).await.unwrap();
-            let _writer_zstd = TableWriter::with_compression(
+            let _writer_zstd = TableWriter::new_with_compression(
                 file,
                 schema,
                 IPCMessageProtocol::File,

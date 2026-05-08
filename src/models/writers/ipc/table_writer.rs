@@ -10,7 +10,7 @@
 //! - Provides helpers for writing one or many tables to disk
 //!
 //! ## Typical usage
-//! - Create with [`TableWriter::new`] or [`TableWriter::with_compression`]  
+//! - Create with [`TableWriter::new`] or [`TableWriter::new_with_compression`]  
 //! - Optionally register dictionaries with [`TableWriter::register_dictionary`]  
 //! - Write tables using [`TableWriter::write_table`] or [`TableWriter::write_all_tables`]  
 //! - Finalise with [`TableWriter::finish`]  
@@ -20,7 +20,7 @@ use std::io;
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::GTableSink;
-use crate::utils::extract_dictionary_values_from_col;
+use crate::utils::dict_values;
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table};
 use tokio::fs::File;
@@ -45,7 +45,7 @@ impl<W> TableWriter<W>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
 {
-    /// Create a new generic Arrow Table writer.
+    /// Create a new Arrow Table writer.
     pub fn new(
         destination: W,
         schema: Vec<Field>,
@@ -56,15 +56,29 @@ where
         })
     }
 
-    /// Create a new generic Arrow Table writer with compression.
-    pub fn with_compression(
+    /// Create a new Arrow Table writer from a Table's schema.
+    ///
+    /// Extracts the schema from `Table::schema()` directly.
+    pub fn from_schema(
+        destination: W,
+        schema: Vec<std::sync::Arc<Field>>,
+        protocol: IPCMessageProtocol,
+    ) -> io::Result<Self> {
+        let fields: Vec<Field> = schema.into_iter().map(|f| (*f).clone()).collect();
+        Ok(Self {
+            sink: GTableSink::new(destination, fields, protocol)?,
+        })
+    }
+
+    /// Create a new Arrow Table writer with compression.
+    pub fn new_with_compression(
         destination: W,
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
         compression: Compression,
     ) -> io::Result<Self> {
         Ok(Self {
-            sink: GTableSink::with_compression(destination, schema, protocol, compression)?,
+            sink: GTableSink::new_with_compression(destination, schema, protocol, compression)?,
         })
     }
 
@@ -75,7 +89,10 @@ where
 
     /// Register a dictionary with the given id and values.
     pub fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>) {
-        self.sink.inner.register_dictionary(dict_id, values);
+        self.sink.codec.register_dictionary(dict_id, values.clone());
+        if let Some(writer) = &mut self.sink.file_writer {
+            writer.register_dictionary(dict_id, values);
+        }
     }
 
     /// Return the protocol in use (Stream or File).
@@ -111,10 +128,10 @@ where
 
 /// Write a sequence of `Table`s to disk in Arrow File format.
 ///
-/// * `file_path`   – where to create/write the .arrow file  
-/// * `tables`      – the batches to write (each a `Table`)  
-/// * `schema`      – the common schema (must match each `Table`)  
-/// * `protocol`    – usually `IPCMessageProtocol::File`  
+/// * `file_path`   - where to create/write the .arrow file  
+/// * `tables`      - the batches to write (each a `Table`)  
+/// * `schema`      - the common schema (must match each `Table`)  
+/// * `protocol`    - usually `IPCMessageProtocol::File`  
 pub async fn write_tables_to_file(
     file_path: &str,
     tables: &[Table],
@@ -125,7 +142,7 @@ pub async fn write_tables_to_file(
     // Automatically register any Categorical dictionaries found in the tables.
     for table in tables {
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = extract_dictionary_values_from_col(col) {
+            if let Some(values) = dict_values(col) {
                 // We use the column index as the unique dictionary key
                 writer.register_dictionary(col_idx as i64, values);
             }
@@ -145,7 +162,7 @@ pub async fn write_table_to_file(
     let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
     // Automatically register any Categorical dictionaries found in the table.
     for (col_idx, col) in table.cols.iter().enumerate() {
-        if let Some(values) = extract_dictionary_values_from_col(col) {
+        if let Some(values) = dict_values(col) {
             writer.register_dictionary(col_idx as i64, values);
         }
     }
@@ -186,6 +203,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "default_categorical_8"))]
     fn make_schema() -> Vec<Field> {
         vec![Field {
             name: "col".to_string(),
@@ -195,6 +213,17 @@ mod tests {
         }]
     }
 
+    #[cfg(feature = "default_categorical_8")]
+    fn make_schema() -> Vec<Field> {
+        vec![Field {
+            name: "col".to_string(),
+            dtype: ArrowType::Dictionary(minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        }]
+    }
+
+    #[cfg(not(feature = "default_categorical_8"))]
     fn make_table() -> Table {
         let arr = CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[1u32, 0, 2, 1])),
@@ -212,6 +241,30 @@ mod tests {
                     metadata: Default::default(),
                 },
                 Array::TextArray(TextArray::Categorical32(Arc::new(arr))),
+            )],
+            n_rows: 4,
+            name: "tbl".to_string(),
+        }
+    }
+
+    #[cfg(feature = "default_categorical_8")]
+    fn make_table() -> Table {
+        let arr = CategoricalArray {
+            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
+            unique_values: Vec64::from(dict_strs()),
+            null_mask: Some(make_bitmask(&[true, false, true, true])),
+        };
+        Table {
+            cols: vec![FieldArray::new(
+                Field {
+                    name: "col".to_string(),
+                    dtype: ArrowType::Dictionary(
+                        minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt8,
+                    ),
+                    nullable: true,
+                    metadata: Default::default(),
+                },
+                Array::TextArray(TextArray::Categorical8(Arc::new(arr))),
             )],
             n_rows: 4,
             name: "tbl".to_string(),
@@ -318,7 +371,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -347,7 +400,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -380,7 +433,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::with_compression(
+        let mut writer = TableWriter::new_with_compression(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -407,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compression_api_equivalence() {
-        // Test that TableWriter::new and TableWriter::with_compression(Compression::None)
+        // Test that TableWriter::new and TableWriter::new_with_compression(Compression::None)
         // produce equivalent results
         let temp1 = NamedTempFile::new().unwrap();
         let temp2 = NamedTempFile::new().unwrap();
@@ -429,7 +482,7 @@ mod tests {
         // Write with compression = None
         {
             let file = File::create(&path2).await.unwrap();
-            let mut writer = TableWriter::with_compression(
+            let mut writer = TableWriter::new_with_compression(
                 file,
                 schema.clone(),
                 IPCMessageProtocol::File,

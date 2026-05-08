@@ -20,8 +20,8 @@ use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::uds::UdsTableReader;
 use lightstream::models::streams::uds::UdsByteStream;
 use lightstream::models::writers::uds::UdsTableWriter;
-use lightstream::traits::transport_reader::TransportReader;
-use lightstream::traits::transport_writer::TransportWriter;
+use lightstream::traits::transport_reader::IPCTransportReader;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 use tokio::net::UnixListener;
 
 #[tokio::main]

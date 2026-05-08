@@ -9,16 +9,11 @@ use futures_util::StreamExt;
 use lightstream::enums::BufferChunkSize;
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-use lightstream::models::readers::ipc::table_stream_reader::TableStreamReader64;
+use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::streams::disk::DiskByteStream;
 use lightstream::models::writers::ipc::table_writer::TableWriter;
-use minarrow::ffi::arrow_dtype::ArrowType;
-use minarrow::{
-    Array, Bitmask, BooleanArray, Buffer, Field, FieldArray, FloatArray, IntegerArray,
-    NumericArray, StringArray, Table, TextArray, Vec64,
-};
+use minarrow::{arr_bool, arr_f64, arr_i32, arr_str32, Field, FieldArray, Table, Vec64};
 use std::path::Path;
-use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::fs::File;
 
@@ -57,98 +52,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Create a sample table with various Arrow data types
+/// Create a sample table with various Arrow data types.
 fn create_sample_table() -> Table {
     let n_rows = 1000;
 
-    // Create integer column
-    let int_data: Vec<i32> = (0..n_rows).map(|i| i as i32).collect();
-    let int_array = Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
-        data: Buffer::from(Vec64::from_slice(&int_data)),
-        null_mask: None,
-    })));
-    let int_field = FieldArray::new(
-        Field {
-            name: "id".into(),
-            dtype: ArrowType::Int32,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        int_array,
-    );
+    let ids: Vec64<i32> = (0..n_rows as i32).collect();
+    let values: Vec64<f64> = (0..n_rows).map(|i| (i as f64) * 0.1).collect();
+    let labels: Vec64<String> = (0..n_rows).map(|i| format!("item_{}", i)).collect();
+    let label_refs: Vec64<&str> = labels.iter().map(String::as_str).collect();
+    let bools: Vec64<bool> = (0..n_rows).map(|i| i % 2 == 0).collect();
 
-    // Create float column
-    let float_data: Vec<f64> = (0..n_rows).map(|i| (i as f64) * 0.1).collect();
-    let float_array = Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
-        data: Buffer::from(Vec64::from_slice(&float_data)),
-        null_mask: None,
-    })));
-    let float_field = FieldArray::new(
-        Field {
-            name: "value".into(),
-            dtype: ArrowType::Float64,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        float_array,
-    );
-
-    // Create string column - concatenate all strings and create offset array
-    let individual_strings: Vec<String> = (0..n_rows).map(|i| format!("item_{}", i)).collect();
-    let mut str_data = Vec::new();
-    let mut offsets = Vec::with_capacity(n_rows + 1);
-    offsets.push(0u32);
-    for s in &individual_strings {
-        str_data.extend_from_slice(s.as_bytes());
-        offsets.push(str_data.len() as u32);
-    }
-    let str_array = Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-        Buffer::from(Vec64::from_slice(&str_data)),
-        None,
-        Buffer::from(Vec64::from_slice(&offsets)),
-    ))));
-    let str_field = FieldArray::new(
-        Field {
-            name: "label".into(),
-            dtype: ArrowType::String,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        str_array,
-    );
-
-    // Create boolean column
-    let bool_data: Vec<bool> = (0..n_rows).map(|i| i % 2 == 0).collect();
-    let bitmask_bytes = {
-        let mut bytes = vec![0u8; (n_rows + 7) / 8];
-        for (i, &value) in bool_data.iter().enumerate() {
-            if value {
-                bytes[i / 8] |= 1 << (i % 8);
-            }
-        }
-        bytes
-    };
-    let bool_array = Array::BooleanArray(Arc::new(BooleanArray {
-        data: Bitmask::from_bytes(&bitmask_bytes, n_rows),
-        null_mask: None,
-        len: n_rows,
-        _phantom: std::marker::PhantomData,
-    }));
-    let bool_field = FieldArray::new(
-        Field {
-            name: "is_even".into(),
-            dtype: ArrowType::Boolean,
-            nullable: false,
-            metadata: Default::default(),
-        },
-        bool_array,
-    );
-
-    Table {
-        name: "performance_test".to_string(),
-        n_rows,
-        cols: vec![int_field, float_field, str_field, bool_field],
-    }
+    Table::new(
+        "performance_test".to_string(),
+        Some(vec![
+            FieldArray::from_arr("id", arr_i32!(ids)),
+            FieldArray::from_arr("value", arr_f64!(values)),
+            FieldArray::from_arr("label", arr_str32!(label_refs)),
+            FieldArray::from_arr("is_even", arr_bool!(bools)),
+        ]),
+    )
 }
 
 /// Print the schema of the table
@@ -219,7 +141,8 @@ async fn arrow_stream_example(
     // Read from Arrow IPC Stream format
     let start = std::time::Instant::now();
     let disk_stream = DiskByteStream::open(stream_path, BufferChunkSize::Custom(64 * 1024)).await?;
-    let mut reader = TableStreamReader64::new(disk_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let mut reader =
+        TableReader::<Vec64<u8>>::new(disk_stream, 64 * 1024, IPCMessageProtocol::Stream);
 
     if let Some(_) = reader.next().await {
         let read_time = start.elapsed();

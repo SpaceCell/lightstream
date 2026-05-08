@@ -15,7 +15,7 @@ use std::io;
 use minarrow::{Field, Table};
 
 /// Shared writing interface for all transport-level Arrow IPC writers.
-pub trait TransportWriter {
+pub trait IPCTransportWriter {
     /// Get the schema used for this writer.
     fn schema(&self) -> &[Field];
 
