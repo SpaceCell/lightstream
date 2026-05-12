@@ -14,11 +14,43 @@
 /// - **Flexibility**: this standard reader is more flexible as it is not tied to memory-mapped shared memory.
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
+use std::path::Path;
 use std::sync::Arc;
 use minarrow::Vec64;
 use minarrow::structs::shared_buffer::SharedBuffer;
+
+/// Read exactly `buf.len()` bytes starting at `offset` without touching
+/// the file's seek position. Backed by `pread(2)` on Unix and a
+/// `seek_read` loop on Windows so callers can issue many positional
+/// reads against the same shared `&File` without serialising through
+/// `&mut self` or reopening the file. The wrapper exists only because
+/// `seek_read` on Windows can return short, so callers can't share a
+/// single-call shape with Unix's `read_exact_at`.
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    file.read_exact_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    let mut total = 0;
+    while total < buf.len() {
+        let n = file.seek_read(&mut buf[total..], offset + total as u64)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "file ended before requested offset/length",
+            ));
+        }
+        total += n;
+    }
+    Ok(())
+}
 
 use flatbuffers::Vector;
 use minarrow::{Field, SuperTable, Table};
@@ -52,8 +84,11 @@ struct IPCFileBlock {
 /// shared memory.
 #[derive(Clone)]
 pub struct FileTableReader {
-    /// Path for on-demand batch reads
-    path: PathBuf,
+    /// Open file handle shared across the reader's lifetime. All block
+    /// reads go through positional reads (`pread`/`seek_read`) on this
+    /// handle, so opening the file once amortises across the footer
+    /// parse, every dictionary block, and every record batch read.
+    file: Arc<File>,
     /// Arrow schema fields from the file footer
     schema: Vec<Arc<Field>>,
     /// Footer-declared dictionary block table
@@ -67,8 +102,7 @@ pub struct FileTableReader {
 impl FileTableReader {
     /// Open an Arrow IPC file into heap memory and parse footer/schema/block tables.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
+        let file = File::open(path.as_ref())?;
         let file_len = file.metadata()?.len() as usize;
 
         if file_len < 12 {
@@ -78,10 +112,9 @@ impl FileTableReader {
             ));
         }
 
-        // Read only the trailing 10 bytes: footer_len (4) + closing magic (6)
+        // Read only the trailing 10 bytes: footer_len (4) + closing magic (6).
         let mut tail = [0u8; 10];
-        file.seek(SeekFrom::End(-10))?;
-        file.read_exact(&mut tail)?;
+        read_at(&file, &mut tail, (file_len - 10) as u64)?;
 
         if &tail[4..] != ARROW_MAGIC_NUMBER {
             return Err(io::Error::new(
@@ -101,8 +134,7 @@ impl FileTableReader {
 
         // Read just the footer
         let mut footer_buf = vec![0u8; footer_len];
-        file.seek(SeekFrom::Start(footer_start as u64))?;
-        file.read_exact(&mut footer_buf)?;
+        read_at(&file, &mut footer_buf, footer_start as u64)?;
 
         let footer_msg = flatbuffers::root::<fbf::Footer>(&footer_buf).map_err(|e| {
             io::Error::new(io::ErrorKind::InvalidData, format!("bad footer: {e}"))
@@ -140,7 +172,7 @@ impl FileTableReader {
             .collect::<Vec<_>>();
 
         let mut rdr = Self {
-            path,
+            file: Arc::new(file),
             schema: fields,
             dict_blocks,
             record_blocks,
@@ -203,14 +235,16 @@ impl FileTableReader {
         Ok(SuperTable::from_batches(batches, name_override))
     }
 
-    /// Read a block from disk into 64-byte aligned memory
+    /// Read a block from disk into 64-byte aligned memory.
+    ///
+    /// Uses positional I/O (`pread`/`seek_read`) on the reader's shared
+    /// `Arc<File>` so concurrent block reads do not need `&mut self` and
+    /// the file is opened only once per reader.
     fn read_block(&self, blk: &IPCFileBlock) -> io::Result<Vec64<u8>> {
         let total = blk.meta_bytes + blk.body_bytes;
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(blk.offset as u64))?;
         let mut buf = Vec64::with_capacity(total);
         unsafe { buf.set_len(total); }
-        file.read_exact(&mut buf)?;
+        read_at(&self.file, &mut buf, blk.offset as u64)?;
         Ok(buf)
     }
 

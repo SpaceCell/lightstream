@@ -43,12 +43,22 @@ tracing = "0.1.44"
 tokio-uring = { version = "0.5", optional = true }
 arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
 polars = { version = "0.53", optional = true, default-features = false, features = ["ipc"] }
+# CSV fast-path deps. Versions match what other deps already pull in
+# transitively, so they don't enlarge the dependency tree.
+itoa = { version = "1", optional = true }
+ryu = { version = "1", optional = true }
+memchr = { version = "2", optional = true }
+atoi = { version = "2", optional = true, default-features = false }
+fast-float2 = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3.26.0"
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 criterion = { version = "0.8", features = ["async_tokio"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
 
 [[bench]]
 name = "file_throughput"
@@ -67,6 +77,10 @@ name = "lightstream_throughput"
 harness = false
 required-features = ["protocol", "tcp", "uds"]
 
+[[bench]]
+name = "chunked_throughput"
+harness = false
+
 [features]
 default_categorical_8 = ["minarrow/default_categorical_8"]
 extended_categorical = ["default_categorical_8", "minarrow/extended_categorical"]
@@ -77,6 +91,12 @@ mmap = ["libc"]
 
 # Adds parquet IO
 parquet = []
+
+# CSV reader/writer/encoder/decoder. Pulls in itoa+ryu+memchr for the
+# fast formatter and quote scanner, atoi+fast-float2 for SIMD-accelerated
+# integer and float parsing on the decode path. Off-by-default footprint
+# is smaller; included in `default` so existing users see no change.
+csv = ["dep:itoa", "dep:ryu", "dep:memchr", "dep:atoi", "dep:fast-float2"]
 
 # TCP transport
 tcp = ["tokio/net"]
@@ -110,7 +130,7 @@ bench_arrow = ["arrow"]
 # Enable polars comparison in benchmarks
 bench_polars = ["polars"]
 
-default = ["default_categorical_8"]
+default = ["default_categorical_8", "csv"]
 
 [[example]]
 name = "lightstream"

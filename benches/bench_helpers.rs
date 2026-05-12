@@ -68,10 +68,6 @@ pub fn make_bench_table(n_rows: usize) -> Table {
     )
 }
 
-pub fn bench_schema(table: &Table) -> Vec<Field> {
-    table.schema().iter().map(|f| (**f).clone()).collect()
-}
-
 /// Logical payload size of one batch for throughput reporting.
 pub fn logical_payload_bytes(n_rows: usize) -> u64 {
     let ids = n_rows * size_of::<i32>();

@@ -352,8 +352,6 @@ impl FileMetaData {
 
         thrift_write_field_stop(&mut buf);
 
-        println!("DIAG: FileMetaData encoded len = {}", buf.len());
-
         // Write the encoded footer, footer length, and trailing magic marker
         w.write_all(&buf)?;
         let footer_len = buf.len() as u32;

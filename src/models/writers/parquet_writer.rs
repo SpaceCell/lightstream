@@ -361,7 +361,6 @@ pub fn write_parquet_table<W: Write + Seek>(
         num_rows: n_rows_i64,
     });
 
-    let footer_start = out.stream_position()?;
     FileMetaData {
         version: 2,
         schema,
@@ -372,19 +371,6 @@ pub fn write_parquet_table<W: Write + Seek>(
     }
     .write(&mut out)?;
 
-    let footer_end = out.stream_position()?;
-    println!(
-        "DIAG: footer_start={}, footer_end={}, footer_len={}",
-        footer_start,
-        footer_end,
-        footer_end - footer_start
-    );
-    // let footer_len = (footer_end - footer_start) as u32;
-    // out.write_all(&footer_len.to_le_bytes())?;
-    // out.write_all(PARQUET_MAGIC)?;
-    // DIAGNOSTIC
-    let file_end = out.stream_position()?;
-    println!("DIAG: file_end after all writes: {}", file_end);
     Ok(())
 }
 

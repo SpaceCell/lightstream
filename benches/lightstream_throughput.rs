@@ -23,7 +23,7 @@ use tokio::net::{TcpListener, UnixListener};
 fn bench_throughput(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let table = Arc::new(make_bench_table(BENCH_ROWS));
-    let schema = bench_schema(&table);
+    let schema: Vec<Field> = table.schema().iter().map(|f| (**f).clone()).collect();
 
     let mut group = c.benchmark_group("lightstream_throughput");
     group.throughput(Throughput::Bytes(logical_payload_bytes(BENCH_ROWS)));

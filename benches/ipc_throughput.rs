@@ -16,6 +16,8 @@ use lightstream::enums::IPCMessageProtocol;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
 use lightstream::models::readers::ipc::table_reader::TableReader;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+use minarrow::Field;
+#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
 use minarrow::Vec64;
 #[cfg(feature = "tcp")]
 use tokio::net::TcpListener;
@@ -26,7 +28,8 @@ use tokio::net::UnixListener;
 fn bench_ipc_throughput(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let table = Arc::new(make_bench_table(BENCH_ROWS));
-    let schema = bench_schema(&table);
+    #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+    let schema: Vec<Field> = table.schema().iter().map(|f| (**f).clone()).collect();
 
     let mut group = c.benchmark_group("ipc_throughput");
     group.throughput(Throughput::Bytes(logical_payload_bytes(BENCH_ROWS)));

@@ -160,8 +160,10 @@ mod tests {
             .into(),
             array: Array::TextArray(TextArray::String32(
                 minarrow::StringArray {
-                    offsets: Buffer::from(vec64![0u32, 3, 3, 7]),
-                    data: Buffer::from_vec64(b"foo\0barbaz".to_vec().into()),
+                    // Canonical Arrow string layout: offsets bracket each
+                    // cell's bytes, no padding NULs between cells.
+                    offsets: Buffer::from(vec64![0u32, 3, 3, 9]),
+                    data: Buffer::from_vec64(b"foobarbaz".to_vec().into()),
                     null_mask: Some(Bitmask::from_bools(&[true, false, true])),
                 }
                 .into(),

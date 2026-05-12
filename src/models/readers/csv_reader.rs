@@ -93,33 +93,67 @@ impl<R: BufRead> CsvReader<R> {
             batch_options.schema = self.schema.clone();
         }
 
-        let mut buf = Vec::new();
-        let mut rows = Vec::with_capacity(self.batch_size + 1);
+        let mut rows: Vec<Vec<u8>> = Vec::new();
         let mut saw_any = false;
 
-        while rows.len()
-            < self.batch_size
-                + if self.schema.is_none() && self.options.has_header {
-                    1
+        if self.batch_size == usize::MAX {
+            // Unbounded path: read the whole input in one syscall, count
+            // newlines via SWAR to size `rows` exactly, then split.
+            // Avoids both the integer overflow on `batch_size + 1` and
+            // any Vec growth on the row vector.
+            let mut whole = Vec::new();
+            self.reader.read_to_end(&mut whole)?;
+            if !whole.is_empty() {
+                // Strip the trailing newline so `split` doesn't emit an
+                // empty element for `\n`-terminated input.
+                let body: &[u8] = if whole.ends_with(b"\n") {
+                    &whole[..whole.len() - 1]
                 } else {
-                    0
+                    &whole[..]
+                };
+                // `lines = separators + 1` for any non-empty `body`.
+                let n_lines = count_byte_swar(body, b'\n') + 1;
+                rows.reserve_exact(n_lines);
+                for line in body.split(|&b| b == b'\n') {
+                    let stripped: &[u8] = if line.ends_with(b"\r") {
+                        &line[..line.len() - 1]
+                    } else {
+                        line
+                    };
+                    if stripped.is_empty() && !saw_any {
+                        continue;
+                    }
+                    saw_any = true;
+                    rows.push(stripped.to_vec());
                 }
-        {
-            buf.clear();
-            let n = self.reader.read_until(b'\n', &mut buf)?;
-            if n == 0 {
-                break;
             }
-            if buf.ends_with(b"\r\n") {
-                buf.truncate(buf.len() - 2);
-            } else if buf.ends_with(b"\n") {
-                buf.truncate(buf.len() - 1);
+            self.finished = true;
+        } else {
+            let header_row = if self.schema.is_none() && self.options.has_header {
+                1
+            } else {
+                0
+            };
+            let row_limit = self.batch_size + header_row;
+            rows.reserve_exact(row_limit);
+            let mut buf = Vec::new();
+            while rows.len() < row_limit {
+                buf.clear();
+                let n = self.reader.read_until(b'\n', &mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                if buf.ends_with(b"\r\n") {
+                    buf.truncate(buf.len() - 2);
+                } else if buf.ends_with(b"\n") {
+                    buf.truncate(buf.len() - 1);
+                }
+                if buf.is_empty() && !saw_any {
+                    continue;
+                }
+                saw_any = true;
+                rows.push(buf.clone());
             }
-            if buf.is_empty() && !saw_any {
-                continue;
-            }
-            saw_any = true;
-            rows.push(buf.clone());
         }
 
         if rows.is_empty() {
@@ -161,6 +195,40 @@ impl<R: BufRead> CsvReader<R> {
         // Always respect has_header on first call
         decode_csv(&mut self.reader, &self.options)
     }
+}
+
+/// Count occurrences of `byte` in `haystack` using a SWAR (SIMD within
+/// a register) zero-byte detection over 64-bit chunks. Used in the
+/// "read whole chunk as one batch" path to size the row vector exactly
+/// from a single pass, avoiding any Vec growth.
+///
+/// The zero-byte-detection pattern is the standard SWAR idiom from
+/// Hacker's Delight (Warren, 2002): broadcast the needle across a
+/// 64-bit lane, XOR with the chunk, then use
+/// `(x - 0x01..01) & !x & 0x80..80` to set the high bit of every
+/// matching byte position.
+fn count_byte_swar(haystack: &[u8], byte: u8) -> usize {
+    // Broadcast the target byte across every lane of a u64.
+    let needle = u64::from_ne_bytes([byte; 8]);
+    let mut count = 0usize;
+    let mut chunks = haystack.chunks_exact(8);
+    for chunk in &mut chunks {
+        let bytes = u64::from_ne_bytes(<[u8; 8]>::try_from(chunk).unwrap());
+        // Zero-byte detection: each lane of `xor` that is zero gets its
+        // high bit set in `zeros`. Standard SWAR pattern.
+        let xor = bytes ^ needle;
+        let zeros = xor
+            .wrapping_sub(0x0101_0101_0101_0101)
+            & !xor
+            & 0x8080_8080_8080_8080;
+        count += zeros.count_ones() as usize;
+    }
+    for &b in chunks.remainder() {
+        if b == byte {
+            count += 1;
+        }
+    }
+    count
 }
 
 #[cfg(test)]

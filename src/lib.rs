@@ -79,6 +79,14 @@ pub mod traits {
 
     /// Transport-level table writer trait
     pub mod transport_writer;
+
+    /// Chunked-file table reader trait shared by the per-format chunked
+    /// readers (`ChunkedCsvReader`, `ChunkedParquetReader`, `ChunkedArrowReader`).
+    pub mod chunked_table_reader;
+
+    /// Chunked-file table writer trait shared by the per-format chunked
+    /// writers (`ChunkedCsvWriter`, `ChunkedParquetWriter`, `ChunkedArrowWriter`).
+    pub mod chunked_table_writer;
 }
 
 /// Codec implementations, readers, writers, and I/O models
@@ -112,6 +120,7 @@ pub mod models {
         pub mod tlv;
 
         /// CSV encoder for tables and supertables
+        #[cfg(feature = "csv")]
         pub mod csv;
     }
 
@@ -121,6 +130,7 @@ pub mod models {
         pub mod ipc;
 
         /// CSV-to-table decoder
+        #[cfg(feature = "csv")]
         pub mod csv;
 
         /// Parquet decoder (if `parquet` feature is enabled)
@@ -164,11 +174,28 @@ pub mod models {
         }
 
         /// CSV reader utilities.
+        #[cfg(feature = "csv")]
         pub mod csv_reader;
+
+        /// Chunked CSV reader: globs a directory of `<base>-NNNNN.csv`
+        /// files and presents them as an ordered iterator of `Table`s.
+        #[cfg(feature = "csv")]
+        pub mod chunked_csv;
 
         /// Parquet reader
         #[cfg(feature = "parquet")]
         pub mod parquet_reader;
+
+        /// Chunked Parquet reader: globs a directory of
+        /// `<base>-NNNNN.parquet` files and presents them as an ordered
+        /// iterator of `Table`s.
+        #[cfg(feature = "parquet")]
+        pub mod chunked_parquet;
+
+        /// Chunked Arrow IPC reader: globs a directory of
+        /// `<base>-NNNNN.arrow` files and presents them as an ordered
+        /// iterator of `Table`s.
+        pub mod chunked_arrow;
 
         /// TCP table reader
         #[cfg(feature = "tcp")]
@@ -207,14 +234,33 @@ pub mod models {
 
             /// Async IPC file/stream writer.
             pub mod table_writer;
+
+            /// Sync end-to-end IPC writer over `std::io::Write`.
+            pub mod sync_table_writer;
         }
 
         /// CSV writer - for both file and network contexts
+        #[cfg(feature = "csv")]
         pub mod csv_writer;
+
+        /// Chunked CSV writer: writes each batch to a separate
+        /// `<base>-NNNNN.csv` file inside a directory.
+        #[cfg(feature = "csv")]
+        pub mod chunked_csv;
 
         /// Parquet writer
         #[cfg(feature = "parquet")]
         pub mod parquet_writer;
+
+        /// Chunked Parquet writer: writes each batch to a separate
+        /// `<base>-NNNNN.parquet` file inside a directory.
+        #[cfg(feature = "parquet")]
+        pub mod chunked_parquet;
+
+        /// Chunked Arrow IPC writer: writes each batch to a separate
+        /// `<base>-NNNNN.arrow` file inside a directory. Holds a tokio
+        /// runtime internally to drive the async IPC file writer.
+        pub mod chunked_arrow;
 
         /// TCP table writer
         #[cfg(feature = "tcp")]

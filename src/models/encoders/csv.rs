@@ -2,11 +2,19 @@
 //! - Handles all supported types: Int32, Int64, UInt32, UInt64, Float32, Float64, Boolean, String32, Categorical32.
 //! - Supports custom delimiter, header row, quoting, and null representation.
 //! - Serialises a Table or SuperTable to any Write or Vec<u8>.
+//!
+//! ## Fast path
+//!
+//! `encode_table_csv` writes the entire table into a single contiguous
+//! `Vec<u8>` and emits one `write_all` to the underlying sink at the
+//! end. Numeric formatting goes through `itoa::Buffer` and
+//! `ryu::Buffer` (no allocation, ~10x faster than `core::fmt::Display`).
+//! String quoting uses a single `memchr` pass to decide whether quoting
+//! is needed; bytes are copied straight from the Arrow data buffer
+//! without going through `String`.
 
-use minarrow::{Array, Bitmask, NumericArray, SuperTable, Table, TextArray};
+use minarrow::{Array, Bitmask, Integer, NumericArray, SuperTable, Table, TextArray};
 use std::io::{self, Write};
-
-use crate::debug_println;
 
 /// Options for CSV encoding.
 #[derive(Debug, Clone)]
@@ -32,33 +40,95 @@ impl Default for CsvEncodeOptions {
     }
 }
 
+/// Returns true if the bytes need to be wrapped in quotes for CSV
+/// output. One SIMD-accelerated pass via `memchr3` covers three of the
+/// four hot bytes; `\r` and leading/trailing space are cheap edge
+/// checks.
 #[inline]
-fn needs_quotes(s: &str, delimiter: u8, quote: u8) -> bool {
-    // Needs quotes if contains delimiter, quote char, newline, or leading/trailing whitespace
-    s.as_bytes().contains(&delimiter)
-        || s.as_bytes().contains(&quote)
-        || s.contains('\n')
-        || s.contains('\r')
-        || s.starts_with(' ')
-        || s.ends_with(' ')
+fn needs_quoting(bytes: &[u8], delimiter: u8, quote: u8) -> bool {
+    if bytes.first() == Some(&b' ') || bytes.last() == Some(&b' ') {
+        return true;
+    }
+    memchr::memchr3(delimiter, quote, b'\n', bytes).is_some()
+        || memchr::memchr(b'\r', bytes).is_some()
 }
 
+/// Append the CSV-encoded form of `bytes` to `out`: either the bytes
+/// verbatim, or wrapped in quotes with embedded quotes doubled. Walks
+/// the bytes in runs delimited by `quote`, copying whole runs via
+/// `extend_from_slice` so the common case is a memcpy.
 #[inline]
-fn escape_and_quote<'a>(s: &'a str, delimiter: u8, quote: u8) -> String {
-    // If quoting is needed, escape quotes by doubling, wrap in quotes.
-    if needs_quotes(s, delimiter, quote) {
-        let mut out = Vec::with_capacity(s.len() + 2);
+fn append_csv_string(out: &mut Vec<u8>, bytes: &[u8], delimiter: u8, quote: u8) {
+    if !needs_quoting(bytes, delimiter, quote) {
+        out.extend_from_slice(bytes);
+        return;
+    }
+    out.push(quote);
+    let mut start = 0;
+    while let Some(pos) = memchr::memchr(quote, &bytes[start..]) {
+        let abs = start + pos;
+        out.extend_from_slice(&bytes[start..abs]);
         out.push(quote);
-        for &b in s.as_bytes() {
-            if b == quote {
-                out.push(quote);
-            }
-            out.push(b);
+        out.push(quote);
+        start = abs + 1;
+    }
+    out.extend_from_slice(&bytes[start..]);
+    out.push(quote);
+}
+
+/// Append a String<T> cell payload to `out` without going through a
+/// String allocation. The Arrow String layout stores n+1 offsets, and
+/// each cell's bytes live at `data[offsets[row]..offsets[row+1]]`.
+/// Generic over the offset width so the same code path covers
+/// `StringArray<u32>` and `StringArray<u64>`.
+#[inline]
+fn append_str_cell<T: Integer>(
+    out: &mut Vec<u8>,
+    data: &[u8],
+    offsets: &[T],
+    row: usize,
+    delimiter: u8,
+    quote: u8,
+) {
+    let start = offsets[row].to_usize();
+    let mut end = offsets[row + 1].to_usize();
+    // Defensive: minarrow's String layout sometimes truncates the
+    // trailing offset; clamp to the real data length on the last row.
+    if row + 1 == offsets.len() - 1 && end < data.len() {
+        end = data.len();
+    }
+    append_csv_string(out, &data[start..end], delimiter, quote);
+}
+
+/// Average bytes per cell heuristic per column type; used to size the
+/// scratch buffer up front so the encode loop hits no Vec growth.
+fn estimate_cell_width(arr: &Array, n_rows: usize) -> usize {
+    match arr {
+        Array::NumericArray(n) => match n {
+            NumericArray::Int32(_) | NumericArray::UInt32(_) => 6,
+            NumericArray::Int64(_) | NumericArray::UInt64(_) => 10,
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::Int8(_) | NumericArray::UInt8(_) => 4,
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::Int16(_) | NumericArray::UInt16(_) => 5,
+            NumericArray::Float32(_) | NumericArray::Float64(_) => 16,
+            _ => 12,
+        },
+        Array::BooleanArray(_) => 5,
+        Array::TextArray(TextArray::String32(arr)) => {
+            if n_rows == 0 { 8 } else { arr.data.len() / n_rows + 4 }
         }
-        out.push(quote);
-        unsafe { String::from_utf8_unchecked(out) }
-    } else {
-        s.to_string()
+        #[cfg(feature = "large_string")]
+        Array::TextArray(TextArray::String64(arr)) => {
+            if n_rows == 0 { 8 } else { arr.data.len() / n_rows + 4 }
+        }
+        Array::TextArray(_) => {
+            // Categorical columns: rough average over dictionary entries.
+            12
+        }
+        #[cfg(feature = "datetime")]
+        Array::TemporalArray(_) => 12,
+        _ => 12,
     }
 }
 
@@ -66,14 +136,6 @@ fn escape_and_quote<'a>(s: &'a str, delimiter: u8, quote: u8) -> String {
 /// - Supports custom delimiter, null representation, header.
 /// - Escapes/quotes fields as needed.
 /// - Errors propagate from writer.
-///
-/// # Arguments
-/// - `table`: The Table to encode.
-/// - `mut writer`: Any io::Write.
-/// - `options`: Encoding options.
-///
-/// # Errors
-/// Returns any io error from the writer.
 pub fn encode_table_csv<W: Write>(
     table: &Table,
     mut writer: W,
@@ -86,25 +148,11 @@ pub fn encode_table_csv<W: Write>(
         quote,
     } = *options;
 
-    debug_println!(
-        "Encoding Table to CSV: rows = {}, cols = {}",
-        table.n_rows,
-        table.cols.len()
-    );
+    let n_rows = table.n_rows;
 
-    // Write header
-    if write_header {
-        for (i, col) in table.cols.iter().enumerate() {
-            if i > 0 {
-                writer.write_all(&[delimiter])?;
-            }
-            let header = escape_and_quote(&col.field.name, delimiter, quote);
-            writer.write_all(header.as_bytes())?;
-        }
-        writer.write_all(b"\n")?;
-    }
-
-    // Precompute null bitmasks for columns if present
+    // Pre-extract null masks once per column so the row loop skips the
+    // typed match for null detection. Mirrors the original encoder's
+    // null_masks vector.
     let mut null_masks: Vec<Option<&Bitmask>> = Vec::with_capacity(table.cols.len());
     for col in &table.cols {
         match &col.array {
@@ -142,223 +190,186 @@ pub fn encode_table_csv<W: Write>(
         }
     }
 
-    // Categorical - build unique value tables if needed for fast lookup
-    let mut cat_maps: Vec<Option<&[String]>> = Vec::with_capacity(table.cols.len());
-    for col in &table.cols {
-        match &col.array {
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            Array::TextArray(TextArray::Categorical32(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
+    // Size the scratch buffer up front from per-column width estimates
+    // so the row loop doesn't trigger Vec reallocation.
+    let est_row: usize = table
+        .cols
+        .iter()
+        .map(|c| estimate_cell_width(&c.array, n_rows) + 1)
+        .sum::<usize>();
+    let header_est = if write_header {
+        table
+            .cols
+            .iter()
+            .map(|c| c.field.name.len() + 1)
+            .sum::<usize>()
+    } else {
+        0
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(header_est + est_row * n_rows + 16);
+
+    // Header
+    if write_header {
+        for (i, col) in table.cols.iter().enumerate() {
+            if i > 0 {
+                out.push(delimiter);
             }
-            #[cfg(feature = "default_categorical_8")]
-            Array::TextArray(TextArray::Categorical8(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
-            }
-            #[cfg(feature = "extended_categorical")]
-            Array::TextArray(TextArray::Categorical16(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
-            }
-            #[cfg(feature = "extended_categorical")]
-            Array::TextArray(TextArray::Categorical64(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
-            }
-            _ => cat_maps.push(None),
+            append_csv_string(&mut out, col.field.name.as_bytes(), delimiter, quote);
         }
+        out.push(b'\n');
     }
 
-    for row in 0..table.n_rows {
+    let null_bytes = null_repr.as_bytes();
+    let mut itoa_buf = itoa::Buffer::new();
+    let mut ryu_buf = ryu::Buffer::new();
+
+    for row in 0..n_rows {
         for (col_idx, col) in table.cols.iter().enumerate() {
             if col_idx > 0 {
-                writer.write_all(&[delimiter])?;
+                out.push(delimiter);
             }
-            // Null check - optimise for common case of no nulls
+            // Optimise for the common case of no nulls in the column.
             let is_null = if col.null_count == 0 {
-                false // Definitely no nulls, skip expensive mask operations
+                false
             } else {
                 match null_masks[col_idx] {
-                    Some(mask) => !mask.get(row), // 1=valid, 0=null
+                    Some(mask) => !mask.get(row),
                     None => false,
                 }
             };
             if is_null {
-                writer.write_all(null_repr.as_bytes())?;
+                out.extend_from_slice(null_bytes);
                 continue;
             }
             match &col.array {
                 Array::NumericArray(n) => match n {
                     #[cfg(feature = "extended_numeric_types")]
                     NumericArray::Int8(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     #[cfg(feature = "extended_numeric_types")]
                     NumericArray::Int16(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     NumericArray::Int32(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     NumericArray::Int64(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     #[cfg(feature = "extended_numeric_types")]
                     NumericArray::UInt8(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     #[cfg(feature = "extended_numeric_types")]
                     NumericArray::UInt16(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     NumericArray::UInt32(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     NumericArray::UInt64(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     NumericArray::Float32(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        if v.fract() == 0.0 {
-                            write!(writer, "{v:.1}")?;
-                        } else {
-                            write!(writer, "{v}")?;
-                        }
+                        out.extend_from_slice(ryu_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     NumericArray::Float64(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        if v.fract() == 0.0 {
-                            write!(writer, "{v:.1}")?;
-                        } else {
-                            write!(writer, "{v}")?;
-                        }
+                        out.extend_from_slice(ryu_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     _ => {
-                        writer.write_all(b"<unsupported>")?;
+                        out.extend_from_slice(b"<unsupported>");
                     }
                 },
                 Array::BooleanArray(arr) => {
-                    let b = arr.data.get(row);
-                    if b {
-                        writer.write_all(b"true")?;
-                    } else {
-                        writer.write_all(b"false")?;
-                    }
+                    out.extend_from_slice(if arr.data.get(row) { b"true" } else { b"false" });
                 }
                 Array::TextArray(TextArray::String32(arr)) => {
-                    let start = arr.offsets.as_ref()[row] as usize;
-                    let mut end = arr.offsets.as_ref()[row + 1] as usize;
-                    if row + 1 == arr.offsets.len() - 1 && end < arr.data.len() {
-                        end = arr.data.len();
-                    }
-                    let raw = &arr.data.as_ref()[start..end];
-                    // strip embedded NULs (only for full strings)
-                    let s: String = raw
-                        .iter()
-                        .copied()
-                        .filter(|&b| b != 0)
-                        .map(|b| b as char)
-                        .collect();
-                    let q = escape_and_quote(&s, delimiter, quote);
-                    writer.write_all(q.as_bytes())?;
+                    append_str_cell(
+                        &mut out,
+                        arr.data.as_ref(),
+                        arr.offsets.as_ref(),
+                        row,
+                        delimiter,
+                        quote,
+                    );
                 }
                 #[cfg(feature = "large_string")]
                 Array::TextArray(TextArray::String64(arr)) => {
-                    let start = arr.offsets.as_ref()[row] as usize;
-                    let mut end = arr.offsets.as_ref()[row + 1] as usize;
-                    if row + 1 == arr.offsets.len() - 1 && end < arr.data.len() {
-                        end = arr.data.len();
-                    }
-                    let raw = &arr.data.as_ref()[start..end];
-                    // strip embedded NULs (only for full strings)
-                    let s: String = raw
-                        .iter()
-                        .copied()
-                        .filter(|&b| b != 0)
-                        .map(|b| b as char)
-                        .collect();
-                    let q = escape_and_quote(&s, delimiter, quote);
-                    writer.write_all(q.as_bytes())?;
+                    append_str_cell(
+                        &mut out,
+                        arr.data.as_ref(),
+                        arr.offsets.as_ref(),
+                        row,
+                        delimiter,
+                        quote,
+                    );
                 }
                 #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 Array::TextArray(TextArray::Categorical32(arr)) => {
                     // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
-                    let val = arr
+                    let s = arr
                         .unique_values
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
-                    let q = escape_and_quote(val, delimiter, quote);
-                    writer.write_all(q.as_bytes())?;
+                    append_csv_string(&mut out, s.as_bytes(), delimiter, quote);
                 }
                 #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(arr)) => {
-                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
-                    let val = arr
+                    let s = arr
                         .unique_values
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
-                    let q = escape_and_quote(val, delimiter, quote);
-                    writer.write_all(q.as_bytes())?;
+                    append_csv_string(&mut out, s.as_bytes(), delimiter, quote);
                 }
                 #[cfg(feature = "extended_categorical")]
                 Array::TextArray(TextArray::Categorical16(arr)) => {
-                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
-                    let val = arr
+                    let s = arr
                         .unique_values
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
-                    let q = escape_and_quote(val, delimiter, quote);
-                    writer.write_all(q.as_bytes())?;
+                    append_csv_string(&mut out, s.as_bytes(), delimiter, quote);
                 }
                 #[cfg(feature = "extended_categorical")]
                 Array::TextArray(TextArray::Categorical64(arr)) => {
-                    // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
-                    let val = arr
+                    let s = arr
                         .unique_values
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
-                    let q = escape_and_quote(val, delimiter, quote);
-                    writer.write_all(q.as_bytes())?;
+                    append_csv_string(&mut out, s.as_bytes(), delimiter, quote);
                 }
                 #[cfg(feature = "datetime")]
                 Array::TemporalArray(temp) => match temp {
                     minarrow::TemporalArray::Datetime32(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     minarrow::TemporalArray::Datetime64(arr) => {
-                        let v = arr.data.as_ref()[row];
-                        write!(writer, "{}", v)?;
+                        out.extend_from_slice(itoa_buf.format(arr.data.as_ref()[row]).as_bytes());
                     }
                     minarrow::TemporalArray::Null => {
-                        writer.write_all(b"<null_temporal>")?;
+                        out.extend_from_slice(b"<null_temporal>");
                     }
                 },
                 _ => {
-                    writer.write_all(b"<unsupported>")?;
+                    out.extend_from_slice(b"<unsupported>");
                 }
             }
         }
-        writer.write_all(b"\n")?;
+        out.push(b'\n');
     }
 
-    Ok(())
+    writer.write_all(&out)
 }
 
-/// Serialises a *Minarrow* `SuperTable` (i.e., *Arrow* multiple *RecordBatches*) as a CSV, with all batches concatenated.  
+/// Serialises a *Minarrow* `SuperTable` (i.e., *Arrow* multiple *RecordBatches*) as a CSV, with all batches concatenated.
 /// Each batch will write headers only if `write_header` is set and is the first batch.
 /// Use for multi-batch output.
 ///
@@ -385,7 +396,8 @@ pub fn encode_supertable_csv<W: Write>(
 #[cfg(test)]
 mod tests {
     use minarrow::{
-        Array, ArrowType, Bitmask, Buffer, Field, FieldArray, NumericArray, Table, TextArray, vec64,
+        Array, ArrowType, Bitmask, Buffer, Field, FieldArray, NumericArray, Table, TextArray,
+        vec64,
     };
 
     use super::*;
@@ -440,7 +452,6 @@ mod tests {
         let opts = CsvEncodeOptions::default();
         encode_table_csv(&table, &mut out, &opts).unwrap();
         let csv = String::from_utf8(out).unwrap();
-        println!("CSV Output:\n{}", csv);
         assert!(csv.contains("ints,strings"));
         assert!(csv.contains("hello"));
         assert!(csv.contains("\n,\n"));
@@ -500,6 +511,32 @@ mod tests {
     }
 
     #[test]
+    fn encode_doubles_embedded_quotes() {
+        let col = FieldArray {
+            field: Field::new("txt", minarrow::ArrowType::String, false, None).into(),
+            array: Array::TextArray(TextArray::String32(
+                minarrow::StringArray {
+                    offsets: Buffer::from(vec64![0u32, 9]),
+                    data: Buffer::from_vec64(b"he\"llo\",x".to_vec().into()),
+                    null_mask: None,
+                }
+                .into(),
+            )),
+            null_count: 0,
+        };
+        let tbl = Table {
+            name: "".into(),
+            cols: vec![col],
+            n_rows: 1,
+        };
+        let mut out = Vec::new();
+        encode_table_csv(&tbl, &mut out, &CsvEncodeOptions::default()).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        // Embedded `"` must be doubled and the whole field quoted.
+        assert!(s.contains("\"he\"\"llo\"\",x\""), "got: {s}");
+    }
+
+    #[test]
     fn encode_decode_custom_null() {
         use crate::models::decoders::csv::*;
         use crate::models::encoders::csv::*;
@@ -542,7 +579,7 @@ mod tests {
 
     #[test]
     fn test_csv_decoder_mask_semantics() {
-        // Test that CSV decoder creates correct Arrow-semantic null masks
+        // Verify CSV decoder uses Arrow-semantic null masks: 1 = valid, 0 = null.
         use crate::models::decoders::csv::*;
         use minarrow::MaskedArray;
 
@@ -550,38 +587,20 @@ mod tests {
         let opts = CsvDecodeOptions::default();
         let table = decode_csv(std::io::Cursor::new(csv.as_ref()), &opts).unwrap();
 
-        println!("Table decoded: {:?}", table);
+        assert_eq!(table.cols[0].null_count, 1);
 
-        // Debug: what does the table think the null_count is?
-        println!("Table null_count: {}", table.cols[0].null_count);
-
-        // Check the actual mask bits
-        if let Array::TextArray(TextArray::String32(arr)) = &table.cols[0].array {
-            let mask = arr.null_mask.as_ref().unwrap();
-            println!(
-                "Mask: len={}, ones={}, zeros={}",
-                mask.len(),
-                mask.count_ones(),
-                mask.count_zeros()
-            );
-            println!("Direct null_count call: {}", arr.null_count());
-
-            // Check individual bits: [valid, null, valid] = [true, false, true]
-            for i in 0..3 {
-                println!("  Bit {}: {}", i, mask.get(i));
-            }
-
-            // The issue might be here - let's see what's happening
-            println!(
-                "count_zeros() = {}, count_ones() = {}",
-                mask.count_zeros(),
-                mask.count_ones()
-            );
-
-            // Don't assert yet, just investigate
-        } else {
+        let Array::TextArray(TextArray::String32(arr)) = &table.cols[0].array else {
             panic!("Expected String32 array");
-        }
+        };
+        let mask = arr.null_mask.as_ref().unwrap();
+        assert_eq!(mask.len(), 3);
+        assert_eq!(mask.count_ones(), 2, "2 valid rows");
+        assert_eq!(mask.count_zeros(), 1, "1 null row");
+        assert_eq!(arr.null_count(), 1);
+        // [valid, null, valid] = [true, false, true]
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
     }
 
     #[test]
@@ -621,8 +640,6 @@ mod tests {
         let mut buf = Vec::new();
         encode_table_csv(&tbl, &mut buf, &opts).unwrap();
         let csv_output = String::from_utf8(buf).unwrap();
-
-        println!("Mixed nulls CSV: {}", csv_output);
 
         // Should be: "mixed_nulls\n10\nNULL\n30\nNULL\n"
         assert_eq!(csv_output, "mixed_nulls\n10\nNULL\n30\nNULL\n");
@@ -666,8 +683,6 @@ mod tests {
         encode_table_csv(&tbl, &mut buf, &opts).unwrap();
         let csv_output = String::from_utf8(buf).unwrap();
 
-        println!("All nulls CSV: {}", csv_output);
-
         // Should be: "all_nulls\nNULL\nNULL\nNULL\n"
         assert_eq!(csv_output, "all_nulls\nNULL\nNULL\nNULL\n");
     }
@@ -680,7 +695,6 @@ mod tests {
         let mut opts = CsvDecodeOptions::default();
         opts.categorical_cols.insert("fruit".into());
         let tbl = decode_csv(std::io::Cursor::new(csv.as_ref()), &opts).unwrap();
-        // println!("Rows parsed: {:?}", tbl);
 
         // ensure dictionary detected
         assert!(matches!(tbl.cols[1].field.dtype, ArrowType::Dictionary(_)));
@@ -688,7 +702,6 @@ mod tests {
         let mut out = Vec::new();
         encode_table_csv(&tbl, &mut out, &CsvEncodeOptions::default()).unwrap();
         let out_str = String::from_utf8(out).unwrap();
-        println!("{:?}", out_str);
         assert!(out_str.contains("apple"));
         assert!(out_str.contains("banana"));
     }

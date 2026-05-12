@@ -46,8 +46,36 @@ use minarrow::{
 use minarrow::{DatetimeArray, TemporalArray};
 
 /// Read an entire in-memory Table from a Parquet v2 file.
+///
+// TODO: Serial read throughput on the chunked bench is ~390 MiB/s
+// while the parallel path scales to ~1.2 GiB/s, so the serial decode
+// is the bottleneck. Candidates worth profiling: the hybrid-RLE
+// decode loop in `decode_hybrid`, per-page Read-based allocations in
+// `read_data_page_v1`/`read_data_page_v2`, and the page-header
+// thrift decode.
 pub fn read_parquet_table<R: Read + Seek>(r: R) -> Result<Table, IoError> {
     read_parquet_impl(r, None)
+}
+
+/// Index type assumed for dictionary-encoded columns whose original
+/// Arrow type was lost in the Parquet schema.
+///
+/// The writer maps every `ArrowType::Dictionary(_)` to physical Int32
+/// with `NoneType` logical type, so the schema doesn't carry the index
+/// width. Reads pick whichever width is the build's default categorical
+/// type. Round-tripping a column written with `default_categorical_8`
+/// disabled into a build that has it enabled (or vice versa) is not
+/// supported.
+#[inline]
+fn default_categorical_index_type() -> CategoricalIndexType {
+    #[cfg(feature = "default_categorical_8")]
+    {
+        CategoricalIndexType::UInt8
+    }
+    #[cfg(not(feature = "default_categorical_8"))]
+    {
+        CategoricalIndexType::UInt32
+    }
 }
 
 /// Read only the named columns from a Parquet v2 file.
@@ -125,7 +153,20 @@ fn read_parquet_impl<R: Read + Seek>(
             }
         }
 
-        let ty = &arrow_types[col_idx];
+        // The Parquet schema has no slot to record that a column was
+        // originally a Dictionary - the writer maps Dictionary(_) to a
+        // physical Int32 with no logical type. Recover the Arrow shape
+        // from the column metadata: a column carrying a dictionary page
+        // is decoded as Dictionary using the build's default index
+        // width (UInt8 when `default_categorical_8` is on, UInt32
+        // otherwise). Round-trip across feature flags isn't supported.
+        let schema_ty = &arrow_types[col_idx];
+        let dictionary_ty = if cmeta.dictionary_page_offset.is_some() {
+            Some(ArrowType::Dictionary(default_categorical_index_type()))
+        } else {
+            None
+        };
+        let ty: &ArrowType = dictionary_ty.as_ref().unwrap_or(schema_ty);
 
         // read the DICTIONARY_PAGE if present
         let dict = if let Some(dict_off) = cmeta.dictionary_page_offset {
@@ -881,18 +922,38 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
                 data_ph = Some(parse_data_page_header(r)?);
             }
             5 => {
+                // DictionaryPageHeader (Thrift struct, field id 5).
+                //
+                // The writer emits each inner field with full Thrift framing
+                // (1-byte type, 2-byte LE id, value), terminated by a stop
+                // byte. Read symmetrically: loop, parse field_begin, dispatch
+                // by id, stop on type=0. Any unrecognised field is skipped.
                 thrift_read_struct_begin(r)?;
-                let num_values = thrift_read_i32(r)?;
-                let _enc_id = thrift_read_i32(r)?;
+                let mut num_values = 0i32;
+                let mut encoding = ParquetEncoding::Plain;
                 let mut is_sorted = None;
-                let peek = thrift_peek_field(r)?;
-                if let Some((2, 3)) = peek {
-                    thrift_read_field_begin(r)?;
-                    is_sorted = Some(thrift_read_bool(r)?);
+                loop {
+                    let (tpe2, id2) = thrift_read_field_begin(r)?;
+                    if tpe2 == 0 {
+                        break;
+                    }
+                    match id2 {
+                        1 => num_values = thrift_read_i32(r)?,
+                        2 => {
+                            encoding = ParquetEncoding::from_i32(thrift_read_i32(r)?)
+                                .ok_or_else(|| {
+                                    IoError::Format(
+                                        "Invalid encoding in DictionaryPageHeader".into(),
+                                    )
+                                })?
+                        }
+                        3 => is_sorted = Some(thrift_read_bool(r)?),
+                        _ => thrift_skip_field(r, tpe2)?,
+                    }
                 }
                 dict_ph = Some(DictionaryPageHeader {
                     num_values,
-                    encoding: ParquetEncoding::Plain,
+                    encoding,
                     is_sorted,
                 });
             }
@@ -963,18 +1024,6 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
         data_page_header_v2: data_ph_v2,
         dictionary_page_header: dict_ph,
     })
-}
-
-/// Peeks the next Thrift field type and id, restoring the stream position.
-fn thrift_peek_field<R: Read + Seek>(r: &mut R) -> Result<Option<(u8, i16)>, IoError> {
-    let pos = r.stream_position()?;
-    let result = thrift_read_field_begin(r);
-    r.seek(SeekFrom::Start(pos))?;
-    match result {
-        Ok((0, _)) => Ok(None), // STOP
-        Ok(x) => Ok(Some(x)),
-        Err(e) => Err(e),
-    }
 }
 
 fn parse_data_page_header<R: Read>(r: &mut R) -> Result<DataPageHeader, IoError> {
