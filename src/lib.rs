@@ -122,6 +122,10 @@ pub mod models {
         /// CSV encoder for tables and supertables
         #[cfg(feature = "csv")]
         pub mod csv;
+
+        /// JSON encoder for tables and supertables (array-of-objects / NDJSON)
+        #[cfg(feature = "json")]
+        pub mod json;
     }
 
     /// Decoders for Arrow IPC, CSV, TLV, and optionally Parquet
@@ -132,6 +136,10 @@ pub mod models {
         /// CSV-to-table decoder
         #[cfg(feature = "csv")]
         pub mod csv;
+
+        /// JSON-to-table decoder (array-of-objects / NDJSON)
+        #[cfg(feature = "json")]
+        pub mod json;
 
         /// Parquet decoder (if `parquet` feature is enabled)
         #[cfg(feature = "parquet")]
@@ -177,6 +185,9 @@ pub mod models {
         #[cfg(feature = "csv")]
         pub mod csv_reader;
 
+        /// JSON reader (array-of-objects and NDJSON)
+        #[cfg(feature = "json")]
+        pub mod json_reader;
         /// Chunked CSV reader: globs a directory of `<base>-NNNNN.csv`
         /// files and presents them as an ordered iterator of `Table`s.
         #[cfg(feature = "csv")]
@@ -243,6 +254,9 @@ pub mod models {
         #[cfg(feature = "csv")]
         pub mod csv_writer;
 
+        /// JSON writer - array-of-objects or NDJSON, any io::Write sink
+        #[cfg(feature = "json")]
+        pub mod json_writer;
         /// Chunked CSV writer: writes each batch to a separate
         /// `<base>-NNNNN.csv` file inside a directory.
         #[cfg(feature = "csv")]
