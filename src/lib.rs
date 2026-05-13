@@ -126,6 +126,10 @@ pub mod models {
         /// JSON encoder for tables and supertables (array-of-objects / NDJSON)
         #[cfg(feature = "json")]
         pub mod json;
+
+        /// Integer-to-decimal-ASCII formatter used by the CSV and JSON encoders.
+        #[cfg(any(feature = "csv", feature = "json"))]
+        mod int_ascii;
     }
 
     /// Decoders for Arrow IPC, CSV, TLV, and optionally Parquet

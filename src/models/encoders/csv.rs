@@ -7,7 +7,7 @@
 //!
 //! `encode_table_csv` writes the entire table into a single contiguous
 //! `Vec<u8>` and emits one `write_all` to the underlying sink at the
-//! end. Numeric formatting goes through `itoa::Buffer` and
+//! end. Numeric formatting goes through `int_ascii::Buffer` and
 //! `ryu::Buffer` (no allocation, ~10x faster than `core::fmt::Display`).
 //! String quoting uses a single `memchr` pass to decide whether quoting
 //! is needed; bytes are copied straight from the Arrow data buffer
@@ -220,7 +220,7 @@ pub fn encode_table_csv<W: Write>(
     }
 
     let null_bytes = null_repr.as_bytes();
-    let mut itoa_buf = itoa::Buffer::new();
+    let mut itoa_buf = super::int_ascii::Buffer::new();
     let mut ryu_buf = ryu::Buffer::new();
 
     for row in 0..n_rows {

@@ -400,11 +400,12 @@ fn write_cell_value<W: Write>(
     Ok(())
 }
 
-/// Emit an integer as JSON via `itoa`, which writes straight into a
-/// small stack buffer and bypasses `fmt::Display`'s formatter machinery.
+/// Emit an integer as JSON via the vendored `int_ascii` formatter, which
+/// writes straight into a small stack buffer and bypasses `fmt::Display`'s
+/// formatter machinery.
 #[inline]
-fn write_integer<W: Write, I: itoa::Integer>(writer: &mut W, v: I) -> io::Result<()> {
-    let mut buf = itoa::Buffer::new();
+fn write_integer<W: Write, I: super::int_ascii::Integer>(writer: &mut W, v: I) -> io::Result<()> {
+    let mut buf = super::int_ascii::Buffer::new();
     writer.write_all(buf.format(v).as_bytes())
 }
 

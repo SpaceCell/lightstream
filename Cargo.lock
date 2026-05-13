@@ -1727,7 +1727,6 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
- "itoa",
  "libc",
  "memchr",
  "minarrow",
