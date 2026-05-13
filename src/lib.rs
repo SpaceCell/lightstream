@@ -151,6 +151,10 @@ pub mod models {
 
         /// TLV stream decoder
         pub mod tlv;
+
+        /// ASCII-to-integer parser used by the CSV decoder.
+        #[cfg(feature = "csv")]
+        mod int_ascii;
     }
 
     /// Frame structures for IPC, TLV, and WebSocket

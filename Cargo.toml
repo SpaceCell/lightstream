@@ -53,9 +53,10 @@ tracing = "0.1.44"
 tokio-uring = { version = "0.5", optional = true }
 arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
 polars = { version = "0.53", optional = true, default-features = false, features = ["ipc"] }
-# CSV fast-path deps. Versions match what other deps already pull in
-# transitively, so they don't enlarge the dependency tree.
-atoi = { version = "2", optional = true, default-features = false }
+# CSV fast-path float parser. Versions match what other deps already pull
+# in transitively, so the dependency tree stays the same size. Integer
+# parsing on the decode path goes through the vendored
+# `decoders::int_ascii` module instead of the `atoi` crate.
 fast-float2 = { version = "0.2", optional = true }
 
 [dev-dependencies]
@@ -108,7 +109,7 @@ parquet = []
 # fast formatter and quote scanner, atoi+fast-float2 for SIMD-accelerated
 # integer and float parsing on the decode path. Off-by-default footprint
 # is smaller; included in `default` so existing users see no change.
-csv = ["dep:ryu", "dep:memchr", "dep:atoi", "dep:fast-float2"]
+csv = ["dep:ryu", "dep:memchr", "dep:fast-float2"]
 
 # TCP transport
 tcp = ["tokio/net"]

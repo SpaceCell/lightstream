@@ -331,16 +331,16 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 if is_bool && !is_bool_token(vb) {
                     is_bool = false;
                 }
-                if is_i32 && atoi::atoi::<i32>(vb).is_none() {
+                if is_i32 && super::int_ascii::parse_ascii_int::<i32>(vb).is_none() {
                     is_i32 = false;
                 }
-                if is_i64 && atoi::atoi::<i64>(vb).is_none() {
+                if is_i64 && super::int_ascii::parse_ascii_int::<i64>(vb).is_none() {
                     is_i64 = false;
                 }
-                if is_u32 && atoi::atoi::<u32>(vb).is_none() {
+                if is_u32 && super::int_ascii::parse_ascii_int::<u32>(vb).is_none() {
                     is_u32 = false;
                 }
-                if is_u64 && atoi::atoi::<u64>(vb).is_none() {
+                if is_u64 && super::int_ascii::parse_ascii_int::<u64>(vb).is_none() {
                     is_u64 = false;
                 }
                 if is_f32 && fast_float2::parse::<f32, _>(vb).is_err() {
@@ -577,7 +577,7 @@ fn build_int_col_inline<T>(
     null_count: &mut usize,
 ) -> io::Result<Array>
 where
-    T: atoi::FromRadix10SignedChecked + Copy + Default + 'static,
+    T: super::int_ascii::ParseAsciiInt + Copy + Default + 'static,
 {
     let mut out: Vec64<T> = vec64![T::default(); n_rows];
     for r in 0..n_rows {
@@ -589,7 +589,7 @@ where
             *null_count += 1;
             continue;
         }
-        out[r] = atoi::atoi::<T>(vb).ok_or_else(|| {
+        out[r] = super::int_ascii::parse_ascii_int::<T>(vb).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "failed to parse integer")
         })?;
     }

@@ -1720,7 +1720,6 @@ name = "lightstream"
 version = "0.4.2"
 dependencies = [
  "arrow",
- "atoi",
  "criterion",
  "fast-float2",
  "flatbuffers",
