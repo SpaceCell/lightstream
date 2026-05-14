@@ -139,7 +139,7 @@ where
             if len > 0 {
                 buf.drain(0..len);
             }
-            this.codec.encode(&table, &mut buf, 0)?;
+            this.codec.encode_stream_batch(&table, &mut buf, 0)?;
             this.frame_buf = Some(buf);
             this.frame_pos = 0;
         } else {

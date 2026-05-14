@@ -16,6 +16,8 @@ use lightstream::enums::IPCMessageProtocol;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
 use lightstream::models::readers::ipc::table_reader::TableReader;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+use lightstream::traits::transport_writer::IPCTransportWriter;
+#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
 use minarrow::Field;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
 use minarrow::Vec64;

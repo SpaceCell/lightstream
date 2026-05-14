@@ -87,6 +87,18 @@ pub mod traits {
     /// Chunked-file table writer trait shared by the per-format chunked
     /// writers (`ChunkedCsvWriter`, `ChunkedParquetWriter`, `ChunkedArrowWriter`).
     pub mod chunked_table_writer;
+
+    /// Type-level serialise/deserialise round-trip, parametrised over
+    /// a format marker. Implemented ON minarrow value types.
+    pub mod serialise;
+
+    /// One-shot byte encoding contract for items in `models/encoders/`
+    /// and `models/codecs/`.
+    pub mod encoder;
+
+    /// One-shot byte decoding contract for items in `models/decoders/`
+    /// and `models/codecs/`.
+    pub mod decoder;
 }
 
 /// Codec implementations, readers, writers, and I/O models
@@ -354,6 +366,13 @@ pub mod models {
 
     /// Codecs for Arrow IPC and Lightstream protocol.
     pub mod codecs;
+
+    /// Per-format implementations of [`crate::traits::serialise::Serialise`]
+    /// for the top-level minarrow value types.
+    pub mod serialise {
+        /// `Serialise<Ipc>` impls for Arrow IPC Stream payloads.
+        pub mod ipc;
+    }
 
     /// Protocol modules for Arrow IPC and the Lightstream multiplexer.
     pub mod protocol;

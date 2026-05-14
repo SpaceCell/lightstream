@@ -390,6 +390,7 @@ fn bench_chunked_parquet(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "csv")]
 fn bench_chunked_csv(c: &mut Criterion) {
     use lightstream::models::decoders::csv::CsvDecodeOptions;
     use lightstream::models::encoders::csv::CsvEncodeOptions;
@@ -518,13 +519,17 @@ fn bench_chunked_csv(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(all(feature = "parquet", feature = "csv"))]
 criterion_group!(
     benches,
     bench_chunked_arrow,
     bench_chunked_parquet,
     bench_chunked_csv
 );
-#[cfg(not(feature = "parquet"))]
+#[cfg(all(feature = "parquet", not(feature = "csv")))]
+criterion_group!(benches, bench_chunked_arrow, bench_chunked_parquet);
+#[cfg(all(not(feature = "parquet"), feature = "csv"))]
 criterion_group!(benches, bench_chunked_arrow, bench_chunked_csv);
+#[cfg(all(not(feature = "parquet"), not(feature = "csv")))]
+criterion_group!(benches, bench_chunked_arrow);
 criterion_main!(benches);

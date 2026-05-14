@@ -68,7 +68,7 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         let mut buf = Vec64::with_capacity(0);
                         for _ in 0..n {
                             buf.clear();
-                            codec.encode(&write_table, &mut buf, 0).unwrap();
+                            codec.encode_stream_batch(&write_table, &mut buf, 0).unwrap();
                             stream.write_all(buf.as_ref()).await.unwrap();
                         }
                         buf.clear();
@@ -137,7 +137,7 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         let mut buf = Vec64::with_capacity(0);
                         for _ in 0..n {
                             buf.clear();
-                            codec.encode(&write_table, &mut buf, 0).unwrap();
+                            codec.encode_stream_batch(&write_table, &mut buf, 0).unwrap();
                             stream.write_all(buf.as_ref()).await.unwrap();
                         }
                         buf.clear();
