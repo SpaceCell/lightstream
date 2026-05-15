@@ -63,6 +63,7 @@ use crate::models::decoders::ipc::parser::{
 };
 #[cfg(any(feature = "zstd", feature = "snappy"))]
 use crate::models::decoders::ipc::parser::{decompress_sequential_body, is_body_compressed};
+use crate::models::decoders::limits::DecodeLimits;
 
 /// Footer-declared block entry (i.e., offsets/lengths) for a dictionary or record batch.
 #[derive(Debug, Clone)]
@@ -243,6 +244,11 @@ impl FileTableReader {
     fn read_block(&self, blk: &IPCFileBlock) -> io::Result<Vec64<u8>> {
         let total = blk.meta_bytes + blk.body_bytes;
         let mut buf = Vec64::with_capacity(total);
+        // SAFETY: `total` equals `buf.capacity()` and `read_at` is the
+        // read_exact_at-style wrapper above: it either fills every byte
+        // we just exposed via `set_len` or returns Err, in which case
+        // `buf` is dropped without anyone observing the uninitialised
+        // tail. No bytes between [0..total] are read before read_at writes.
         unsafe { buf.set_len(total); }
         read_at(&self.file, &mut buf, blk.offset as u64)?;
         Ok(buf)
@@ -282,7 +288,7 @@ impl FileTableReader {
                 io::Error::new(io::ErrorKind::InvalidData, "expected DictionaryBatch")
             })?;
             let body = &buf[blk.meta_bytes..blk.meta_bytes + blk.body_bytes];
-            handle_dictionary_batch(&dict_batch, body, &mut new_dicts)?;
+            handle_dictionary_batch(&dict_batch, body, &mut new_dicts, DecodeLimits::default())?;
         }
         self.dictionaries = new_dicts;
         Ok(())
@@ -336,14 +342,14 @@ impl FileTableReader {
                     decompress_sequential_body(&buffers, body_data)?;
                 let decompressed_shared = SharedBuffer::from_vec64(Vec64::from_slice(&decompressed_body));
                 let (table, _) = decode_record_batch(
-                    &rec, &fields, &self.dictionaries, decompressed_shared, 0, decompressed_body.len(), projection,
+                    &rec, &fields, &self.dictionaries, decompressed_shared, 0, decompressed_body.len(), projection, DecodeLimits::default(),
                 )?;
                 return Ok(table);
             }
         }
 
         let (table, _) = decode_record_batch(
-            &rec, &fields, &self.dictionaries, shared.clone(), body_offset, body_len, projection,
+            &rec, &fields, &self.dictionaries, shared.clone(), body_offset, body_len, projection, DecodeLimits::default(),
         )?;
         Ok(table)
     }

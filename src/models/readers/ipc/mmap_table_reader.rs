@@ -36,6 +36,7 @@ use minarrow::structs::shared_buffer::SharedBuffer;
 use crate::models::decoders::ipc::parser::{
     convert_fb_field_to_arrow, decode_record_batch, handle_dictionary_batch,
 };
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::mmap::MemMap;
 
 /// Footer-declared block entry offsets/lengths for a dictionary or record batch.
@@ -315,7 +316,7 @@ impl MmapTableReader {
             let body =
                 &data[blk.offset + blk.meta_bytes..blk.offset + blk.meta_bytes + blk.body_bytes];
 
-            handle_dictionary_batch(&dict_batch, body, &mut new_dicts)?;
+            handle_dictionary_batch(&dict_batch, body, &mut new_dicts, DecodeLimits::default())?;
         }
         self.dictionaries = new_dicts;
         Ok(())
@@ -381,6 +382,7 @@ impl MmapTableReader {
             body_offset,
             body_len,
             projection,
+            DecodeLimits::default(),
         )?;
         Ok(table)
     }

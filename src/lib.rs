@@ -146,6 +146,9 @@ pub mod models {
 
     /// Decoders for Arrow IPC, CSV, TLV, and optionally Parquet
     pub mod decoders {
+        /// Resource caps applied during decode of untrusted input.
+        pub mod limits;
+
         /// Arrow IPC decoders
         pub mod ipc;
 

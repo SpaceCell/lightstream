@@ -23,6 +23,7 @@ use flatbuffers::Vector;
 use minarrow::Vec64;
 use crate::arrow::message::org::apache::arrow::flatbuf as fb;
 use crate::arrow::message::org::apache::arrow::flatbuf::{BodyCompression, Buffer};
+use crate::models::decoders::limits::DecodeLimits;
 use crate::traits::stream_buffer::StreamBuffer;
 
 /// Decompress a single Arrow IPC buffer using the specified codec.
@@ -53,6 +54,7 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
     body: &[u8],
     buffers: &Vector<'_, Buffer>,
     compression: &BodyCompression,
+    limits: DecodeLimits,
 ) -> io::Result<(Vec64<u8>, Vec<(usize, usize)>)> {
     const PREFIX_LEN: usize = 8;
     let codec = compression.codec();
@@ -63,15 +65,29 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
 
     for i in 0..buffers.len() {
         let buf = buffers.get(i);
-        let offset = buf.offset() as usize;
-        let length = buf.length() as usize;
+        let offset_i = buf.offset();
+        let length_i = buf.length();
+
+        // Reject negative descriptors before casting to usize; a hostile
+        // peer otherwise wraps the cast and walks past the body bounds.
+        if offset_i < 0 || length_i < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Compressed buffer {} descriptor negative", i),
+            ));
+        }
+        let offset = offset_i as usize;
+        let length = length_i as usize;
 
         if length == 0 {
             corrections.push((total_size, 0));
             continue;
         }
 
-        if offset + length > body.len() {
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "compressed buffer offset+length overflow"))?;
+        if end > body.len() {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("Compressed buffer {} out of bounds", i),
@@ -98,12 +114,36 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
             prefix as usize
         };
 
+        // Cap the per-buffer uncompressed length before accumulating, then
+        // the running total - both before any allocation that scales with
+        // either value. A peer that claims uncompressed_len = 4 GiB per
+        // buffer or that sums many smaller buffers past the cap is refused
+        // before Vec64::with_capacity below.
+        limits.check(
+            uncompressed_len,
+            limits.max_decompressed_bytes,
+            "decompressed buffer length",
+        )?;
         corrections.push((total_size, uncompressed_len));
-        total_size += uncompressed_len;
+        total_size = total_size
+            .checked_add(uncompressed_len)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "decompressed total overflow"))?;
+        limits.check(
+            total_size,
+            limits.max_decompressed_bytes,
+            "decompressed body total",
+        )?;
         // Align to B::ALIGN between buffers, consistent with the wire format
         let pad = total_size % B::ALIGN;
         if pad != 0 {
-            total_size += B::ALIGN - pad;
+            total_size = total_size
+                .checked_add(B::ALIGN - pad)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "decompressed alignment overflow"))?;
+            limits.check(
+                total_size,
+                limits.max_decompressed_bytes,
+                "decompressed body total (aligned)",
+            )?;
         }
     }
 

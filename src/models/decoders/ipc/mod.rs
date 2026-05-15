@@ -31,6 +31,7 @@ use crate::constants::{
     FILE_OPENING_MAGIC_LEN, METADATA_SIZE_PREFIX,
 };
 use crate::enums::{DecodeResult, IPCMessageProtocol};
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::ipc_message::{
     ArrowIPCFrameRanges, IPCFrameHeader, IPCFrameResult,
 };
@@ -53,6 +54,10 @@ pub struct ArrowIPCFrameDecoder<B: StreamBuffer> {
     /// True until we have accounted for the initial 8-byte file magic
     /// by including it in the `consumed` count of the first FILE frame.
     file_magic_unconsumed: bool,
+    /// Resource caps applied during decode of untrusted input. Threaded into
+    /// the underlying record-batch / dictionary / schema parsers when this
+    /// decoder is paired with a payload-level driver.
+    limits: DecodeLimits,
     _phantom: PhantomData<B>,
 }
 
@@ -226,12 +231,21 @@ impl<B: StreamBuffer> FrameDecoder for ArrowIPCFrameDecoder<B> {
 // ---------------------------------------------------------------------------
 
 impl<B: StreamBuffer> ArrowIPCFrameDecoder<B> {
-    pub fn new(format: IPCMessageProtocol) -> Self {
+    /// Construct a frame decoder. Pass `None` for the default resource caps
+    /// applied to the record-batch / dictionary / schema decoders this walker
+    /// drives, or `Some(...)` to override them.
+    pub fn new(format: IPCMessageProtocol, limits: Option<DecodeLimits>) -> Self {
         Self {
             format,
             file_magic_unconsumed: matches!(format, IPCMessageProtocol::File),
+            limits: limits.unwrap_or_default(),
             _phantom: PhantomData,
         }
+    }
+
+    /// Return the resource limits in effect for this decoder.
+    pub fn limits(&self) -> DecodeLimits {
+        self.limits
     }
 
     #[inline]
@@ -420,7 +434,7 @@ impl<B: StreamBuffer> ArrowIPCFrameDecoder<B> {
 
 impl<B: StreamBuffer> Default for ArrowIPCFrameDecoder<B> {
     fn default() -> Self {
-        ArrowIPCFrameDecoder::new(IPCMessageProtocol::Stream)
+        ArrowIPCFrameDecoder::new(IPCMessageProtocol::Stream, None)
     }
 }
 
@@ -446,6 +460,7 @@ pub(crate) fn decode_ipc_frame(
     fields: &mut Vec<Field>,
     dicts: &mut HashMap<i64, Vec<String>>,
     shared_cache: &mut Option<SharedBuffer>,
+    limits: DecodeLimits,
 ) -> io::Result<IPCFrameResult> {
     if message.is_empty() && body_len == 0 {
         return Ok(IPCFrameResult::EndOfStream);
@@ -456,14 +471,14 @@ pub(crate) fn decode_ipc_frame(
 
     match af_msg.header_type() {
         fb::MessageHeader::Schema => {
-            *fields = handle_schema_header(&af_msg)?;
+            *fields = handle_schema_header(&af_msg, limits)?;
             Ok(IPCFrameResult::Schema)
         }
         fb::MessageHeader::DictionaryBatch => {
             let db = af_msg.header_as_dictionary_batch().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "missing DictionaryBatch header")
             })?;
-            handle_dictionary_batch(&db, body.as_slice(), dicts)?;
+            handle_dictionary_batch(&db, body.as_slice(), dicts, limits)?;
             Ok(IPCFrameResult::Dictionary)
         }
         fb::MessageHeader::RecordBatch => {
@@ -478,7 +493,7 @@ pub(crate) fn decode_ipc_frame(
             })?;
             *shared_cache = None;
             let (table, shared) =
-                decode_record_batch(&rec, fields, dicts, body, 0, body_len, None)?;
+                decode_record_batch(&rec, fields, dicts, body, 0, body_len, None, limits)?;
             *shared_cache = Some(shared);
             Ok(IPCFrameResult::Batch(table))
         }
@@ -502,13 +517,14 @@ pub(crate) fn decode_ipc_payload<B: StreamBuffer>(
     fields: &mut Vec<Field>,
     dicts: &mut HashMap<i64, Vec<String>>,
     cached: Option<SharedBuffer>,
+    limits: DecodeLimits,
 ) -> io::Result<(minarrow::Table, SharedBuffer)> {
     if let Some(prev) = cached {
         drop(prev);
     }
 
     let payload_ref = payload.as_slice();
-    let mut decoder = ArrowIPCFrameDecoder::<B>::new(IPCMessageProtocol::Stream);
+    let mut decoder = ArrowIPCFrameDecoder::<B>::new(IPCMessageProtocol::Stream, Some(limits));
     let mut offset = 0;
     let mut record_batch_body: Option<(usize, usize)> = None;
     let mut record_batch_msg_range: Option<std::ops::Range<usize>> = None;
@@ -527,7 +543,7 @@ pub(crate) fn decode_ipc_payload<B: StreamBuffer>(
 
                 match af_msg.header_type() {
                     fb::MessageHeader::Schema => {
-                        *fields = handle_schema_header(&af_msg)?;
+                        *fields = handle_schema_header(&af_msg, limits)?;
                     }
                     fb::MessageHeader::DictionaryBatch => {
                         let db = af_msg.header_as_dictionary_batch().ok_or_else(|| {
@@ -538,7 +554,7 @@ pub(crate) fn decode_ipc_payload<B: StreamBuffer>(
                         })?;
                         let body_bytes = &payload_ref
                             [offset + frame.body_range.start..offset + frame.body_range.end];
-                        handle_dictionary_batch(&db, body_bytes, dicts)?;
+                        handle_dictionary_batch(&db, body_bytes, dicts, limits)?;
                     }
                     fb::MessageHeader::RecordBatch => {
                         if fields.is_empty() {
@@ -590,5 +606,5 @@ pub(crate) fn decode_ipc_payload<B: StreamBuffer>(
         .header_as_record_batch()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing RecordBatch header"))?;
 
-    decode_record_batch(&rec, fields, dicts, payload, body_start, body_len, None)
+    decode_record_batch(&rec, fields, dicts, payload, body_start, body_len, None, limits)
 }

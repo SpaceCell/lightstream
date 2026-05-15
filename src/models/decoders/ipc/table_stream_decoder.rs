@@ -24,6 +24,7 @@ use crate::compression::Compression;
 use crate::enums::{BatchState, IPCMessageProtocol};
 use crate::models::codecs::ipc::ArrowIpcCodec;
 use crate::models::decoders::ipc::{ArrowIPCFrameDecoder, IPCFrameHeader};
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::ipc_message::IPCFrameResult;
 use crate::models::streams::stream_arena::StreamArena;
 use crate::traits::stream_buffer::StreamBuffer;
@@ -70,20 +71,23 @@ pub struct TableStreamDecoder<B: StreamBuffer = Vec64<u8>> {
 }
 
 impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
+    /// Construct a table-stream decoder. Pass `None` for the default per-decode
+    /// resource caps applied to every IPC frame consumed from `source`.
     pub fn new<R: AsyncRead + Unpin + Send + 'static>(
         source: R,
         initial_capacity: usize,
         protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
     ) -> Self {
         Self {
             source: Box::new(source),
-            decoder: ArrowIPCFrameDecoder::new(protocol),
+            decoder: ArrowIPCFrameDecoder::new(protocol, limits),
             buf: Vec64::with_capacity(initial_capacity),
             chunk_size: DEFAULT_CHUNK,
             eof: false,
             state: BatchState::NeedSchema,
             phase: Phase::Metadata,
-            codec: ArrowIpcCodec::new(Vec::new(), protocol, Compression::None),
+            codec: ArrowIpcCodec::new(Vec::new(), protocol, Compression::None, limits),
             arena: StreamArena::new(),
         }
     }
@@ -117,6 +121,10 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
         }
 
         let spare = self.buf.spare_capacity_mut();
+        // SAFETY: `spare` is the uninitialised tail of `self.buf`, owned by
+        // this borrow. Reinterpreting MaybeUninit<u8> as u8 produces a
+        // distinct view of the same allocation, sound to pass to
+        // tokio::io::ReadBuf, which only writes through it.
         let spare_slice =
             unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, spare.len()) };
         let mut read_buf = ReadBuf::new(spare_slice);
@@ -127,6 +135,11 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
                 if n == 0 {
                     self.eof = true;
                 }
+                // SAFETY: `read_buf.filled().len()` is the count of bytes
+                // tokio just initialised within the spare slice above, and
+                // `current_len + n` cannot exceed `self.buf.capacity()`
+                // because we reserved `chunk_size` headroom and `n` is at
+                // most `spare.len()`.
                 unsafe { self.buf.set_len(current_len + n) };
                 Poll::Ready(Ok(n))
             }

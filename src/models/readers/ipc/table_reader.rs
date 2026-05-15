@@ -35,13 +35,30 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
     /// Reads frame headers into a small accumulation buffer, then reads
     /// record batch bodies directly into a Vec64 for SharedBuffer
     /// zero-copy column mapping. Each batch is yielded individually.
+    ///
+    /// Decode runs under the default resource caps; see
+    /// [`Self::new_with_limits`] to override them when the upstream source
+    /// is hostile.
     pub fn new(
         stream: impl AsyncRead + Unpin + Send + 'static,
         initial_capacity: usize,
         protocol: IPCMessageProtocol,
     ) -> Self {
         Self {
-            inner: TableStreamDecoder::new(stream, initial_capacity, protocol),
+            inner: TableStreamDecoder::new(stream, initial_capacity, protocol, None),
+        }
+    }
+
+    /// Same as [`Self::new`], but with explicit resource caps applied to every
+    /// IPC frame consumed from `stream`.
+    pub fn new_with_limits(
+        stream: impl AsyncRead + Unpin + Send + 'static,
+        initial_capacity: usize,
+        protocol: IPCMessageProtocol,
+        limits: crate::models::decoders::limits::DecodeLimits,
+    ) -> Self {
+        Self {
+            inner: TableStreamDecoder::new(stream, initial_capacity, protocol, Some(limits)),
         }
     }
 

@@ -40,9 +40,24 @@ use crate::compression::{Compression, decompress};
 #[cfg(feature = "zstd")]
 use crate::compression::ipc::decompress_ipc_body;
 use crate::debug_println;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::{AFMessage, AFMessageHeader};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+
+/// Compute `(n + 1) * elem` with overflow detection. Used to size offset
+/// buffers from an untrusted row count read out of the IPC RecordBatch
+/// metadata. A peer that claims `n_rows = usize::MAX` can otherwise wrap
+/// the multiplication to a small value and cause an out-of-bounds slice
+/// against the buffer descriptor.
+#[inline]
+fn checked_offsets_size(n: usize, elem: usize) -> io::Result<usize> {
+    n.checked_add(1)
+        .and_then(|v| v.checked_mul(elem))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "offset buffer size overflow")
+        })
+}
 
 /// Used for parsing a RecordBatch into a Minarrow `Table`.
 ///
@@ -87,7 +102,7 @@ impl RecordBatchParser {
         let decompressed: Option<(Vec64<u8>, Vec<(usize, usize)>)> =
             if let Some(ref compression) = header.compression() {
                 Some(decompress_ipc_body::<Vec<u8>>(
-                    arrow_buf, &fbuf_meta, compression,
+                    arrow_buf, &fbuf_meta, compression, DecodeLimits::default(),
                 )?)
             } else {
                 None
@@ -378,14 +393,7 @@ impl RecordBatchParser {
                         let arr =
                             Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
                                 data,
-                                null_mask.map(|mask| {
-                                    assert_eq!(
-                                        mask.len(),
-                                        field_len,
-                                        "String null_mask length must equal number of strings"
-                                    );
-                                    mask
-                                }),
+                                null_mask,
                                 offsets,
                             ))));
                         // Create corrected field with String type instead of LargeString
@@ -410,14 +418,7 @@ impl RecordBatchParser {
                         )?;
                         Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
                             data,
-                            null_mask.map(|mask| {
-                                assert_eq!(
-                                    mask.len(),
-                                    field_len,
-                                    "String null_mask length must equal number of strings"
-                                );
-                                mask
-                            }),
+                            null_mask,
                             offsets,
                         ))))
                     } else {
@@ -494,7 +495,8 @@ impl RecordBatchParser {
                     let off_slice = &arrow_buf[off_start..off_start + off_len];
                     let val_slice = &arrow_buf[val_start..val_start + val_len];
 
-                    let unique_values = parse_dictionary_strings(off_slice, val_slice)?;
+                    let unique_values =
+                        parse_dictionary_strings(off_slice, val_slice, DecodeLimits::default())?;
 
                     // choose variant by index type
                     match idx_ty {
@@ -581,14 +583,21 @@ impl RecordBatchParser {
             (buf.offset() as usize, buf.length() as usize)
         };
 
-        if offset + length > arrow_buf.len() {
+        // Reject offset + length that overflows usize before comparing
+        // against the buffer length. A crafted i64-cast-to-usize pair (large
+        // negative i64 cast to large usize) would otherwise wrap past the
+        // bounds check and select an invalid slice.
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow"))?;
+        if end > arrow_buf.len() {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("Buffer out of bounds for {}", field_name),
             ));
         }
 
-        Ok((&arrow_buf[offset..offset + length], offset))
+        Ok((&arrow_buf[offset..end], offset))
     }
 
 
@@ -775,6 +784,7 @@ pub(crate) fn handle_dictionary_batch(
     db: &fb::DictionaryBatch,
     body: &[u8],
     dicts: &mut HashMap<i64, Vec<String>>,
+    limits: DecodeLimits,
 ) -> io::Result<()> {
     let is_delta = db.isDelta();
     let dict_id = db.id();
@@ -821,11 +831,23 @@ pub(crate) fn handle_dictionary_batch(
     }
 
     let offs_slice = &body[off_off..off_off + off_len];
-    let values = parse_dictionary_strings(offs_slice, &body[data_off..data_off + data_len])?;
+    let values =
+        parse_dictionary_strings(offs_slice, &body[data_off..data_off + data_len], limits)?;
 
     if is_delta {
-        // Append new values to the existing dictionary
-        dicts.get_mut(&dict_id).unwrap().extend(values.into_iter());
+        // Append new values to the existing dictionary. The is_delta + contains
+        // check above guarantees this entry exists, but we still surface a
+        // proper error rather than panicking if the invariant is ever broken
+        // by future edits.
+        dicts
+            .get_mut(&dict_id)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("delta dictionary base for id {} missing", dict_id),
+                )
+            })?
+            .extend(values.into_iter());
     } else {
         // Replace with new base dictionary
         dicts.insert(dict_id, values.into_iter().collect());
@@ -842,6 +864,7 @@ pub(crate) fn handle_dictionary_batch(
 fn parse_dictionary_strings(
     offs_slice: &[u8],
     data_slice: &[u8],
+    limits: DecodeLimits,
 ) -> io::Result<Vec64<String>> {
     // Try u32 offsets first since they're the common case
     let u32_size = std::mem::size_of::<u32>();
@@ -869,6 +892,12 @@ fn parse_dictionary_strings(
                 "dictionary batch offset count < 2",
             ));
         }
+        // Bound the per-batch entry count before allocating.
+        limits.check(
+            count - 1,
+            limits.max_dictionary_entries,
+            "dictionary entries (i64 offsets)",
+        )?;
         let mut values = Vec64::with_capacity(count - 1);
         for i in 0..(count - 1) {
             let start = i64::from_le_bytes(
@@ -890,6 +919,21 @@ fn parse_dictionary_strings(
         Ok(values)
     } else {
         let count = offs_slice.len() / u32_size;
+        // A valid offset buffer holds at least 2 entries (one offset per
+        // string + a trailing sentinel). Without this guard `count - 1`
+        // wraps to usize::MAX, blowing up Vec64::with_capacity.
+        if count < 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dictionary batch offset count < 2",
+            ));
+        }
+        // Bound the per-batch entry count before allocating.
+        limits.check(
+            count - 1,
+            limits.max_dictionary_entries,
+            "dictionary entries (u32 offsets)",
+        )?;
         let mut values = Vec64::with_capacity(count - 1);
         for i in 0..(count - 1) {
             let start = u32::from_le_bytes(
@@ -937,6 +981,7 @@ pub fn decode_record_batch(
     body_start: usize,
     body_len: usize,
     projection: Option<&HashSet<usize>>,
+    limits: DecodeLimits,
 ) -> io::Result<(Table, SharedBuffer)> {
     let nodes = rec
         .nodes()
@@ -944,6 +989,10 @@ pub fn decode_record_batch(
     let buffers = rec
         .buffers()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
+
+    // Cap declared counts before any per-element loop or capacity allocation.
+    limits.check(nodes.len(), limits.max_fields, "record batch nodes")?;
+    limits.check(buffers.len(), limits.max_buffers, "record batch buffers")?;
 
     if nodes.len() != fields.len() {
         return Err(io::Error::new(
@@ -964,7 +1013,7 @@ pub fn decode_record_batch(
         if let Some(ref compression) = rec.compression() {
             let body = &shared.as_slice()[body_start..body_start + body_len];
             let (dec, corr) =
-                decompress_ipc_body::<Vec64<u8>>(body, &buffers, compression)?;
+                decompress_ipc_body::<Vec64<u8>>(body, &buffers, compression, limits)?;
             let len = dec.len();
             (SharedBuffer::from_vec64(dec), 0, len, Some(corr))
         } else {
@@ -983,10 +1032,18 @@ pub fn decode_record_batch(
     let corrections = corrections_storage.as_deref();
 
     let n_rows = if !nodes.is_empty() {
-        nodes.get(0).length() as usize
+        let raw = nodes.get(0).length();
+        if raw < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "negative record batch row count",
+            ));
+        }
+        raw as usize
     } else {
         0
     };
+    limits.check(n_rows, limits.max_n_rows, "record batch rows")?;
 
     let projected_count = projection.map_or(fields.len(), |p| p.len());
     let mut buffer_idx = 0;
@@ -1072,7 +1129,7 @@ pub fn decode_record_batch(
                 // encoder used LargeString.
                 #[cfg(feature = "large_string")]
                 {
-                    let expected_u32 = (n_rows + 1) * std::mem::size_of::<u32>();
+                    let expected_u32 = checked_offsets_size(n_rows, std::mem::size_of::<u32>())?;
                     if offs_len == expected_u32 {
                         Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
                             minarrow::Buffer::from_shared(data_buf),
@@ -1112,7 +1169,7 @@ pub fn decode_record_batch(
                     consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
                 let (data_off, data_len) =
                     consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
-                let expected_u32 = (n_rows + 1) * 4;
+                let expected_u32 = checked_offsets_size(n_rows, 4)?;
                 if offs_len == expected_u32 {
                     Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
                         minarrow::Buffer::from_shared(shared.slice(data_off..data_off + data_len)),
@@ -1211,8 +1268,19 @@ fn consume_buffer(
     *buffer_idx += 1;
 
     if let Some(c) = corrections {
-        let (off, len) = c[idx];
-        if off + len > body_len {
+        // Corrections come from our own decompression pass and are bounded
+        // by the buffer descriptor count, but check anyway so a future
+        // refactor cannot regress into an OOB index panic.
+        let (off, len) = *c.get(idx).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("corrections index {} out of range for {}", idx, field_name),
+            )
+        })?;
+        let end = off
+            .checked_add(len)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow"))?;
+        if end > body_len {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("Decompressed buffer out of bounds for {}", field_name),
@@ -1221,10 +1289,36 @@ fn consume_buffer(
         return Ok((body_start + off, len));
     }
 
+    // Bound-check idx against the flatbuffer Vector before calling .get;
+    // Vector::get on an OOB index panics in debug and is undefined in
+    // release. Reject negative i64 offset/length so a hostile cast to
+    // usize cannot become a huge value that wraps past the bounds check.
+    if idx >= buffers.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "buffer index {} out of range for {} (have {})",
+                idx,
+                field_name,
+                buffers.len()
+            ),
+        ));
+    }
     let buf = buffers.get(idx);
-    let offset = buf.offset() as usize;
-    let length = buf.length() as usize;
-    if offset + length > body_len {
+    let offset_i = buf.offset();
+    let length_i = buf.length();
+    if offset_i < 0 || length_i < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("buffer descriptor has negative offset/length for {}", field_name),
+        ));
+    }
+    let offset = offset_i as usize;
+    let length = length_i as usize;
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow"))?;
+    if end > body_len {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             format!("Buffer out of bounds for {}", field_name),
@@ -1252,10 +1346,25 @@ fn extract_null_mask(
     corrections: Option<&[(usize, usize)]>,
 ) -> io::Result<Option<Bitmask>> {
     if !field.nullable {
+        // Peek the validity-slot length without bounds-asserting Vector::get
+        // when the slot is absent. A peer that omits the slot for a
+        // non-nullable column simply does not advance the buffer index.
         let len_bytes = if let Some(c) = corrections {
-            c[*buffer_idx].1
+            match c.get(*buffer_idx) {
+                Some((_, l)) => *l,
+                None => return Ok(None),
+            }
+        } else if *buffer_idx < fbuf_meta.len() {
+            let l_i = fbuf_meta.get(*buffer_idx).length();
+            if l_i < 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("validity buffer length is negative for {}", field.name),
+                ));
+            }
+            l_i as usize
         } else {
-            fbuf_meta.get(*buffer_idx).length() as usize
+            return Ok(None);
         };
         let expected_validity_len = (field_len + 7) / 8;
         if len_bytes == 0 || len_bytes == expected_validity_len {
@@ -1268,17 +1377,44 @@ fn extract_null_mask(
     *buffer_idx += 1;
 
     let (offset, len_bytes) = if let Some(c) = corrections {
-        c[idx]
+        *c.get(idx).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("corrections index {} out of range for {}", idx, field.name),
+            )
+        })?
     } else {
+        if idx >= fbuf_meta.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "validity buffer index {} out of range for {} (have {})",
+                    idx,
+                    field.name,
+                    fbuf_meta.len()
+                ),
+            ));
+        }
         let buf = fbuf_meta.get(idx);
-        (buf.offset() as usize, buf.length() as usize)
+        let off_i = buf.offset();
+        let len_i = buf.length();
+        if off_i < 0 || len_i < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("validity buffer descriptor negative for {}", field.name),
+            ));
+        }
+        (off_i as usize, len_i as usize)
     };
 
     if null_count == 0 || len_bytes == 0 {
         return Ok(Some(Bitmask::new_set_all(field_len, true)));
     }
 
-    if offset + len_bytes > body_len {
+    let end = offset
+        .checked_add(len_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "validity offset+length overflow"))?;
+    if end > body_len {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             format!("Null buffer out of bounds for {}", field.name),
@@ -1417,7 +1553,10 @@ fn make_categorical_array(
 ///
 /// Converts FlatBuffers fields to native [`Field`] representations.
 #[inline(always)]
-pub fn handle_schema_header(af_msg: &fb::Message) -> io::Result<Vec<Field>> {
+pub fn handle_schema_header(
+    af_msg: &fb::Message,
+    limits: DecodeLimits,
+) -> io::Result<Vec<Field>> {
     // 1. Validate Flatbuffer version
     let version = af_msg.version();
     match version {
@@ -1454,10 +1593,13 @@ pub fn handle_schema_header(af_msg: &fb::Message) -> io::Result<Vec<Field>> {
         ));
     }
 
-    // 4. Extract fields
+    // 4. Extract fields. Cap the declared field count before allocating;
+    // a peer can otherwise declare arbitrary fb_fields.len() and trigger
+    // a Vec::with_capacity sized off untrusted input.
     let fb_fields = schema
         .fields()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no fields"))?;
+    limits.check(fb_fields.len(), limits.max_fields, "schema fields")?;
     let mut fields = Vec::with_capacity(fb_fields.len());
     for i in 0..fb_fields.len() {
         fields.push(convert_flatbuffers_to_arrow_field(&fb_fields.get(i))?);
@@ -1692,7 +1834,14 @@ pub fn convert_fb_field_to_arrow(
         // base dtype (non-dictionary)
         match fbf_field.type_type() {
             fbf::Type::Int => {
-                let i = fbf_field.type__as_int().unwrap();
+                // A peer that declares type_type = Int without a matching Int
+                // union table reaches this branch; previously this panicked.
+                let i = fbf_field.type__as_int().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "field type tagged Int but Int table missing",
+                    )
+                })?;
                 match (i.bitWidth(), i.is_signed()) {
                     #[cfg(feature = "extended_numeric_types")]
                     (8, true) => ArrowType::Int8,
@@ -1715,7 +1864,14 @@ pub fn convert_fb_field_to_arrow(
                 }
             }
             fbf::Type::FloatingPoint => {
-                let f = fbf_field.type__as_floating_point().unwrap();
+                // Same shape as the Int branch above: refuse a mismatched
+                // type tag rather than panicking.
+                let f = fbf_field.type__as_floating_point().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "field type tagged FloatingPoint but FloatingPoint table missing",
+                    )
+                })?;
                 match f.precision() {
                     fbf::Precision::SINGLE => ArrowType::Float32,
                     fbf::Precision::DOUBLE => ArrowType::Float64,
@@ -1959,7 +2115,7 @@ mod tests {
             bytes
         };
 
-        let result = parse_dictionary_strings(&offsets, data).unwrap();
+        let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["red", "green", "blue"]);
     }
 
@@ -1978,7 +2134,7 @@ mod tests {
             vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
         };
 
-        let result = parse_dictionary_strings(&offsets, data).unwrap();
+        let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["hello"]);
     }
 
@@ -1998,7 +2154,7 @@ mod tests {
             vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
         };
 
-        let result = parse_dictionary_strings(&offsets, data).unwrap();
+        let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["", ""]);
     }
 
@@ -2017,7 +2173,7 @@ mod tests {
             vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
         };
 
-        let result = parse_dictionary_strings(&offsets, data);
+        let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default());
         assert!(result.is_err());
     }
 
@@ -2029,7 +2185,7 @@ mod tests {
         #[cfg(feature = "large_string")]
         let offsets = 0i64.to_le_bytes().to_vec();
 
-        let result = parse_dictionary_strings(&offsets, b"");
+        let result = parse_dictionary_strings(&offsets, b"", DecodeLimits::default());
         assert!(result.is_err());
     }
 
@@ -2127,13 +2283,13 @@ mod tests {
         // Base dictionary
         let (fb_base, body_base) = build_dict_batch(0, false, &["red", "green", "blue"]);
         let base = flatbuffers::root::<fbm::DictionaryBatch>(&fb_base).unwrap();
-        handle_dictionary_batch(&base, &body_base, &mut dicts).unwrap();
+        handle_dictionary_batch(&base, &body_base, &mut dicts, DecodeLimits::default()).unwrap();
         assert_eq!(dicts[&0], vec!["red", "green", "blue"]);
 
         // Delta appends new values
         let (fb_delta, body_delta) = build_dict_batch(0, true, &["yellow", "purple"]);
         let delta = flatbuffers::root::<fbm::DictionaryBatch>(&fb_delta).unwrap();
-        handle_dictionary_batch(&delta, &body_delta, &mut dicts).unwrap();
+        handle_dictionary_batch(&delta, &body_delta, &mut dicts, DecodeLimits::default()).unwrap();
         assert_eq!(
             dicts[&0],
             vec!["red", "green", "blue", "yellow", "purple"]
@@ -2146,7 +2302,7 @@ mod tests {
 
         let (fb_delta, body_delta) = build_dict_batch(0, true, &["orphan"]);
         let delta = flatbuffers::root::<fbm::DictionaryBatch>(&fb_delta).unwrap();
-        let result = handle_dictionary_batch(&delta, &body_delta, &mut dicts);
+        let result = handle_dictionary_batch(&delta, &body_delta, &mut dicts, DecodeLimits::default());
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("before base dictionary")
@@ -2160,13 +2316,267 @@ mod tests {
         // First base
         let (fb1, body1) = build_dict_batch(0, false, &["a", "b"]);
         let batch1 = flatbuffers::root::<fbm::DictionaryBatch>(&fb1).unwrap();
-        handle_dictionary_batch(&batch1, &body1, &mut dicts).unwrap();
+        handle_dictionary_batch(&batch1, &body1, &mut dicts, DecodeLimits::default()).unwrap();
         assert_eq!(dicts[&0], vec!["a", "b"]);
 
         // Second base replaces
         let (fb2, body2) = build_dict_batch(0, false, &["x", "y", "z"]);
         let batch2 = flatbuffers::root::<fbm::DictionaryBatch>(&fb2).unwrap();
-        handle_dictionary_batch(&batch2, &body2, &mut dicts).unwrap();
+        handle_dictionary_batch(&batch2, &body2, &mut dicts, DecodeLimits::default()).unwrap();
         assert_eq!(dicts[&0], vec!["x", "y", "z"]);
+    }
+
+    // -- DecodeLimits enforcement ---------------------------------------------
+
+    #[test]
+    fn checked_offsets_size_detects_overflow() {
+        // (n + 1) * elem with n = usize::MAX wraps on add; with a smaller n
+        // but elem = usize::MAX it wraps on multiply. Both must surface as Err.
+        assert!(checked_offsets_size(usize::MAX, 4).is_err());
+        assert!(checked_offsets_size(usize::MAX / 2, usize::MAX).is_err());
+        assert!(checked_offsets_size(0, 4).is_ok());
+        assert_eq!(checked_offsets_size(7, 4).unwrap(), 32);
+    }
+
+    #[test]
+    fn decode_record_batch_rejects_length_beyond_max_n_rows() {
+        // Hand-build a flatbuffers RecordBatch claiming length = i64::MAX.
+        // The decoder must refuse it under the default DecodeLimits before
+        // any allocation that scales with the declared row count.
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let node = fbm::FieldNode::new(i64::MAX, 0);
+        let nodes_vec = fbb.create_vector(&[node]);
+        let buf = fbm::Buffer::new(0, 0);
+        let buffers_vec = fbb.create_vector(&[buf]);
+        let rb = fbm::RecordBatch::create(
+            &mut fbb,
+            &fbm::RecordBatchArgs {
+                length: i64::MAX,
+                nodes: Some(nodes_vec),
+                buffers: Some(buffers_vec),
+                compression: None,
+                variadicBufferCounts: None,
+            },
+        );
+        fbb.finish(rb, None);
+        let rb_bytes = fbb.finished_data().to_vec();
+        let rec = flatbuffers::root::<fbm::RecordBatch>(&rb_bytes).unwrap();
+
+        let fields = vec![Field {
+            name: "x".into(),
+            dtype: ArrowType::Int32,
+            nullable: false,
+            metadata: Default::default(),
+        }];
+        let dicts: HashMap<i64, Vec<String>> = HashMap::new();
+        let shared = SharedBuffer::from_vec(Vec::new());
+
+        let err = decode_record_batch(
+            &rec,
+            &fields,
+            &dicts,
+            shared,
+            0,
+            0,
+            None,
+            DecodeLimits::default(),
+        )
+        .err()
+        .expect("decode_record_batch must refuse n_rows beyond max_n_rows");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("record batch rows"));
+    }
+
+    #[test]
+    fn parse_dictionary_strings_rejects_u32_count_below_two() {
+        // The u32-offset branch needs at least two offsets (one + sentinel).
+        // A peer that hands us a single u32 offset would otherwise underflow
+        // `count - 1` to usize::MAX.
+        let offsets = [0u8; 4];
+        let data = b"abc";
+        let err = parse_dictionary_strings(&offsets, data, DecodeLimits::default())
+            .err()
+            .expect("count = 1 in the u32 path must surface as Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("offset count < 2"));
+    }
+
+    fn build_minimal_record_batch_bytes(
+        node_length: i64,
+        buffers: &[fbm::Buffer],
+    ) -> Vec<u8> {
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let node = fbm::FieldNode::new(node_length, 0);
+        let nodes_vec = fbb.create_vector(&[node]);
+        let buffers_vec = fbb.create_vector(buffers);
+        let rb = fbm::RecordBatch::create(
+            &mut fbb,
+            &fbm::RecordBatchArgs {
+                length: node_length,
+                nodes: Some(nodes_vec),
+                buffers: Some(buffers_vec),
+                compression: None,
+                variadicBufferCounts: None,
+            },
+        );
+        fbb.finish(rb, None);
+        fbb.finished_data().to_vec()
+    }
+
+    fn single_int32_field() -> Vec<Field> {
+        vec![Field {
+            name: "x".into(),
+            dtype: ArrowType::Int32,
+            nullable: false,
+            metadata: Default::default(),
+        }]
+    }
+
+    #[test]
+    fn decode_record_batch_rejects_negative_buffer_offset() {
+        // Non-nullable Int32, two buffer descriptors: an empty validity
+        // slot at idx 0 and a data slot at idx 1 with a negative offset.
+        // The cast-to-usize wraparound classic, caught at descriptor read.
+        let validity = fbm::Buffer::new(0, 0);
+        let bad_data = fbm::Buffer::new(-1, 0);
+        let bytes = build_minimal_record_batch_bytes(0, &[validity, bad_data]);
+        let rec = flatbuffers::root::<fbm::RecordBatch>(&bytes).unwrap();
+        let fields = single_int32_field();
+        let dicts: HashMap<i64, Vec<String>> = HashMap::new();
+        let shared = SharedBuffer::from_vec(Vec::new());
+
+        let err = decode_record_batch(
+            &rec,
+            &fields,
+            &dicts,
+            shared,
+            0,
+            0,
+            None,
+            DecodeLimits::default(),
+        )
+        .err()
+        .expect("negative buffer offset must surface as Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("negative"));
+    }
+
+    #[test]
+    fn decode_record_batch_rejects_buffer_index_overrun() {
+        // One Int32 field requires one data buffer descriptor; supply
+        // zero so the column decoder runs off the end of the Vector.
+        let bytes = build_minimal_record_batch_bytes(0, &[]);
+        let rec = flatbuffers::root::<fbm::RecordBatch>(&bytes).unwrap();
+        let fields = single_int32_field();
+        let dicts: HashMap<i64, Vec<String>> = HashMap::new();
+        let shared = SharedBuffer::from_vec(Vec::new());
+
+        let err = decode_record_batch(
+            &rec,
+            &fields,
+            &dicts,
+            shared,
+            0,
+            0,
+            None,
+            DecodeLimits::default(),
+        )
+        .err()
+        .expect("missing buffer descriptor must surface as Err, not a Vector::get panic");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("out of range"));
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn decompress_ipc_body_rejects_bomb_prefix() {
+        // Build a single-buffer RecordBatch with a ZSTD-compressed body where
+        // the per-buffer 8-byte uncompressed_len prefix claims i64::MAX bytes.
+        // The cap inside decompress_ipc_body must fire before any allocation
+        // sized off that claim, and well before the decompressor is invoked.
+        use crate::compression::ipc::decompress_ipc_body;
+
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let nodes_vec = fbb.create_vector(&[fbm::FieldNode::new(0, 0)]);
+        // One buffer descriptor covering 9 body bytes: 8 prefix + 1 payload.
+        let buffers_vec = fbb.create_vector(&[fbm::Buffer::new(0, 9)]);
+        let body_compression = fbm::BodyCompression::create(
+            &mut fbb,
+            &fbm::BodyCompressionArgs {
+                codec: fbm::CompressionType::ZSTD,
+                method: fbm::BodyCompressionMethod::BUFFER,
+            },
+        );
+        let rb = fbm::RecordBatch::create(
+            &mut fbb,
+            &fbm::RecordBatchArgs {
+                length: 0,
+                nodes: Some(nodes_vec),
+                buffers: Some(buffers_vec),
+                compression: Some(body_compression),
+                variadicBufferCounts: None,
+            },
+        );
+        fbb.finish(rb, None);
+        let rb_bytes = fbb.finished_data().to_vec();
+        let rec = flatbuffers::root::<fbm::RecordBatch>(&rb_bytes).unwrap();
+
+        // The malicious body: prefix claims i64::MAX uncompressed bytes,
+        // followed by a single payload byte so length checks all pass.
+        let mut body = Vec::with_capacity(9);
+        body.extend_from_slice(&i64::MAX.to_le_bytes());
+        body.push(0u8);
+
+        let buffers = rec.buffers().unwrap();
+        let compression = rec.compression().unwrap();
+        let start = std::time::Instant::now();
+        let err = decompress_ipc_body::<Vec64<u8>>(&body, &buffers, &compression, DecodeLimits::default())
+            .err()
+            .expect("bomb prefix must surface as Err");
+        let elapsed = start.elapsed();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("decompressed buffer length"));
+        // The cap must fire on the prefix - no decompression attempted, no
+        // allocation sized off the claim.
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "decompression cap should fire promptly, took {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn convert_fb_field_rejects_int_tag_without_table() {
+        // Build a file-format Field with type_type = Int but no Int union
+        // table attached; the mismatched tag must surface as Err rather
+        // than aborting the process. flatbuffers::root verifies the union
+        // discriminant against the table, so we use the unchecked entry to
+        // exercise the conversion path itself.
+        use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let name = fbb.create_string("x");
+        let field = fbf::Field::create(
+            &mut fbb,
+            &fbf::FieldArgs {
+                name: Some(name),
+                nullable: false,
+                type_type: fbf::Type::Int,
+                type_: None,
+                dictionary: None,
+                children: None,
+                custom_metadata: None,
+            },
+        );
+        fbb.finish(field, None);
+        let bytes = fbb.finished_data().to_vec();
+        // SAFETY: bytes were just produced by FlatBufferBuilder; only the
+        // union discriminant/table consistency is intentionally violated.
+        let fb_field = unsafe { flatbuffers::root_unchecked::<fbf::Field>(&bytes) };
+
+        let err = convert_fb_field_to_arrow(&fb_field)
+            .err()
+            .expect("missing Int union table must surface as Err, not a panic");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Int table missing"));
     }
 }

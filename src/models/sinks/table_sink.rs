@@ -76,7 +76,7 @@ where
             None
         };
         Ok(Self {
-            codec: ArrowIpcCodec::new(schema.clone(), protocol, Compression::None),
+            codec: ArrowIpcCodec::new(schema.clone(), protocol, Compression::None, None),
             schema,
             destination: sink,
             protocol,
@@ -100,7 +100,7 @@ where
             None
         };
         Ok(Self {
-            codec: ArrowIpcCodec::new(schema.clone(), protocol, compression),
+            codec: ArrowIpcCodec::new(schema.clone(), protocol, compression, None),
             schema,
             destination: sink,
             protocol,

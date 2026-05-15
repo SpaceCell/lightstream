@@ -15,6 +15,7 @@ use std::convert::TryInto;
 use std::io;
 
 use crate::enums::DecodeResult;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::tlv_frame::TLVDecodedFrame;
 use crate::traits::frame_decoder::FrameDecoder;
 use crate::traits::stream_buffer::StreamBuffer;
@@ -28,15 +29,23 @@ use crate::traits::stream_buffer::StreamBuffer;
 ///
 /// Example: `[type][length][value...]`
 pub struct TLVDecoder<B: StreamBuffer> {
+    limits: DecodeLimits,
     _phantom: std::marker::PhantomData<B>,
 }
 
 impl<B: StreamBuffer> TLVDecoder<B> {
-    /// Create a new TLV decoder instance.
-    pub fn new() -> Self {
+    /// Create a new TLV decoder. Pass `None` for the default per-frame
+    /// allocation cap, or `Some(...)` to tighten or relax it.
+    pub fn new(limits: Option<DecodeLimits>) -> Self {
         Self {
+            limits: limits.unwrap_or_default(),
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Return the resource limits in effect for this decoder.
+    pub fn limits(&self) -> DecodeLimits {
+        self.limits
     }
 }
 
@@ -57,8 +66,15 @@ impl<B: StreamBuffer> FrameDecoder for TLVDecoder<B> {
 
         let t = buf[0];
 
-        let len_bytes: [u8; 4] = buf[1..5].try_into().unwrap();
+        let len_bytes: [u8; 4] = buf[1..5]
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "TLV length prefix"))?;
         let len = u32::from_le_bytes(len_bytes) as usize;
+
+        // Cap the declared frame value size before allocation. Without this a
+        // peer can claim len = u32::MAX and trigger a 4 GiB allocation per frame.
+        self.limits
+            .check(len, self.limits.max_frame_bytes, "TLV frame value")?;
 
         if buf.len() < 5 + len {
             return Ok(DecodeResult::NeedMore);
@@ -94,7 +110,7 @@ mod tests {
         data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x01]);
 
         let chunks = vec![Ok(Vec64::from_slice(&data))];
-        let decoder = TLVDecoder::<Vec64<u8>>::new();
+        let decoder = TLVDecoder::<Vec64<u8>>::new(None);
         let mut stream = FramedByteStream::new(futures_util::stream::iter(chunks), decoder, 128);
 
         let first = stream.next().await.unwrap().unwrap();
@@ -106,5 +122,22 @@ mod tests {
         assert_eq!(second.value.as_slice(), &[0xDE, 0xAD, 0xBE, 0xEF, 0x01]);
 
         assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn rejects_frame_exceeding_max_frame_bytes() {
+        // Build the 5-byte TLV header announcing len = u32::MAX. The value
+        // bytes that would follow are deliberately absent; the cap must fire
+        // before the decoder waits for more input or allocates.
+        let mut data = vec![1u8];
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        let mut decoder = TLVDecoder::<Vec64<u8>>::new(None);
+        let err = match decoder.decode(&data) {
+            Err(e) => e,
+            Ok(_) => panic!("expected limit error, got Ok"),
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("TLV frame value"));
     }
 }

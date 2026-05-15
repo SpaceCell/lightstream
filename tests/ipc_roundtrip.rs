@@ -340,7 +340,7 @@ mod integration {
 
                             // Test frame decoder directly
                             let mut decoder =
-                                ArrowIPCFrameDecoder::<Vec64<u8>>::new(IPCMessageProtocol::Stream);
+                                ArrowIPCFrameDecoder::<Vec64<u8>>::new(IPCMessageProtocol::Stream, None);
                             match decoder.decode(chunk.as_ref()) {
                                 Ok(result) => {
                                     println!(

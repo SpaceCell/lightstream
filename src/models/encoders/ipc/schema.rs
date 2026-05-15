@@ -413,7 +413,11 @@ pub fn encode_flatbuf_dictionary<'a, B: StreamBuffer>(
     // 2. Offsets buffer
     // 3. Data buffer
 
-    // The offsets need to be written as raw bytes
+    // The offsets need to be written as raw bytes.
+    // SAFETY: `offs` is a `Vec<u32>` so `offs.as_ptr()` points to
+    // `offs.len() * size_of::<u32>() = offs.len() * 4` valid bytes living
+    // for the encode call. u32 has no padding or invalid bit patterns, so
+    // a byte view is sound for the duration of the body construction.
     let offs_bytes =
         unsafe { std::slice::from_raw_parts(offs.as_ptr() as *const u8, offs.len() * 4) };
 

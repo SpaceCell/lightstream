@@ -165,6 +165,10 @@ impl<B: StreamBuffer + Unpin> Stream for LightstreamReader<B> {
 
                 let spare = this.payload.spare_capacity_mut();
                 let read_len = spare.len().min(remaining);
+                // SAFETY: `spare` is the uninitialised tail of `this.payload`,
+                // borrowed exclusively here; reinterpreting MaybeUninit<u8>
+                // as u8 produces a sound write target for tokio's ReadBuf,
+                // bounded to `read_len <= spare.len()`.
                 let spare_slice = unsafe {
                     std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, read_len)
                 };
@@ -177,6 +181,10 @@ impl<B: StreamBuffer + Unpin> Stream for LightstreamReader<B> {
                             this.eof = true;
                             continue;
                         }
+                        // SAFETY: `n` is the count tokio just initialised in
+                        // the spare slice; `filled + n <= filled + read_len`
+                        // which the spare-length bound above keeps within
+                        // `this.payload.capacity()`.
                         unsafe { this.payload.set_len(filled + n) };
                         continue;
                     }

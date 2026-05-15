@@ -634,6 +634,11 @@ where
 
 fn pack_numeric<T: 'static>(out: Vec64<T>, null_mask: &[bool]) -> io::Result<Array> {
     let mask = Some(mask_to_bitmask(null_mask));
+    // SAFETY note for the six `transmute::<Vec64<T>, Vec64<U>>` calls
+    // below: each branch is gated by `TypeId::of::<T>() == TypeId::of::<U>()`,
+    // so the source and target Vec64s have the same `T = U` element type,
+    // size, alignment, and validity invariants. The transmute is an identity
+    // copy that the compiler cannot prove statically because T is generic.
     let arr = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<i32>() {
         Array::NumericArray(NumericArray::Int32(
             IntegerArray {

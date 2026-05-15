@@ -43,7 +43,7 @@ impl<T> IpcSerialise for T where T: Serialise<ArrowIpcCodec<Vec64<u8>>, Error = 
 /// decode. Schema is supplied for encode and left empty for decode -
 /// the codec accumulates schema from the first decoded frame.
 fn fresh_codec(schema: Vec<minarrow::Field>) -> ArrowIpcCodec<Vec64<u8>> {
-    ArrowIpcCodec::new(schema, IPCMessageProtocol::Stream, Compression::None)
+    ArrowIpcCodec::new(schema, IPCMessageProtocol::Stream, Compression::None, None)
 }
 
 // =====================================================================

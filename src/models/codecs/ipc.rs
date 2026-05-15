@@ -18,6 +18,7 @@ use minarrow::{Field, Table, Vec64};
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::decoders::ipc::{decode_ipc_frame, decode_ipc_payload};
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::encoders::ipc::record_batch::encode_record_batch;
 use crate::models::encoders::ipc::table_stream::TableStreamEncoder;
 use crate::traits::decoder::Decoder;
@@ -46,17 +47,33 @@ pub struct ArrowIpcCodec<B: StreamBuffer> {
     dicts: HashMap<i64, Vec<String>>,
     /// Cached SharedBuffer from the previous decode.
     shared_cache: Option<SharedBuffer>,
+    /// Resource caps applied during decode of untrusted input. Threaded into
+    /// every decoder entry point this codec drives.
+    limits: DecodeLimits,
 }
 
 impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
     /// Create a new codec for the given schema, protocol, and compression.
-    pub fn new(schema: Vec<Field>, protocol: IPCMessageProtocol, compression: Compression) -> Self {
+    /// Pass `None` for `limits` to apply the default per-decode resource caps,
+    /// or `Some(...)` to override them.
+    pub fn new(
+        schema: Vec<Field>,
+        protocol: IPCMessageProtocol,
+        compression: Compression,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
         Self {
             encoder: TableStreamEncoder::new_with_compression(schema, protocol, compression),
             fields: Vec::new(),
             dicts: HashMap::new(),
             shared_cache: None,
+            limits: limits.unwrap_or_default(),
         }
+    }
+
+    /// Return the resource limits in effect for this codec.
+    pub fn limits(&self) -> DecodeLimits {
+        self.limits
     }
 
     /// Encode one record batch's IPC frames into the streaming output
@@ -89,6 +106,7 @@ impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
             &mut self.fields,
             &mut self.dicts,
             self.shared_cache.take(),
+            self.limits,
         )?;
         self.shared_cache = Some(shared);
         Ok(table)
@@ -120,7 +138,7 @@ impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
 
         let shared = SharedBuffer::from_vec64(bytes);
         let mut frame_decoder: ArrowIPCFrameDecoder<B> =
-            ArrowIPCFrameDecoder::new(self.encoder.protocol);
+            ArrowIPCFrameDecoder::new(self.encoder.protocol, Some(self.limits));
         let total = shared.len();
         let mut tables: Vec<minarrow::Table> = Vec::new();
         let mut pos = 0;
@@ -188,6 +206,7 @@ impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
             &mut self.fields,
             &mut self.dicts,
             &mut self.shared_cache,
+            self.limits,
         )
     }
 

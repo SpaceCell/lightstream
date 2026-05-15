@@ -52,8 +52,18 @@ pub fn align_8(n: usize) -> usize {
 }
 
 /// Convert a typed slice to a byte slice for serialisation.
+///
+/// The `Copy` bound restricts T to plain-old-data, so a byte view does not
+/// expose any uninitialised padding that the caller could not already
+/// observe via `transmute`. Used on the encode path to feed numeric slices
+/// to the IPC writer; the result borrows `buf` for the same lifetime.
 #[inline(always)]
 pub fn as_bytes<T: Copy>(buf: &[T]) -> &[u8] {
+    // SAFETY: `buf.as_ptr()` points to `buf.len()` valid `T` values living
+    // for `'a`, totalling `buf.len() * size_of::<T>()` bytes. `T: Copy`
+    // forbids drop side effects so reinterpreting as bytes is sound.
+    // `len * size_of::<T>()` cannot overflow within the produced slice
+    // because the original `&[T]` already exists with that byte footprint.
     unsafe {
         std::slice::from_raw_parts(
             buf.as_ptr() as *const u8,

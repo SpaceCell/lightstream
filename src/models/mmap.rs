@@ -31,10 +31,13 @@ pub struct MemMap<const ALIGN: usize> {
     pub len: usize,
 }
 
-// SAFETY: MemMap is safe to send between threads because the mmap is read-only
+// SAFETY: ptr/len describe an immutable `PROT_READ | MAP_PRIVATE` mapping
+// produced inside this module; there is no shared interior mutability and no
+// API hands out `&mut` access, so concurrent reads from multiple threads
+// observe a stable byte sequence. The residual SIGBUS risk if the underlying
+// file is truncated externally after `open` is documented on the struct
+// itself, not addressable by Send/Sync.
 unsafe impl<const ALIGN: usize> Send for MemMap<ALIGN> {}
-
-// SAFETY: MemMap is safe to share between threads because the mmap is read-only
 unsafe impl<const ALIGN: usize> Sync for MemMap<ALIGN> {}
 
 impl<const ALIGN: usize> MemMap<{ ALIGN }> {
@@ -48,12 +51,36 @@ impl<const ALIGN: usize> MemMap<{ ALIGN }> {
         let file = File::open(path)?;
         let fd = file.as_raw_fd();
 
+        // Validate that the requested window lies within the file. Without
+        // this, mmap will happily return a partial mapping, and reading the
+        // unmapped tail raises SIGBUS rather than a recoverable error.
+        let file_len = file.metadata()?.len();
+        let requested_end = (offset as u64)
+            .checked_add(len as u64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "mmap offset+len overflow"))?;
+        if requested_end > file_len {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "mmap window {offset}+{len} exceeds file length {file_len}"
+                ),
+            ));
+        }
+
         // mmap must use an offset that's a multiple of page size
+        // SAFETY: sysconf is FFI returning a long; no aliasing or pointer
+        // arguments. A negative or zero return would be wrong on Linux but
+        // is not unsound here - it would just give a degenerate map_offset.
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let map_offset = offset & !(page_size - 1);
         let offset_in_page = offset - map_offset;
         let map_len = offset_in_page + len;
 
+        // SAFETY: mmap with a null `addr`, PROT_READ, MAP_PRIVATE, a valid
+        // open fd, and a page-aligned `map_offset` derived above. On success
+        // mmap returns ownership of the new mapping to us; we either install
+        // it in `region_ptr` for Drop to munmap, or unmap it explicitly on
+        // the alignment-fail path below.
         let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -69,10 +96,15 @@ impl<const ALIGN: usize> MemMap<{ ALIGN }> {
             return Err(Error::last_os_error());
         }
 
+        // SAFETY: `ptr` is the base of a `map_len`-byte mapping and
+        // `offset_in_page < page_size <= map_len`, so the resulting pointer
+        // stays inside the same allocation.
         let region_ptr = unsafe { (ptr as *mut u8).add(offset_in_page) };
         // Confirm alignment
         if (region_ptr as usize) % ALIGN != 0 {
-            // Unmap and error
+            // SAFETY: `ptr` is the live mapping just returned by mmap and
+            // we own it - munmap with the matching base+length releases it
+            // before we drop the error path. The pointer is not used again.
             unsafe { libc::munmap(ptr, map_len) };
             return Err(Error::new(
                 ErrorKind::Other,
@@ -90,6 +122,12 @@ impl<const ALIGN: usize> MemMap<{ ALIGN }> {
     }
 
     pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: `ptr` points into an `mmap`-owned region of at least `len`
+        // bytes (open validates this against the file size and alignment).
+        // The mapping is PROT_READ and lives until Drop, so the returned
+        // slice is valid for the lifetime of `&self`. If the underlying file
+        // is truncated by another process between `open` and this read, the
+        // OS may raise SIGBUS - documented as a residual risk on the type.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
@@ -119,17 +157,19 @@ impl<const ALIGN: usize> Drop for MemMap<{ ALIGN }> {
     ///
     /// Calculates the original page-aligned base pointer and total mapping
     /// length, then calls `munmap` to release the mapping back to the OS.
-    ///
-    /// # Safety
-    /// - Safe because the mapping was created by `mmap` in [`MemMap::open`].
-    /// - No double-unmapping occurs as ownership is unique to this `MemMap`.
     fn drop(&mut self) {
-        // Compute the base pointer for unmapping
+        // Compute the base pointer for unmapping.
+        // SAFETY: sysconf FFI with no aliasing risk.
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let ptr_val = self.ptr as usize;
         let page_base = ptr_val & !(page_size - 1);
         let offset_in_page = ptr_val - page_base;
         let map_len = offset_in_page + self.len;
+        // SAFETY: `self.ptr` was returned by mmap in `open` and adjusted
+        // forward by `offset_in_page`, so `page_base = ptr - offset_in_page`
+        // reconstructs the original mapping base. `map_len` reconstructs the
+        // original mapping length. Ownership is unique to this `MemMap`, so
+        // no other handle observes the unmap.
         unsafe {
             libc::munmap(page_base as *mut libc::c_void, map_len);
         }
@@ -214,6 +254,24 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_mmap_rejects_window_past_eof() {
+        // Map an offset+length pair that runs past the file's actual size.
+        // Without the file-size guard inside `open`, mmap would return a
+        // partial mapping and accessing the unmapped tail would SIGBUS at
+        // runtime; with it the request is refused with InvalidInput.
+        let data = b"abcdefghij"; // 10 bytes
+        let path = create_temp_file_with_data(data, 0);
+
+        let res = MemMap::<ALIGN>::open(path.to_str().unwrap(), 0, data.len() + 4096);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("exceeds file length"));
 
         std::fs::remove_file(path).unwrap();
     }
