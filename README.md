@@ -25,6 +25,18 @@ Lightstream gives you Arrow IPC streaming with SIMD-aligned buffers across TCP, 
 
 All transports use the same codec layer. Switch transports without changing your framing logic.
 
+### TLS
+
+Build with the `tls` feature to enable encrypted TCP and WebSocket
+transports. `TcpTableReader::connect_tls` / `TcpTableWriter::connect_tls`
+take an `rustls::ClientConfig` and a `ServerName`. WebSocket gains the
+equivalent `connect_tls` for callers that need pinned roots, a custom
+verifier, or client-auth keys; plain `connect("wss://...")` continues to
+work via tokio-tungstenite's webpki-roots integration (also gated by the
+`tls` feature). QUIC and WebTransport mandate TLS at the protocol level
+and already accept their own rustls config. No default root store is
+bundled - supply one through your `ClientConfig`.
+
 ## Formats
 
 | Format | Description |
@@ -156,6 +168,7 @@ Lightstream is layered and composable. Swap any layer without rewriting the stac
 |---------|-------------|
 | `tcp` | TCP transport |
 | `websocket` | WebSocket transport |
+| `tls` | TLS layer for TCP and WebSocket via tokio-rustls (ring provider) |
 | `quic` | QUIC transport |
 | `uds` | Unix domain socket transport |
 | `stdio` | Stdin/stdout transport |

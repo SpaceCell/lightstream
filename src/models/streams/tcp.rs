@@ -14,30 +14,99 @@
 
 use std::io;
 use std::pin::Pin;
+#[cfg(feature = "tls")]
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use minarrow::structs::shared_buffer::SharedBuffer;
-use tokio::io::{AsyncRead, ReadBuf};
-use tokio::net::tcp::OwnedReadHalf;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use crate::enums::BufferChunkSize;
 use crate::models::streams::stream_arena::StreamArena;
 
+/// Read half of a TCP byte stream.
+///
+/// Variants are dispatched at runtime so the surrounding reader stays a
+/// single concrete type whether the connection is plaintext or TLS. The
+/// TLS variant boxes the split-half because client and server TLS
+/// streams have distinct concrete types in `tokio_rustls`; a trait
+/// object keeps the public type uniform.
+pub enum TcpReadHalf {
+    Plain(OwnedReadHalf),
+    #[cfg(feature = "tls")]
+    Tls(Box<dyn AsyncRead + Send + Unpin + 'static>),
+}
+
+impl AsyncRead for TcpReadHalf {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            TcpReadHalf::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            #[cfg(feature = "tls")]
+            TcpReadHalf::Tls(s) => Pin::new(&mut **s).poll_read(cx, buf),
+        }
+    }
+}
+
+/// Write half of a TCP byte stream. Same dispatch shape as [`TcpReadHalf`].
+/// The Sync bound is required by `TableSink64`'s `Send + Sync` constraint;
+/// the concrete TLS write halves from `tokio_rustls` satisfy it.
+pub enum TcpWriteHalf {
+    Plain(OwnedWriteHalf),
+    #[cfg(feature = "tls")]
+    Tls(Box<dyn AsyncWrite + Send + Sync + Unpin + 'static>),
+}
+
+impl AsyncWrite for TcpWriteHalf {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            TcpWriteHalf::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            #[cfg(feature = "tls")]
+            TcpWriteHalf::Tls(s) => Pin::new(&mut **s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            TcpWriteHalf::Plain(s) => Pin::new(s).poll_flush(cx),
+            #[cfg(feature = "tls")]
+            TcpWriteHalf::Tls(s) => Pin::new(&mut **s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            TcpWriteHalf::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            #[cfg(feature = "tls")]
+            TcpWriteHalf::Tls(s) => Pin::new(&mut **s).poll_shutdown(cx),
+        }
+    }
+}
+
 /// A byte stream over a TCP connection.
 ///
 /// Implements `AsyncRead` for the direct decode path and `Stream` for
-/// zero-allocation SharedBuffer-based streaming.
+/// zero-allocation SharedBuffer-based streaming. The underlying transport
+/// may be plaintext or TLS-wrapped; both share the same wire framing.
 pub struct TcpByteStream {
-    reader: OwnedReadHalf,
+    reader: TcpReadHalf,
     eof: bool,
     chunk_size: usize,
     arena: StreamArena,
 }
 
 impl TcpByteStream {
-    /// Connect to a TCP address and return a byte stream.
+    /// Connect to a TCP address over plaintext and return a byte stream.
     ///
     /// Splits the connection and reads from the read half.
     /// Uses `BufferChunkSize::Http` (64 KiB) as the default chunk size.
@@ -53,7 +122,48 @@ impl TcpByteStream {
     /// e.g. for bidirectional communication on the same socket.
     pub fn from_read_half(read_half: OwnedReadHalf, size: BufferChunkSize) -> Self {
         Self {
-            reader: read_half,
+            reader: TcpReadHalf::Plain(read_half),
+            eof: false,
+            chunk_size: size.chunk_size(),
+            arena: StreamArena::new(),
+        }
+    }
+
+    /// Connect, upgrade the channel to TLS via the supplied
+    /// `rustls::ClientConfig`, and return a byte stream over the encrypted
+    /// channel. The caller controls verifier and root store through their
+    /// `ClientConfig`; no default root store is bundled. Pass `None` for
+    /// `chunk` to use `BufferChunkSize::Http` (64 KiB).
+    #[cfg(feature = "tls")]
+    pub async fn connect_tls(
+        addr: impl ToSocketAddrs,
+        server_name: rustls_pki_types::ServerName<'static>,
+        config: Arc<tokio_rustls::rustls::ClientConfig>,
+        chunk: Option<BufferChunkSize>,
+    ) -> io::Result<Self> {
+        let tcp = TcpStream::connect(addr).await?;
+        let connector = tokio_rustls::TlsConnector::from(config);
+        let tls = connector.connect(server_name, tcp).await?;
+        let (read_half, _write_half) = tokio::io::split(tls);
+        Ok(Self::from_tls_read_half(
+            read_half,
+            chunk.unwrap_or(BufferChunkSize::Http),
+        ))
+    }
+
+    /// Wrap an already-upgraded TLS read half as a byte stream.
+    ///
+    /// The server side typically obtains the upgraded stream by running
+    /// `tokio_rustls::TlsAcceptor::accept(tcp).await`, then splits it with
+    /// `tokio::io::split`. This entry point lets the caller hand the read
+    /// half over without naming the split-half type at the call site.
+    #[cfg(feature = "tls")]
+    pub fn from_tls_read_half<R>(read_half: R, size: BufferChunkSize) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+    {
+        Self {
+            reader: TcpReadHalf::Tls(Box::new(read_half)),
             eof: false,
             chunk_size: size.chunk_size(),
             arena: StreamArena::new(),

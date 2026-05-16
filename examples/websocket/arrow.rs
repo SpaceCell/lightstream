@@ -18,7 +18,6 @@ mod helpers;
 use helpers::{make_table, table_schema};
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::websocket::WebSocketTableReader;
-use lightstream::models::streams::websocket::{WsRead, WsWrite};
 use lightstream::models::writers::websocket::WebSocketTableWriter;
 use lightstream::traits::transport_reader::IPCTransportReader;
 use lightstream::traits::transport_writer::IPCTransportWriter;
@@ -52,9 +51,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let raw = ws_stream.into_inner();
         let (read_half, write_half) = tokio::io::split(raw);
-        let (shared_writer, _ws_write) = WsWrite::new(write_half);
-        let ws_read = WsRead::new(read_half, shared_writer);
-        let reader = WebSocketTableReader::from_raw_stream(ws_read, IPCMessageProtocol::Stream);
+        let reader = WebSocketTableReader::from_split_halves(
+            read_half,
+            write_half,
+            IPCMessageProtocol::Stream,
+        );
         let tables = reader.read_all_tables().await.unwrap();
 
         for table in &tables {
