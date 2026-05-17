@@ -247,6 +247,10 @@ pub mod models {
         #[cfg(feature = "webtransport")]
         pub mod webtransport;
 
+        /// HTTP/2 table reader (GET; streaming response body)
+        #[cfg(feature = "http")]
+        pub mod http;
+
         /// UDS table reader
         #[cfg(feature = "uds")]
         pub mod uds;
@@ -315,6 +319,10 @@ pub mod models {
         #[cfg(feature = "webtransport")]
         pub mod webtransport;
 
+        /// HTTP/2 table writer (POST; streaming request body)
+        #[cfg(feature = "http")]
+        pub mod http;
+
         /// UDS table writer
         #[cfg(feature = "uds")]
         pub mod uds;
@@ -357,6 +365,10 @@ pub mod models {
         /// WebTransport byte stream adapter.
         #[cfg(feature = "webtransport")]
         pub mod webtransport;
+
+        /// HTTP/2 byte stream adapter.
+        #[cfg(feature = "http")]
+        pub mod http;
 
         /// UDS byte stream adapter.
         #[cfg(feature = "uds")]

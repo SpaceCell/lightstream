@@ -29,7 +29,7 @@ futures-util = { version = "0.3", features = ["sink"] }
 flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
-minarrow = { path = "../minarrow", features = ["chunked", "views", "large_string", "arena", "vmap64", "size"] }
+minarrow = { version = "0.11.0", features = ["chunked", "views", "large_string", "arena", "vmap64", "size"] }
 vec64 = { path = "../vec64", features = ["mmap"] }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
@@ -56,6 +56,11 @@ tokio-uring = { version = "0.5", optional = true }
 # pull in a second provider.
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12"] }
 rustls-pki-types = { version = "1", optional = true }
+# HTTP/2 transport. h2 directly (not hyper). bytes and http are
+# already in the transitive tree via tokio/quinn/wtransport.
+h2 = { version = "0.4", optional = true }
+http = { version = "1", optional = true }
+bytes = { version = "1", optional = true }
 arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
 polars = { version = "0.53", optional = true, default-features = false, features = ["ipc"] }
 # CSV fast-path float parser. Versions match what other deps already pull
@@ -132,6 +137,10 @@ tls = [
     "dep:rustls-pki-types",
     "tokio-tungstenite?/rustls-tls-webpki-roots",
 ]
+# HTTP/2 transport. http feature alone enables h2c (plaintext h2);
+# http + tls enables h2 over TLS with ALPN negotiated to "h2".
+# Client-only (GET / POST).
+http = ["tcp", "dep:h2", "dep:http", "dep:bytes"]
 # QUIC transport
 quic = ["tokio/net", "quinn"]
 # WebTransport transport
@@ -194,6 +203,11 @@ required-features = ["protocol", "websocket", "msgpack"]
 name = "websocket_arrow"
 path = "examples/websocket/arrow.rs"
 required-features = ["websocket"]
+
+[[example]]
+name = "http_arrow"
+path = "examples/http/arrow.rs"
+required-features = ["http"]
 
 [[example]]
 name = "websocket_arrow_tls"

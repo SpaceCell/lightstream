@@ -9,6 +9,7 @@
 //! one allocation is reused forever.
 
 use std::cell::UnsafeCell;
+use std::io;
 use std::sync::Arc;
 
 use minarrow::Vec64;
@@ -223,6 +224,96 @@ impl StreamArena {
     #[inline]
     pub fn remaining(&self) -> usize {
         self.capacity - self.write_pos
+    }
+
+    /// Run an Arrow IPC encode (or any growable-buffer producer)
+    /// directly into the arena's backing, advancing `write_pos` to the
+    /// length the encoder grew the Vec64 to. The caller skips the
+    /// encode-buf → arena memcpy entirely; the arena's window over the
+    /// freshly-written region is wrapped zero-copy as `Bytes` by the
+    /// transport.
+    ///
+    /// The closure MUST NOT cause the Vec64 to reallocate. Outstanding
+    /// `SharedBuffer` windows hold raw pointers into the current
+    /// allocation; a realloc moves it and the windows dangle. Callers
+    /// guard this by checking `remaining()` against an upper bound on
+    /// the encode size and calling `recycle_or_reset` first when short.
+    /// A realloc inside the closure is surfaced as an `io::Error` and
+    /// the arena is left with a sane `write_pos`.
+    ///
+    /// ## Status: retained but unused
+    ///
+    /// `stream_throughput` benchmarks show this path is slower than the
+    /// conventional `TableSink64 + AsyncWrite` writer shape used by
+    /// every transport in the tree (TCP, UDS, WS, QUIC, HTTP). The
+    /// `Bytes::copy_from_slice` per flow-control grant in the
+    /// AsyncWrite adapters runs at L1/L2 cache bandwidth and overlaps
+    /// with async I/O wait; meanwhile this path pays for `Arc`
+    /// bookkeeping per frame and risks fresh multi-GiB backing
+    /// allocations when the transport holds outstanding `SharedBuffer`
+    /// windows that block in-place recycle. Both QUIC and HTTP write
+    /// paths were prototyped against this and reverted after the bench
+    /// numbers came back regressed by tens of percent.
+    ///
+    /// Kept here in case a future transport with different lifetime
+    /// properties (one where the consumer drops `Bytes` synchronously
+    /// before the next encode) makes the no-memcpy shape pay off.
+    #[allow(dead_code)]
+    pub fn encode_in_place<F>(&mut self, f: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut Vec64<u8>) -> io::Result<()>,
+    {
+        // SAFETY: we hold &mut self, so no other access path to the
+        // backing is live concurrently. Outstanding SharedBuffer windows
+        // hold the Arc and read [..write_pos] via raw pointer; the
+        // encoder writes from `write_pos` onward, so the two ranges do
+        // not overlap. The closure must respect the no-realloc invariant
+        // documented above; we re-check capacity afterwards.
+        let backing_ptr = self.backing.data.get();
+        let vec64: &mut Vec64<u8> = unsafe { &mut *backing_ptr };
+
+        let original_capacity = vec64.capacity();
+        // Sync Vec64's len with write_pos so the encoder's Extend-style
+        // appends start at the right offset within the backing. Bytes in
+        // [0..write_pos) were initialised by prior writes.
+        // SAFETY: re-asserts the existing initialisation invariant.
+        unsafe {
+            vec64.set_len(self.write_pos);
+        }
+
+        let result = f(vec64);
+
+        let new_capacity = vec64.capacity();
+        let new_len = vec64.len();
+
+        // Restore len = capacity so spare_mut and friends keep their
+        // raw-pointer addressing semantics consistent with construction.
+        // SAFETY: bytes in [0..new_len) are initialised by the encoder;
+        // bytes in [new_len..capacity) are uninitialised but only
+        // accessed via spare_mut's raw pointer (never read).
+        unsafe {
+            vec64.set_len(original_capacity);
+        }
+
+        if new_capacity != original_capacity {
+            // Realloc happened. Any outstanding SharedBuffer windows
+            // referencing the old allocation now hold dangling pointers.
+            // Surface the breach to the caller; leave write_pos sane.
+            self.write_pos = new_len.min(new_capacity);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "StreamArena::encode_in_place: backing reallocated \
+                     (cap {} -> {}); call recycle_or_reset before encoding \
+                     when remaining() is below the max encode size",
+                    original_capacity, new_capacity,
+                ),
+            ));
+        }
+
+        result?;
+        self.write_pos = new_len;
+        Ok(())
     }
 
     /// Current write position.
