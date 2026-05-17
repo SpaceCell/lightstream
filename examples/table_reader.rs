@@ -8,7 +8,7 @@ use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::streams::disk::DiskByteStream;
 use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
-use minarrow::{arr_f64, arr_i32, arr_str32, Field, FieldArray, Table, Vec64};
+use minarrow::{Field, FieldArray, Table, Vec64, arr_f64, arr_i32, arr_str32};
 use std::path::Path;
 use tempfile::tempdir;
 use tokio::fs::File;
@@ -62,11 +62,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_stream(&source, &path).await?;
 
     let reader = open_reader(&path).await?;
-    let combined = reader
-        .combine_to_table(Some("Merged".to_string()))
-        .await?;
+    let combined = reader.combine_to_table(Some("Merged".to_string())).await?;
     assert_eq!(combined.n_rows, expected);
-    println!("  {} rows across {} columns", combined.n_rows, combined.cols.len());
+    println!(
+        "  {} rows across {} columns",
+        combined.n_rows,
+        combined.cols.len()
+    );
 
     Ok(())
 }
@@ -111,17 +113,12 @@ fn make_varying_tables() -> Vec<Table> {
         .collect()
 }
 
-async fn open_reader(
-    path: &Path,
-) -> Result<TableReader<Vec64<u8>>, Box<dyn std::error::Error>> {
+async fn open_reader(path: &Path) -> Result<TableReader<Vec64<u8>>, Box<dyn std::error::Error>> {
     let stream = DiskByteStream::open(path, BufferChunkSize::Custom(8192)).await?;
     Ok(TableReader::new(stream, 8192, IPCMessageProtocol::Stream))
 }
 
-async fn write_stream(
-    tables: &[Table],
-    path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_stream(tables: &[Table], path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let schema: Vec<Field> = tables[0].schema().iter().map(|f| (**f).clone()).collect();
     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
     for table in tables {

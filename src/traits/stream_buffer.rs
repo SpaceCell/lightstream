@@ -24,7 +24,7 @@
 //! internally, regardless of `B`. The `B` parameter only affects frame
 //! boundary calculations (where metadata padding and body padding land).
 //! Column data is mapped via `SharedBuffer` for zero-copy access.
-//! This allows compatibility with bytes from a different sources whilst 
+//! This allows compatibility with bytes from a different sources whilst
 //! ensuring data is captured into 64-byte aligned SIMD-ready vectors.
 //!
 //! ## Wire padding overhead
@@ -33,8 +33,8 @@
 //! boundaries. This adds at most 63 bytes of padding per section compared
 //! to the 8-byte minimum. For a typical record batch of tens of KB or
 //! more, this is well under 1% overhead on the wire. The trade-off is
-//! worthwhile when targeting SIMD cache alignment because the receiver can map 
-//! column buffers directly from the SharedBuffer without alignment fixup copies, 
+//! worthwhile when targeting SIMD cache alignment because the receiver can map
+//! column buffers directly from the SharedBuffer without alignment fixup copies,
 //! which would otherwise cost far more than the extra padding bytes. Consequently,
 //! SIMD calculations are available on the buffers permanently via `Minarrow`.
 //!
@@ -42,7 +42,7 @@
 //! Column buffers may not be 64-byte aligned on arrival, so
 //! `Buffer::from_shared` will copy into an aligned Vec64, as this is enforced by Minarrow
 //! to support its central SIMD compatibility and cache-optimal promise.
-//! This means that if data was written via an 8-byte Arrow implementation there is one memory copy, 
+//! This means that if data was written via an 8-byte Arrow implementation there is one memory copy,
 //! to resolve high-performance data buffers once at source ingest.
 //!
 //! ## Choosing B

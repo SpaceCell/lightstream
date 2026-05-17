@@ -189,11 +189,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
     /// The SharedBuffer is cached for recycling: when the caller drops the
     /// previous table and the buffer becomes the sole owner, the Vec64 is
     /// reclaimed for the next batch.
-    pub fn decode_frame(
-        &mut self,
-        tag: u8,
-        payload: Vec64<u8>,
-    ) -> io::Result<LightstreamMessage> {
+    pub fn decode_frame(&mut self, tag: u8, payload: Vec64<u8>) -> io::Result<LightstreamMessage> {
         let entry = self.types.get_mut(tag as usize).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,

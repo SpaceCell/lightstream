@@ -35,7 +35,6 @@ use lightstream::traits::transport_writer::IPCTransportWriter;
 struct SkipVerification;
 
 impl rustls::client::danger::ServerCertVerifier for SkipVerification {
-
     // Note in a prod setting these of course need to be completed robustly
     // and extensively, and generally not self-signed
     fn verify_server_cert(

@@ -97,7 +97,10 @@ fn bench_file_throughput(c: &mut Criterion) {
     let tables: Vec<Table> = (0..BENCH_BATCHES).map(|_| table.clone()).collect();
 
     let mut group = c.benchmark_group("file_throughput");
-    group.throughput(Throughput::Bytes(logical_payload_bytes(BENCH_ROWS, BENCH_BATCHES)));
+    group.throughput(Throughput::Bytes(logical_payload_bytes(
+        BENCH_ROWS,
+        BENCH_BATCHES,
+    )));
 
     // Write benchmark
     group.bench_function("write", |b| {
@@ -116,13 +119,9 @@ fn bench_file_throughput(c: &mut Criterion) {
     let read_file = NamedTempFile::new().unwrap();
     let read_path = read_file.path().to_path_buf();
     rt.block_on(async {
-        write_tables_to_file(
-            read_path.to_str().unwrap(),
-            &tables,
-            schema.clone(),
-        )
-        .await
-        .unwrap();
+        write_tables_to_file(read_path.to_str().unwrap(), &tables, schema.clone())
+            .await
+            .unwrap();
     });
 
     // File reader benchmark
@@ -214,12 +213,10 @@ fn bench_file_throughput(c: &mut Criterion) {
 
         b.iter(|| {
             let trailer_start = buffer.len() - 10;
-            let footer_len = read_footer_length(
-                buffer[trailer_start..].try_into().unwrap(),
-            ).unwrap();
-            let footer = root_as_footer(
-                &buffer[trailer_start - footer_len..trailer_start],
-            ).unwrap();
+            let footer_len =
+                read_footer_length(buffer[trailer_start..].try_into().unwrap()).unwrap();
+            let footer =
+                root_as_footer(&buffer[trailer_start - footer_len..trailer_start]).unwrap();
             let schema = std::sync::Arc::new(fb_to_schema(footer.schema().unwrap()));
             let mut decoder = FileDecoder::new(schema, footer.version());
 
@@ -309,13 +306,9 @@ fn bench_file_throughput(c: &mut Criterion) {
         let zstd_file = NamedTempFile::new().unwrap();
         let zstd_path = zstd_file.path().to_path_buf();
         rt.block_on(async {
-            write_compressed(
-                zstd_path.to_str().unwrap(),
-                &tables,
-                schema.clone(),
-            )
-            .await
-            .unwrap();
+            write_compressed(zstd_path.to_str().unwrap(), &tables, schema.clone())
+                .await
+                .unwrap();
         });
 
         group.bench_function("read_file_zstd", |b| {

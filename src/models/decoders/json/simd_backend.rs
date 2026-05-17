@@ -54,8 +54,9 @@ impl JsonRowDecoder for SimdJsonBackend {
         field_map: &HashMap<&str, usize>,
         policy: TypeMismatchPolicy,
     ) -> io::Result<usize> {
-        let parsed = simd_json::to_tape_with_buffers(input, &mut self.buffers)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("invalid JSON: {e}")))?;
+        let parsed = simd_json::to_tape_with_buffers(input, &mut self.buffers).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("invalid JSON: {e}"))
+        })?;
         let nodes: &[Node<'_>] = &parsed.0;
         if nodes.is_empty() {
             return Ok(0);
@@ -173,13 +174,7 @@ fn walk_row(
                     format!("duplicate key '{key}' at row {row_idx}"),
                 ));
             }
-            dispatch_value(
-                value_node,
-                &mut builders[col_idx],
-                policy,
-                row_idx,
-                key,
-            )?;
+            dispatch_value(value_node, &mut builders[col_idx], policy, row_idx, key)?;
             visited[col_idx] = true;
         }
         p = value_idx + value_span;

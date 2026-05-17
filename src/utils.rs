@@ -67,7 +67,7 @@ pub fn as_bytes<T: Copy>(buf: &[T]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             buf.as_ptr() as *const u8,
-            buf.len() * std::mem::size_of::<T>(),
+            std::mem::size_of_val(buf),
         )
     }
 }
@@ -132,7 +132,7 @@ pub fn pack_bits<I>(iter: I, len: usize) -> Vec<u8>
 where
     I: Iterator<Item = bool>,
 {
-    let n_bytes = (len + 7) / 8;
+    let n_bytes = len.div_ceil(8);
     let mut buf = vec![0u8; n_bytes];
     for (i, v) in iter.enumerate().take(len) {
         if v {
@@ -148,4 +148,3 @@ pub fn unpack_bits(buf: &[u8], len: usize) -> Vec<bool> {
         .map(|i| ((buf[i / 8] >> (i % 8)) & 1) != 0)
         .collect()
 }
-

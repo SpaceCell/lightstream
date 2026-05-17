@@ -123,11 +123,8 @@ fn bench_json(c: &mut Criterion) {
             || array_per_batch.clone(),
             |mut batches| {
                 for bytes in batches.iter_mut() {
-                    let tape = simd_json::to_tape_with_buffers(
-                        bytes.as_mut_slice(),
-                        &mut buffers,
-                    )
-                    .unwrap();
+                    let tape = simd_json::to_tape_with_buffers(bytes.as_mut_slice(), &mut buffers)
+                        .unwrap();
                     std::hint::black_box(tape);
                 }
             },

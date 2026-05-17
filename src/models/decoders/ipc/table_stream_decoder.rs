@@ -261,7 +261,8 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                 Phase::Body { .. } => {
                     // Take the phase to avoid borrow conflicts with poll_read_body
                     let phase = std::mem::replace(&mut this.phase, Phase::Metadata);
-                    let (meta_bytes, body_start, mut body_filled, body_len, body_pad) = match phase {
+                    let (meta_bytes, body_start, mut body_filled, body_len, body_pad) = match phase
+                    {
                         Phase::Body {
                             meta_bytes,
                             body_start,
@@ -353,11 +354,8 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                                         body_len,
                                     )?;
                                     this.drain_consumed(consumed);
-                                    match result {
-                                        IPCFrameResult::Schema => {
-                                            this.state = BatchState::Ready;
-                                        }
-                                        _ => {}
+                                    if let IPCFrameResult::Schema = result {
+                                        this.state = BatchState::Ready;
                                     }
                                     continue;
                                 }

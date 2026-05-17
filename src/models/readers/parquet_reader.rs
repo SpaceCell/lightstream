@@ -10,7 +10,7 @@
 //! - No nested type support
 //! - Works with any `Read + Seek`
 //! - Reads into memory - no mmap zero-copy like IPC at the present time.
-//! 
+//!
 //! ## Outputs
 //! On success returns a fully materialised `Table`; otherwise yields an `IOError`
 //! for malformed footers/headers, unsupported encodings, or truncated pages.
@@ -120,7 +120,8 @@ fn read_parquet_impl<R: Read + Seek>(
         for name in proj {
             if !meta.schema.iter().any(|se| se.name == *name) {
                 return Err(IoError::Format(format!(
-                    "column '{}' not found in schema", name
+                    "column '{}' not found in schema",
+                    name
                 )));
             }
         }
@@ -403,12 +404,18 @@ fn decode_column(
         ArrowType::Dictionary(key_ty) => {
             match (key_ty, enc) {
                 // u32 keys
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 (CategoricalIndexType::UInt32, ParquetEncoding::RleDictionary) => {
                     let idx = decode_dictionary_indices_rle(buf, len)?;
                     build_cat32(idx, dict, mask)
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 (CategoricalIndexType::UInt32, ParquetEncoding::Plain) => {
                     let idx = decode_uint32_as_int32_plain(buf)?;
                     build_cat32(idx, dict, mask)
@@ -477,7 +484,10 @@ fn decode_column(
 
 // categorical builders
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+#[cfg(any(
+    not(feature = "default_categorical_8"),
+    feature = "extended_categorical"
+))]
 fn build_cat32(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> Array {
     let dict = dict_raw
         .iter()
@@ -940,8 +950,8 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
                     match id2 {
                         1 => num_values = thrift_read_i32(r)?,
                         2 => {
-                            encoding = ParquetEncoding::from_i32(thrift_read_i32(r)?)
-                                .ok_or_else(|| {
+                            encoding =
+                                ParquetEncoding::from_i32(thrift_read_i32(r)?).ok_or_else(|| {
                                     IoError::Format(
                                         "Invalid encoding in DictionaryPageHeader".into(),
                                     )

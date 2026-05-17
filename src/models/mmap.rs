@@ -61,9 +61,7 @@ impl<const ALIGN: usize> MemMap<{ ALIGN }> {
         if requested_end > file_len {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
-                format!(
-                    "mmap window {offset}+{len} exceeds file length {file_len}"
-                ),
+                format!("mmap window {offset}+{len} exceeds file length {file_len}"),
             ));
         }
 

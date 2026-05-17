@@ -11,15 +11,45 @@ use bench_helpers::*;
 use std::sync::Arc;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+#[cfg(any(
+    feature = "tcp",
+    feature = "uds",
+    feature = "websocket",
+    feature = "quic",
+    feature = "webtransport"
+))]
 use lightstream::enums::IPCMessageProtocol;
-#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+#[cfg(any(
+    feature = "tcp",
+    feature = "uds",
+    feature = "websocket",
+    feature = "quic",
+    feature = "webtransport"
+))]
 use lightstream::models::readers::ipc::table_reader::TableReader;
-#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+#[cfg(any(
+    feature = "tcp",
+    feature = "uds",
+    feature = "websocket",
+    feature = "quic",
+    feature = "webtransport"
+))]
 use lightstream::traits::transport_writer::IPCTransportWriter;
-#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+#[cfg(any(
+    feature = "tcp",
+    feature = "uds",
+    feature = "websocket",
+    feature = "quic",
+    feature = "webtransport"
+))]
 use minarrow::Field;
-#[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+#[cfg(any(
+    feature = "tcp",
+    feature = "uds",
+    feature = "websocket",
+    feature = "quic",
+    feature = "webtransport"
+))]
 use minarrow::Vec64;
 #[cfg(feature = "tcp")]
 use tokio::net::TcpListener;
@@ -30,7 +60,13 @@ use tokio::net::UnixListener;
 fn bench_ipc_throughput(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let table = Arc::new(make_bench_table(BENCH_ROWS));
-    #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket", feature = "quic", feature = "webtransport"))]
+    #[cfg(any(
+        feature = "tcp",
+        feature = "uds",
+        feature = "websocket",
+        feature = "quic",
+        feature = "webtransport"
+    ))]
     let schema: Vec<Field> = table.schema().iter().map(|f| (**f).clone()).collect();
 
     let mut group = c.benchmark_group("ipc_throughput");
@@ -177,13 +213,12 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let ws = tokio_tungstenite::accept_async(socket).await.unwrap();
                 let raw = ws.into_inner();
                 let (read_half, write_half) = tokio::io::split(raw);
-                let (shared_writer, _ws_write) = lightstream::models::streams::websocket::WsWrite::new(write_half);
-                let ws_read = lightstream::models::streams::websocket::WsRead::new(read_half, shared_writer);
-                let mut reader = TableReader::<Vec64<u8>>::new(
-                    ws_read,
-                    64 * 1024,
-                    IPCMessageProtocol::Stream,
-                );
+                let (shared_writer, _ws_write) =
+                    lightstream::models::streams::websocket::WsWrite::new(write_half);
+                let ws_read =
+                    lightstream::models::streams::websocket::WsRead::new(read_half, shared_writer);
+                let mut reader =
+                    TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, IPCMessageProtocol::Stream);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -521,4 +556,3 @@ impl rustls::client::danger::ServerCertVerifier for BenchSkipVerification {
         ]
     }
 }
-

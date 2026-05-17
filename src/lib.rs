@@ -19,15 +19,15 @@
 //!     - Stdin/StdOut
 //!     - TCP
 //!     - UDS
-//!     - Websocket 
+//!     - Websocket
 //!     - Webtransport
 //!     - Memory Mapped IPC Readers/Writers + Parquet
 //!     
 //! These are built via a consistent interface where the protocol is agnostic to the transport, making adding new ones trivial.
-//! 
+//!
 //! Additionally, it is highly customisable as the layered architecture allows opting up to the desired level for modifying and/or implementing
 //! new protocols as needed.
-//! 
+//!
 //! ## Highlights
 //!
 //! - ✅ Fully async-compatible with [`tokio::io::AsyncWrite`]  
@@ -208,13 +208,13 @@ pub mod models {
         #[cfg(feature = "csv")]
         pub mod csv_reader;
 
-        /// JSON reader (array-of-objects and NDJSON)
-        #[cfg(feature = "json")]
-        pub mod json_reader;
         /// Chunked CSV reader: globs a directory of `<base>-NNNNN.csv`
         /// files and presents them as an ordered iterator of `Table`s.
         #[cfg(feature = "csv")]
         pub mod chunked_csv;
+        /// JSON reader (array-of-objects and NDJSON)
+        #[cfg(feature = "json")]
+        pub mod json_reader;
 
         /// Parquet reader
         #[cfg(feature = "parquet")]
@@ -281,13 +281,13 @@ pub mod models {
         #[cfg(feature = "csv")]
         pub mod csv_writer;
 
-        /// JSON writer - array-of-objects or NDJSON, any io::Write sink
-        #[cfg(feature = "json")]
-        pub mod json_writer;
         /// Chunked CSV writer: writes each batch to a separate
         /// `<base>-NNNNN.csv` file inside a directory.
         #[cfg(feature = "csv")]
         pub mod chunked_csv;
+        /// JSON writer - array-of-objects or NDJSON, any io::Write sink
+        #[cfg(feature = "json")]
+        pub mod json_writer;
 
         /// Parquet writer
         #[cfg(feature = "parquet")]

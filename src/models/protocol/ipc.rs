@@ -28,8 +28,8 @@
 //! for streaming tables into any `AsyncWrite` destination.
 
 pub use crate::models::codecs::ipc::ArrowIpcCodec;
-pub use crate::models::frames::ipc_message::IPCFrameResult;
 pub use crate::models::encoders::ipc::IPCFrameEncoder;
+pub use crate::models::frames::ipc_message::IPCFrameResult;
 pub use crate::models::frames::ipc_message::{IPCFrame, IPCFrameMetadata};
 pub use crate::models::readers::ipc::table_reader::TableReader;
 pub use crate::models::sinks::table_sink::GTableSink;

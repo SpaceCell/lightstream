@@ -9,7 +9,7 @@ use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::streams::disk::DiskByteStream;
 use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
-use minarrow::{arr_i32, arr_str32, Field, FieldArray, Table, Vec64};
+use minarrow::{Field, FieldArray, Table, Vec64, arr_i32, arr_str32};
 use tempfile::tempdir;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -56,7 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         read_count += 1;
         println!(
             "  Read batch {}: {} rows, {} cols",
-            read_count, table.n_rows, table.cols.len()
+            read_count,
+            table.n_rows,
+            table.cols.len()
         );
     }
     println!("Read back {} batches", read_count);

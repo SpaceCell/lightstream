@@ -98,11 +98,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                 }
 
                 WsReadState::Header { filled } => {
-                    let mut need = if *filled < 2 { 2 } else {
+                    let mut need = if *filled < 2 {
+                        2
+                    } else {
                         let masked = me.header_buf[1] & 0x80 != 0;
                         let len7 = me.header_buf[1] & 0x7F;
-                        let extra = match len7 { 0..=125 => 0, 126 => 2, _ => 8 }
-                            + if masked { 4 } else { 0 };
+                        let extra = match len7 {
+                            0..=125 => 0,
+                            126 => 2,
+                            _ => 8,
+                        } + if masked { 4 } else { 0 };
                         2 + extra
                     };
 
@@ -123,8 +128,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                         if *filled >= 2 {
                             let masked = me.header_buf[1] & 0x80 != 0;
                             let len7 = me.header_buf[1] & 0x7F;
-                            let extra = match len7 { 0..=125 => 0usize, 126 => 2, _ => 8 }
-                                + if masked { 4 } else { 0 };
+                            let extra = match len7 {
+                                0..=125 => 0usize,
+                                126 => 2,
+                                _ => 8,
+                            } + if masked { 4 } else { 0 };
                             need = 2 + extra;
                         }
                     }
@@ -170,7 +178,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                                 let mut pong = vec![0u8; 2];
                                 let n = websocket::write_pong_frame(&mut pong, &[]);
                                 pong.truncate(n);
-                                me.state = WsReadState::SendingPong { buf: pong, written: 0 };
+                                me.state = WsReadState::SendingPong {
+                                    buf: pong,
+                                    written: 0,
+                                };
                             }
                             continue;
                         }
@@ -248,7 +259,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                                 let mut pong = vec![0u8; 2 + payload.len()];
                                 let pong_len = websocket::write_pong_frame(&mut pong, payload);
                                 pong.truncate(pong_len);
-                                me.state = WsReadState::SendingPong { buf: pong, written: 0 };
+                                me.state = WsReadState::SendingPong {
+                                    buf: pong,
+                                    written: 0,
+                                };
                             }
                             continue;
                         }
@@ -370,7 +384,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
                                 let mut pong = vec![0u8; 2];
                                 let n = websocket::write_pong_frame(&mut pong, &[]);
                                 pong.truncate(n);
-                                me.state = WsReadState::SendingPong { buf: pong, written: 0 };
+                                me.state = WsReadState::SendingPong {
+                                    buf: pong,
+                                    written: 0,
+                                };
                             }
                             continue;
                         }
@@ -398,7 +415,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
                                 let mut pong = vec![0u8; 2 + payload.len()];
                                 let pong_len = websocket::write_pong_frame(&mut pong, payload);
                                 pong.truncate(pong_len);
-                                me.state = WsReadState::SendingPong { buf: pong, written: 0 };
+                                me.state = WsReadState::SendingPong {
+                                    buf: pong,
+                                    written: 0,
+                                };
                             }
                             continue;
                         }

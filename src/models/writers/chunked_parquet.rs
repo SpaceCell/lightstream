@@ -105,7 +105,10 @@ mod tests {
             .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 4, 5)])))
             .unwrap();
         let p2 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 6, 7, 8, 9)])))
+            .write_chunk(&Table::new(
+                "b".into(),
+                Some(vec![fa_i32!("n", 6, 7, 8, 9)]),
+            ))
             .unwrap();
 
         assert_eq!(p0.file_name().unwrap(), "part-0000000000.parquet");

@@ -141,7 +141,10 @@ mod pyarrow_roundtrip_tests {
                         i
                     );
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 (
                     Array::TextArray(TextArray::Categorical32(exp)),
                     Array::TextArray(TextArray::Categorical32(act)),

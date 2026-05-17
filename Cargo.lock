@@ -1749,7 +1749,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-uring",
  "tracing",
- "vec64 0.4.3",
+ "vec64",
  "wtransport",
  "zstd",
 ]
@@ -1830,7 +1830,7 @@ dependencies = [
  "libc",
  "log",
  "num-traits",
- "vec64 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "vec64",
 ]
 
 [[package]]
@@ -3951,13 +3951,6 @@ dependencies = [
  "halfbrown",
  "itoa",
  "ryu",
-]
-
-[[package]]
-name = "vec64"
-version = "0.4.3"
-dependencies = [
- "libc",
 ]
 
 [[package]]

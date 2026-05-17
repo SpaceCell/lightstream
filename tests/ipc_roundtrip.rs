@@ -87,7 +87,10 @@ mod integration {
             StringArray::from_vec(ls_refs, None)
         };
 
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         let cat32 = {
             let cat_keys: Vec64<u32> =
                 Vec64::from_slice(&(0..n as u32).map(|i| i % 3).collect::<Vec<_>>());
@@ -177,7 +180,10 @@ mod integration {
                 Array::TextArray(TextArray::String32(Arc::new(string32))),
             ),
         ];
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         cols.push(FieldArray::new(
             Field::new(
                 "cat32",
@@ -245,7 +251,10 @@ mod integration {
             .iter()
             .enumerate()
             .filter_map(|(i, col)| match &col.array {
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 Array::TextArray(TextArray::Categorical32(arr)) => {
                     Some((i as i64, arr.unique_values.clone()))
                 }
@@ -339,8 +348,10 @@ mod integration {
                             );
 
                             // Test frame decoder directly
-                            let mut decoder =
-                                ArrowIPCFrameDecoder::<Vec64<u8>>::new(IPCMessageProtocol::Stream, None);
+                            let mut decoder = ArrowIPCFrameDecoder::<Vec64<u8>>::new(
+                                IPCMessageProtocol::Stream,
+                                None,
+                            );
                             match decoder.decode(chunk.as_ref()) {
                                 Ok(result) => {
                                     println!(
@@ -355,7 +366,8 @@ mod integration {
                                     // Examine the message header if we got a frame
                                     if let DecodeResult::Frame { frame, .. } = result {
                                         if !frame.message_range.is_empty() {
-                                            let msg_bytes = &chunk.as_ref()[frame.message_range.clone()];
+                                            let msg_bytes =
+                                                &chunk.as_ref()[frame.message_range.clone()];
                                             match flatbuffers::root::<fb::Message>(msg_bytes) {
                                                 Ok(af_msg) => {
                                                     println!(
@@ -650,7 +662,8 @@ mod integration {
         let uniqs: Vec<String> = vec!["A".into(), "B".into()];
         #[cfg(not(feature = "default_categorical_8"))]
         {
-            let keys: Vec64<u32> = Vec64::from_slice(&(0..n as u32).map(|i| i % 2).collect::<Vec<_>>());
+            let keys: Vec64<u32> =
+                Vec64::from_slice(&(0..n as u32).map(|i| i % 2).collect::<Vec<_>>());
             let cat_arr = CategoricalArray::new(
                 minarrow::Buffer::from(keys),
                 Vec64::from(uniqs.clone()),
@@ -668,7 +681,8 @@ mod integration {
         }
         #[cfg(feature = "default_categorical_8")]
         {
-            let keys: Vec64<u8> = Vec64::from_slice(&(0..n as u8).map(|i| (i % 2) as u8).collect::<Vec<_>>());
+            let keys: Vec64<u8> =
+                Vec64::from_slice(&(0..n as u8).map(|i| (i % 2) as u8).collect::<Vec<_>>());
             let cat_arr = CategoricalArray::new(
                 minarrow::Buffer::from(keys),
                 Vec64::from(uniqs.clone()),

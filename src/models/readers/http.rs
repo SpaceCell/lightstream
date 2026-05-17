@@ -107,7 +107,8 @@ impl HttpTableReader {
     /// table reader. Symmetric to
     /// [`QuicTableReader::from_recv`](crate::models::readers::quic::QuicTableReader::from_recv).
     pub fn from_recv(recv: h2::RecvStream) -> Self {
-        let stream = HttpByteStream::new(H2RecvRead::new(recv), crate::enums::BufferChunkSize::Http);
+        let stream =
+            HttpByteStream::new(H2RecvRead::new(recv), crate::enums::BufferChunkSize::Http);
         let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
         Self { inner }
     }

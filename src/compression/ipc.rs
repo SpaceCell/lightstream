@@ -14,23 +14,20 @@
 //! fresh allocation. The Vec64 backing ensures SIMD alignment is maintained
 //! after decompression, so column construction still benefits from aligned
 //! access. See the parent module docs for throughput trade-offs.
-//! 
+//!
 //! TLDR: Avoid compression unless you genuinely need it, or have slow network
 //! speeds that are more expensive than the memory throughput trade-off.
 
-use std::io;
-use flatbuffers::Vector;
-use minarrow::Vec64;
 use crate::arrow::message::org::apache::arrow::flatbuf as fb;
 use crate::arrow::message::org::apache::arrow::flatbuf::{BodyCompression, Buffer};
 use crate::models::decoders::limits::DecodeLimits;
 use crate::traits::stream_buffer::StreamBuffer;
+use flatbuffers::Vector;
+use minarrow::Vec64;
+use std::io;
 
 /// Decompress a single Arrow IPC buffer using the specified codec.
-fn decompress_buffer_data(
-    data: &[u8],
-    codec: fb::CompressionType,
-) -> io::Result<Vec<u8>> {
+fn decompress_buffer_data(data: &[u8], codec: fb::CompressionType) -> io::Result<Vec<u8>> {
     if codec == fb::CompressionType::ZSTD {
         return super::decompress(data, super::Compression::Zstd)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
@@ -84,9 +81,12 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
             continue;
         }
 
-        let end = offset
-            .checked_add(length)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "compressed buffer offset+length overflow"))?;
+        let end = offset.checked_add(length).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compressed buffer offset+length overflow",
+            )
+        })?;
         if end > body.len() {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -108,7 +108,10 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
         } else if prefix < 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid uncompressed length prefix for buffer {}: {}", i, prefix),
+                format!(
+                    "Invalid uncompressed length prefix for buffer {}: {}",
+                    i, prefix
+                ),
             ));
         } else {
             prefix as usize
@@ -125,9 +128,9 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
             "decompressed buffer length",
         )?;
         corrections.push((total_size, uncompressed_len));
-        total_size = total_size
-            .checked_add(uncompressed_len)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "decompressed total overflow"))?;
+        total_size = total_size.checked_add(uncompressed_len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "decompressed total overflow")
+        })?;
         limits.check(
             total_size,
             limits.max_decompressed_bytes,
@@ -136,9 +139,12 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
         // Align to B::ALIGN between buffers, consistent with the wire format
         let pad = total_size % B::ALIGN;
         if pad != 0 {
-            total_size = total_size
-                .checked_add(B::ALIGN - pad)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "decompressed alignment overflow"))?;
+            total_size = total_size.checked_add(B::ALIGN - pad).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "decompressed alignment overflow",
+                )
+            })?;
             limits.check(
                 total_size,
                 limits.max_decompressed_bytes,
@@ -177,7 +183,9 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
                     io::ErrorKind::InvalidData,
                     format!(
                         "Decompressed size mismatch for buffer {}: expected {}, got {}",
-                        i, dec_len, result.len()
+                        i,
+                        dec_len,
+                        result.len()
                     ),
                 ));
             }

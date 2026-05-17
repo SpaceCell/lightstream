@@ -64,7 +64,7 @@ pub const PARQUET_PAGE_CHUNK_SIZE: usize = 32_768;
 
 /// Write the in-memory [`Table`] to `out` in *Parquet v2* format,
 /// supporting chunked/multi-page columns, per spec.
-/// 
+///
 /// # Support
 /// - This is a straightforward, zero-dependency parquet writer for the
 /// common use case.
@@ -127,7 +127,10 @@ pub fn write_parquet_table<W: Write + Seek>(
         if is_dictionary(&col.array) {
             let dict_offset_before = out.stream_position()?;
             match &col.array {
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
                     write_dictionary_page(
                         &mut out,
@@ -233,16 +236,16 @@ pub fn write_parquet_table<W: Write + Seek>(
 
                     encode_datetime64_plain(&a.data[start..end], &mut values_raw)
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
                     encode_dictionary_indices_rle(&a.data[start..end], &mut values_raw)?
                 }
                 #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(a)) => {
-                    let idx: Vec<u32> = a.data[start..end]
-                        .iter()
-                        .map(|&v| v as u32)
-                        .collect();
+                    let idx: Vec<u32> = a.data[start..end].iter().map(|&v| v as u32).collect();
                     encode_dictionary_indices_rle(&idx, &mut values_raw)?
                 }
                 #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
@@ -431,15 +434,16 @@ fn is_dictionary(arr: &Array) -> bool {
     matches!(
         arr,
         Array::TextArray(
-            TextArray::Categorical8(_)
-                | TextArray::Categorical32(_)
-                | TextArray::Categorical64(_)
+            TextArray::Categorical8(_) | TextArray::Categorical32(_) | TextArray::Categorical64(_)
         )
     )
 }
 
 /// true if the array is a (categorical) dictionary array.
-#[cfg(all(feature = "default_categorical_8", not(feature = "extended_categorical")))]
+#[cfg(all(
+    feature = "default_categorical_8",
+    not(feature = "extended_categorical")
+))]
 fn is_dictionary(arr: &Array) -> bool {
     matches!(arr, Array::TextArray(TextArray::Categorical8(_)))
 }

@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: defaults
+            features: ""
+          - name: tcp+tls
+            features: "tcp,tls"
+          - name: http+tls
+            features: "http,tls"
+          - name: websocket+tls
+            features: "websocket,tls"
+          - name: uds
+            features: "uds"
+          - name: quic
+            features: "quic"
+          - name: webtransport
+            features: "webtransport"
+          - name: stdio
+            features: "stdio"
+          - name: io_uring
+            features: "io_uring"
+          - name: csv+json
+            features: "csv,json"
+          - name: parquet+zstd+snappy
+            features: "parquet,zstd,snappy"
+          - name: mmap
+            features: "mmap"
+          - name: protocol+msgpack
+            features: "protocol,tcp,msgpack"
+          - name: protocol+protobuf
+            features: "protocol,tcp,protobuf"
+          - name: all stable transports
+            features: "tcp,tls,http,websocket,uds,quic,webtransport,stdio"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo build --no-default-features
+          else
+            cargo build --no-default-features --features "${{ matrix.features }}"
+          fi
+      - name: cargo test --lib
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo test --lib --no-default-features
+          else
+            cargo test --lib --no-default-features --features "${{ matrix.features }}"
+          fi
+
+  test-default-features:
+    name: test (default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --lib
+        run: cargo test --lib
+
+  doc:
+    name: cargo doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc
+        run: cargo doc --no-deps --all-features
+
+  package:
+    name: cargo package (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo package
+        run: cargo package --allow-dirty

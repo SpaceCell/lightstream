@@ -41,9 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Self-signed cert for `localhost`. Test-only.
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let cert_der: CertificateDer<'static> = cert.cert.der().clone();
-    let key_der: PrivateKeyDer<'static> =
-        PrivateKeyDer::try_from(cert.signing_key.serialize_der())
-            .map_err(|e| format!("private key: {e}"))?;
+    let key_der: PrivateKeyDer<'static> = PrivateKeyDer::try_from(cert.signing_key.serialize_der())
+        .map_err(|e| format!("private key: {e}"))?;
 
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
@@ -87,7 +86,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let tables = reader.read_all_tables().await.expect("read tables");
         for t in &tables {
-            println!("  Server got table: {} rows, {} cols", t.n_rows, t.cols.len());
+            println!(
+                "  Server got table: {} rows, {} cols",
+                t.n_rows,
+                t.cols.len()
+            );
         }
         assert_eq!(tables.len(), 3);
         println!("Server received all {} tables over wss://.", tables.len());

@@ -50,7 +50,10 @@ pub enum ColumnBuilder {
     String32(StringArray<u32>),
     #[cfg(feature = "large_string")]
     String64(StringArray<u64>),
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     Categorical32(CategoricalArray<u32>),
     #[cfg(feature = "default_categorical_8")]
     Categorical8(CategoricalArray<u8>),
@@ -177,7 +180,10 @@ impl ColumnBuilder {
             ColumnBuilder::String32(a) => a.push_null(),
             #[cfg(feature = "large_string")]
             ColumnBuilder::String64(a) => a.push_null(),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             ColumnBuilder::Categorical32(a) => a.push_null(),
             #[cfg(feature = "default_categorical_8")]
             ColumnBuilder::Categorical8(a) => a.push_null(),
@@ -214,7 +220,10 @@ impl ColumnBuilder {
             ColumnBuilder::String32(a) => a.len(),
             #[cfg(feature = "large_string")]
             ColumnBuilder::String64(a) => a.len(),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             ColumnBuilder::Categorical32(a) => a.len(),
             #[cfg(feature = "default_categorical_8")]
             ColumnBuilder::Categorical8(a) => a.len(),
@@ -277,7 +286,10 @@ impl ColumnBuilder {
                 let nc = a.null_count();
                 (Array::TextArray(TextArray::String64(Arc::new(a))), nc)
             }
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             ColumnBuilder::Categorical32(a) => {
                 let nc = a.null_count();
                 (Array::TextArray(TextArray::Categorical32(Arc::new(a))), nc)
@@ -334,7 +346,11 @@ impl ColumnBuilder {
                 (Array::NumericArray(NumericArray::UInt16(Arc::new(a))), nc)
             }
         };
-        FieldArray { field, array, null_count }
+        FieldArray {
+            field,
+            array,
+            null_count,
+        }
     }
 }
 
@@ -352,7 +368,8 @@ mod tests {
     #[test]
     fn int32_no_nulls_roundtrip() {
         let mut b =
-            ColumnBuilder::for_field(&Field::new("x", ArrowType::Int32, false, None), 4, 16).unwrap();
+            ColumnBuilder::for_field(&Field::new("x", ArrowType::Int32, false, None), 4, 16)
+                .unwrap();
         if let ColumnBuilder::Int32(a) = &mut b {
             a.push(1);
             a.push(2);
@@ -374,8 +391,8 @@ mod tests {
 
     #[test]
     fn int32_with_nulls_lazy_mask() {
-        let mut b =
-            ColumnBuilder::for_field(&Field::new("x", ArrowType::Int32, true, None), 4, 16).unwrap();
+        let mut b = ColumnBuilder::for_field(&Field::new("x", ArrowType::Int32, true, None), 4, 16)
+            .unwrap();
         if let ColumnBuilder::Int32(a) = &mut b {
             a.push(1);
             a.push(2);
@@ -401,7 +418,8 @@ mod tests {
     #[test]
     fn string_offsets_lockstep() {
         let mut b =
-            ColumnBuilder::for_field(&Field::new("s", ArrowType::String, true, None), 4, 16).unwrap();
+            ColumnBuilder::for_field(&Field::new("s", ArrowType::String, true, None), 4, 16)
+                .unwrap();
         if let ColumnBuilder::String32(a) = &mut b {
             a.push_str("hello");
             a.push_str("world");

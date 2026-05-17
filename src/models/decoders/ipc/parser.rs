@@ -35,10 +35,10 @@ use minarrow::*;
 
 use crate::arrow::message::org::apache::arrow::flatbuf as fb;
 use crate::arrow::message::org::apache::arrow::flatbuf::Buffer;
-#[cfg(any(feature = "zstd", feature = "snappy"))]
-use crate::compression::{Compression, decompress};
 #[cfg(feature = "zstd")]
 use crate::compression::ipc::decompress_ipc_body;
+#[cfg(any(feature = "zstd", feature = "snappy"))]
+use crate::compression::{Compression, decompress};
 use crate::debug_println;
 use crate::models::decoders::limits::DecodeLimits;
 use crate::{AFMessage, AFMessageHeader};
@@ -50,13 +50,16 @@ use std::marker::PhantomData;
 /// metadata. A peer that claims `n_rows = usize::MAX` can otherwise wrap
 /// the multiplication to a small value and cause an out-of-bounds slice
 /// against the buffer descriptor.
+///
+/// Only the LargeString arms of `decode_record_batch` and the in-module
+/// unit tests need this today; gating keeps a non-`large_string` library
+/// build clean of dead-code warnings.
+#[cfg(any(test, feature = "large_string"))]
 #[inline]
 fn checked_offsets_size(n: usize, elem: usize) -> io::Result<usize> {
     n.checked_add(1)
         .and_then(|v| v.checked_mul(elem))
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "offset buffer size overflow")
-        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "offset buffer size overflow"))
 }
 
 /// Used for parsing a RecordBatch into a Minarrow `Table`.
@@ -102,7 +105,10 @@ impl RecordBatchParser {
         let decompressed: Option<(Vec64<u8>, Vec<(usize, usize)>)> =
             if let Some(ref compression) = header.compression() {
                 Some(decompress_ipc_body::<Vec<u8>>(
-                    arrow_buf, &fbuf_meta, compression, DecodeLimits::default(),
+                    arrow_buf,
+                    &fbuf_meta,
+                    compression,
+                    DecodeLimits::default(),
                 )?)
             } else {
                 None
@@ -337,20 +343,32 @@ impl RecordBatchParser {
 
                         if peek_offs == expected_u32 {
                             let (data, offsets) = Self::parse_utf8_array::<u32>(
-                                arrow_buf, &fbuf_meta, &mut buffer_idx, field_len,
-                                &field.name, &arc_opt, corrections,
+                                arrow_buf,
+                                &fbuf_meta,
+                                &mut buffer_idx,
+                                field_len,
+                                &field.name,
+                                &arc_opt,
+                                corrections,
                             )?;
                             Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
                                 data, null_mask, offsets,
                             ))))
                         } else {
                             let (data, offsets) = Self::parse_utf8_array::<u64>(
-                                arrow_buf, &fbuf_meta, &mut buffer_idx, field_len,
-                                &field.name, &arc_opt, corrections,
+                                arrow_buf,
+                                &fbuf_meta,
+                                &mut buffer_idx,
+                                field_len,
+                                &field.name,
+                                &arc_opt,
+                                corrections,
                             )?;
                             let corrected_field = Field::new(
-                                field.name.clone(), ArrowType::LargeString,
-                                field.nullable, Some(field.metadata.clone()),
+                                field.name.clone(),
+                                ArrowType::LargeString,
+                                field.nullable,
+                                Some(field.metadata.clone()),
                             );
                             let arr = Array::TextArray(TextArray::String64(Arc::new(
                                 StringArray::new(data, null_mask, offsets),
@@ -363,8 +381,13 @@ impl RecordBatchParser {
                     #[cfg(not(feature = "large_string"))]
                     {
                         let (data, offsets) = Self::parse_utf8_array::<u32>(
-                            arrow_buf, &fbuf_meta, &mut buffer_idx, field_len,
-                            &field.name, &arc_opt, corrections,
+                            arrow_buf,
+                            &fbuf_meta,
+                            &mut buffer_idx,
+                            field_len,
+                            &field.name,
+                            &arc_opt,
+                            corrections,
                         )?;
                         Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
                             data, null_mask, offsets,
@@ -390,12 +413,9 @@ impl RecordBatchParser {
                             &arc_opt,
                             corrections,
                         )?;
-                        let arr =
-                            Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                                data,
-                                null_mask,
-                                offsets,
-                            ))));
+                        let arr = Array::TextArray(TextArray::String32(Arc::new(
+                            StringArray::new(data, null_mask, offsets),
+                        )));
                         // Create corrected field with String type instead of LargeString
                         let corrected_field = Field::new(
                             field.name.clone(),
@@ -417,9 +437,7 @@ impl RecordBatchParser {
                             corrections,
                         )?;
                         Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
-                            data,
-                            null_mask,
-                            offsets,
+                            data, null_mask, offsets,
                         ))))
                     } else {
                         return Err(io::Error::new(
@@ -472,7 +490,10 @@ impl RecordBatchParser {
                         corrections,
                     )?;
 
-                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
                     let data_buf: minarrow::Buffer<u32> =
                         unsafe { Self::buffer_from_slice::<u32>(idx_slice, field_len, &arc_opt) };
 
@@ -500,7 +521,10 @@ impl RecordBatchParser {
 
                     // choose variant by index type
                     match idx_ty {
-                        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                        #[cfg(any(
+                            not(feature = "default_categorical_8"),
+                            feature = "extended_categorical"
+                        ))]
                         CategoricalIndexType::UInt32 => {
                             Array::TextArray(TextArray::Categorical32(Arc::new(
                                 CategoricalArray::<u32>::new(data_buf, unique_values, null_mask),
@@ -587,9 +611,9 @@ impl RecordBatchParser {
         // against the buffer length. A crafted i64-cast-to-usize pair (large
         // negative i64 cast to large usize) would otherwise wrap past the
         // bounds check and select an invalid slice.
-        let end = offset
-            .checked_add(length)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow"))?;
+        let end = offset.checked_add(length).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow")
+        })?;
         if end > arrow_buf.len() {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -599,7 +623,6 @@ impl RecordBatchParser {
 
         Ok((&arrow_buf[offset..end], offset))
     }
-
 
     /// Turn a raw byte‑slice into a `Buffer<T>`.
     ///
@@ -619,8 +642,8 @@ impl RecordBatchParser {
         let ptr = slice.as_ptr() as *const T;
 
         // Minimum alignment requirement
-        let aligned_8 = (ptr as usize) % 8 == 0;
-        let aligned_64 = (ptr as usize) % 64 == 0;
+        let aligned_8 = (ptr as usize).is_multiple_of(8);
+        let aligned_64 = (ptr as usize).is_multiple_of(64);
 
         debug_println!(
             "Creating buffer with:\nAligned 8: {:?}\nAligned 64: {:?}\narc_bytes is some: {:?}\n",
@@ -660,7 +683,6 @@ impl RecordBatchParser {
         }
     }
 
-
     /// Consume a validity‑bitmap buffer when present and build the proper
     /// `Bitmask`.  
     /// * For nullable fields we always return `Some(Bitmask)`  
@@ -685,7 +707,7 @@ impl RecordBatchParser {
             } else {
                 fbuf_meta.get(*buffer_idx).length() as usize
             };
-            let expected_validity_len = (field_len + 7) / 8; // ceil(n/8)
+            let expected_validity_len = field_len.div_ceil(8); // ceil(n/8)
 
             if len_bytes == 0 || len_bytes == expected_validity_len {
                 // It is a validity buffer - consume it, but ignore contents.
@@ -793,7 +815,10 @@ pub(crate) fn handle_dictionary_batch(
     if is_delta && !dicts.contains_key(&dict_id) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("delta dictionary for id {} received before base dictionary", dict_id),
+            format!(
+                "delta dictionary for id {} received before base dictionary",
+                dict_id
+            ),
         ));
     }
 
@@ -847,7 +872,7 @@ pub(crate) fn handle_dictionary_batch(
                     format!("delta dictionary base for id {} missing", dict_id),
                 )
             })?
-            .extend(values.into_iter());
+            .extend(values);
     } else {
         // Replace with new base dictionary
         dicts.insert(dict_id, values.into_iter().collect());
@@ -870,7 +895,7 @@ fn parse_dictionary_strings(
     let u32_size = std::mem::size_of::<u32>();
     let i64_size = std::mem::size_of::<i64>();
 
-    let use_i64 = if offs_slice.len() % u32_size == 0 && offs_slice.len() / u32_size >= 2 {
+    let use_i64 = if offs_slice.len().is_multiple_of(u32_size) && offs_slice.len() / u32_size >= 2 {
         // u32 is plausible - validate that the last offset is within data bounds
         let count = offs_slice.len() / u32_size;
         let last = u32::from_le_bytes(
@@ -901,10 +926,14 @@ fn parse_dictionary_strings(
         let mut values = Vec64::with_capacity(count - 1);
         for i in 0..(count - 1) {
             let start = i64::from_le_bytes(
-                offs_slice[i * i64_size..(i + 1) * i64_size].try_into().unwrap(),
+                offs_slice[i * i64_size..(i + 1) * i64_size]
+                    .try_into()
+                    .unwrap(),
             ) as usize;
             let end = i64::from_le_bytes(
-                offs_slice[(i + 1) * i64_size..(i + 2) * i64_size].try_into().unwrap(),
+                offs_slice[(i + 1) * i64_size..(i + 2) * i64_size]
+                    .try_into()
+                    .unwrap(),
             ) as usize;
             if end > data_slice.len() || start > end {
                 return Err(io::Error::new(
@@ -937,10 +966,14 @@ fn parse_dictionary_strings(
         let mut values = Vec64::with_capacity(count - 1);
         for i in 0..(count - 1) {
             let start = u32::from_le_bytes(
-                offs_slice[i * u32_size..(i + 1) * u32_size].try_into().unwrap(),
+                offs_slice[i * u32_size..(i + 1) * u32_size]
+                    .try_into()
+                    .unwrap(),
             ) as usize;
             let end = u32::from_le_bytes(
-                offs_slice[(i + 1) * u32_size..(i + 2) * u32_size].try_into().unwrap(),
+                offs_slice[(i + 1) * u32_size..(i + 2) * u32_size]
+                    .try_into()
+                    .unwrap(),
             ) as usize;
             if end > data_slice.len() || start > end {
                 return Err(io::Error::new(
@@ -1009,16 +1042,16 @@ pub fn decode_record_batch(
     // shared buffer, and use corrected offsets for all buffer access.
     // The uncompressed path is untouched - this is a single branch check.
     #[cfg(feature = "zstd")]
-    let (shared, body_start, body_len, corrections_storage) =
-        if let Some(ref compression) = rec.compression() {
-            let body = &shared.as_slice()[body_start..body_start + body_len];
-            let (dec, corr) =
-                decompress_ipc_body::<Vec64<u8>>(body, &buffers, compression, limits)?;
-            let len = dec.len();
-            (SharedBuffer::from_vec64(dec), 0, len, Some(corr))
-        } else {
-            (shared, body_start, body_len, None)
-        };
+    let (shared, body_start, body_len, corrections_storage) = if let Some(ref compression) =
+        rec.compression()
+    {
+        let body = &shared.as_slice()[body_start..body_start + body_len];
+        let (dec, corr) = decompress_ipc_body::<Vec64<u8>>(body, &buffers, compression, limits)?;
+        let len = dec.len();
+        (SharedBuffer::from_vec64(dec), 0, len, Some(corr))
+    } else {
+        (shared, body_start, body_len, None)
+    };
     #[cfg(not(feature = "zstd"))]
     let corrections_storage: Option<Vec<(usize, usize)>> = {
         if rec.compression().is_some() {
@@ -1077,7 +1110,7 @@ pub fn decode_record_batch(
 
         // Skip non-projected columns by advancing past their data buffer
         // descriptors without materialising any arrays or SharedBuffer slices.
-        let projected = projection.map_or(true, |p| p.contains(&col_idx));
+        let projected = projection.is_none_or(|p| p.contains(&col_idx));
         if !projected {
             buffer_idx += data_buffer_count(&field.dtype);
             continue;
@@ -1090,23 +1123,41 @@ pub fn decode_record_batch(
             | ArrowType::UInt64
             | ArrowType::Float32
             | ArrowType::Float64 => {
-                let (off, len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 let data = shared.slice(off..off + len);
                 make_numeric_array(&field.dtype, data, null_mask)?
             }
 
             #[cfg(feature = "extended_numeric_types")]
             ArrowType::Int8 | ArrowType::UInt8 | ArrowType::Int16 | ArrowType::UInt16 => {
-                let (off, len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 let data = shared.slice(off..off + len);
                 make_numeric_array(&field.dtype, data, null_mask)?
             }
 
             ArrowType::Boolean => {
-                let (off, len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 let bits = Bitmask::from_bytes(shared.slice(off..off + len).as_slice(), n_rows);
                 Array::BooleanArray(Arc::new(minarrow::BooleanArray {
                     data: bits,
@@ -1117,10 +1168,22 @@ pub fn decode_record_batch(
             }
 
             ArrowType::String => {
-                let (offs_off, offs_len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
-                let (data_off, data_len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (offs_off, offs_len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let (data_off, data_len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 let offs_buf = shared.slice(offs_off..offs_off + offs_len);
                 let data_buf = shared.slice(data_off..data_off + data_len);
 
@@ -1144,11 +1207,12 @@ pub fn decode_record_batch(
                             field.nullable,
                             Some(field.metadata.clone()),
                         );
-                        let array = Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
-                            minarrow::Buffer::from_shared(data_buf),
-                            null_mask,
-                            minarrow::Buffer::from_shared(offs_buf),
-                        ))));
+                        let array =
+                            Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
+                                minarrow::Buffer::from_shared(data_buf),
+                                null_mask,
+                                minarrow::Buffer::from_shared(offs_buf),
+                            ))));
                         cols.push(FieldArray::new(corrected_field, array));
                         continue;
                     }
@@ -1165,10 +1229,22 @@ pub fn decode_record_batch(
 
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => {
-                let (offs_off, offs_len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
-                let (data_off, data_len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (offs_off, offs_len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let (data_off, data_len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 let expected_u32 = checked_offsets_size(n_rows, 4)?;
                 if offs_len == expected_u32 {
                     Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
@@ -1187,8 +1263,14 @@ pub fn decode_record_batch(
 
             #[cfg(feature = "datetime")]
             ArrowType::Date32 | ArrowType::Date64 => {
-                let (off, len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 let data = shared.slice(off..off + len);
                 make_numeric_array(&field.dtype, data, null_mask)?
             }
@@ -1204,8 +1286,14 @@ pub fn decode_record_batch(
                         ),
                     )
                 })?;
-                let (idx_off, idx_len) =
-                    consume_buffer(&buffers, &mut buffer_idx, body_start, body_len, &field.name, corrections)?;
+                let (idx_off, idx_len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
                 make_categorical_array(
                     _idx_ty,
                     shared.slice(idx_off..idx_off + idx_len),
@@ -1277,9 +1365,9 @@ fn consume_buffer(
                 format!("corrections index {} out of range for {}", idx, field_name),
             )
         })?;
-        let end = off
-            .checked_add(len)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow"))?;
+        let end = off.checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow")
+        })?;
         if end > body_len {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -1310,14 +1398,17 @@ fn consume_buffer(
     if offset_i < 0 || length_i < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("buffer descriptor has negative offset/length for {}", field_name),
+            format!(
+                "buffer descriptor has negative offset/length for {}",
+                field_name
+            ),
         ));
     }
     let offset = offset_i as usize;
     let length = length_i as usize;
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow"))?;
+    let end = offset.checked_add(length).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "buffer offset+length overflow")
+    })?;
     if end > body_len {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -1366,7 +1457,7 @@ fn extract_null_mask(
         } else {
             return Ok(None);
         };
-        let expected_validity_len = (field_len + 7) / 8;
+        let expected_validity_len = field_len.div_ceil(8);
         if len_bytes == 0 || len_bytes == expected_validity_len {
             *buffer_idx += 1;
         }
@@ -1411,9 +1502,12 @@ fn extract_null_mask(
         return Ok(Some(Bitmask::new_set_all(field_len, true)));
     }
 
-    let end = offset
-        .checked_add(len_bytes)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "validity offset+length overflow"))?;
+    let end = offset.checked_add(len_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "validity offset+length overflow",
+        )
+    })?;
     if end > body_len {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -1506,7 +1600,10 @@ fn make_categorical_array(
 ) -> io::Result<Array> {
     let unique_values = Vec64::from(dict_values.to_vec());
     let array = match idx_ty {
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         CategoricalIndexType::UInt32 => {
             Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
                 data: minarrow::Buffer::from_shared(idx_data),
@@ -1553,10 +1650,7 @@ fn make_categorical_array(
 ///
 /// Converts FlatBuffers fields to native [`Field`] representations.
 #[inline(always)]
-pub fn handle_schema_header(
-    af_msg: &fb::Message,
-    limits: DecodeLimits,
-) -> io::Result<Vec<Field>> {
+pub fn handle_schema_header(af_msg: &fb::Message, limits: DecodeLimits) -> io::Result<Vec<Field>> {
     // 1. Validate Flatbuffer version
     let version = af_msg.version();
     match version {
@@ -1657,7 +1751,10 @@ fn extract_categorical_index_type(
         io::Error::new(io::ErrorKind::InvalidData, "missing dictionary index type")
     })?;
     match idx_type.bitWidth() {
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         32 => Ok(CategoricalIndexType::UInt32),
         #[cfg(feature = "default_categorical_8")]
         8 => Ok(CategoricalIndexType::UInt8),
@@ -1777,7 +1874,6 @@ fn extract_dtype(fb_field: &fb::Field, base_type: ArrowType) -> io::Result<Arrow
     }
 }
 
-
 /// Converts a Flatbuffers `Field` to the `Minarrow` version
 pub fn convert_fb_field_to_arrow(
     fbf_field: &crate::arrow::file::org::apache::arrow::flatbuf::Field,
@@ -1814,7 +1910,10 @@ pub fn convert_fb_field_to_arrow(
             .indexType()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing dict idx"))?;
         let idx_ty = match idx.bitWidth() {
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             32 => Idx::UInt32,
             #[cfg(feature = "default_categorical_8")]
             8 => Idx::UInt8,
@@ -2126,12 +2225,16 @@ mod tests {
         #[cfg(not(feature = "large_string"))]
         let offsets = {
             let vals: &[u32] = &[0, 5];
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         };
         #[cfg(feature = "large_string")]
         let offsets = {
             let vals: &[i64] = &[0, 5];
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         };
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
@@ -2146,12 +2249,16 @@ mod tests {
         #[cfg(not(feature = "large_string"))]
         let offsets = {
             let vals: &[u32] = &[0, 0, 0];
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         };
         #[cfg(feature = "large_string")]
         let offsets = {
             let vals: &[i64] = &[0, 0, 0];
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         };
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
@@ -2165,12 +2272,16 @@ mod tests {
         #[cfg(not(feature = "large_string"))]
         let offsets = {
             let vals: &[u32] = &[0, 99];
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         };
         #[cfg(feature = "large_string")]
         let offsets = {
             let vals: &[i64] = &[0, 99];
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         };
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default());
@@ -2193,15 +2304,11 @@ mod tests {
     // The encoder does not emit delta dictionaries, so we test the handler
     // directly by building flatbuffer DictionaryBatch payloads.
 
-    use flatbuffers::FlatBufferBuilder;
     use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
+    use flatbuffers::FlatBufferBuilder;
 
     /// Build a minimal DictionaryBatch flatbuffer and its body bytes.
-    fn build_dict_batch(
-        id: i64,
-        is_delta: bool,
-        strings: &[&str],
-    ) -> (Vec<u8>, Vec<u8>) {
+    fn build_dict_batch(id: i64, is_delta: bool, strings: &[&str]) -> (Vec<u8>, Vec<u8>) {
         // Build body: validity (empty) + offsets + string data
         let concat: String = strings.iter().copied().collect();
         let data_bytes = concat.as_bytes();
@@ -2290,10 +2397,7 @@ mod tests {
         let (fb_delta, body_delta) = build_dict_batch(0, true, &["yellow", "purple"]);
         let delta = flatbuffers::root::<fbm::DictionaryBatch>(&fb_delta).unwrap();
         handle_dictionary_batch(&delta, &body_delta, &mut dicts, DecodeLimits::default()).unwrap();
-        assert_eq!(
-            dicts[&0],
-            vec!["red", "green", "blue", "yellow", "purple"]
-        );
+        assert_eq!(dicts[&0], vec!["red", "green", "blue", "yellow", "purple"]);
     }
 
     #[test]
@@ -2302,10 +2406,14 @@ mod tests {
 
         let (fb_delta, body_delta) = build_dict_batch(0, true, &["orphan"]);
         let delta = flatbuffers::root::<fbm::DictionaryBatch>(&fb_delta).unwrap();
-        let result = handle_dictionary_batch(&delta, &body_delta, &mut dicts, DecodeLimits::default());
+        let result =
+            handle_dictionary_batch(&delta, &body_delta, &mut dicts, DecodeLimits::default());
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("before base dictionary")
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("before base dictionary")
         );
     }
 
@@ -2401,10 +2509,7 @@ mod tests {
         assert!(err.to_string().contains("offset count < 2"));
     }
 
-    fn build_minimal_record_batch_bytes(
-        node_length: i64,
-        buffers: &[fbm::Buffer],
-    ) -> Vec<u8> {
+    fn build_minimal_record_batch_bytes(node_length: i64, buffers: &[fbm::Buffer]) -> Vec<u8> {
         let mut fbb = flatbuffers::FlatBufferBuilder::new();
         let node = fbm::FieldNode::new(node_length, 0);
         let nodes_vec = fbb.create_vector(&[node]);
@@ -2530,9 +2635,14 @@ mod tests {
         let buffers = rec.buffers().unwrap();
         let compression = rec.compression().unwrap();
         let start = std::time::Instant::now();
-        let err = decompress_ipc_body::<Vec64<u8>>(&body, &buffers, &compression, DecodeLimits::default())
-            .err()
-            .expect("bomb prefix must surface as Err");
+        let err = decompress_ipc_body::<Vec64<u8>>(
+            &body,
+            &buffers,
+            &compression,
+            DecodeLimits::default(),
+        )
+        .err()
+        .expect("bomb prefix must surface as Err");
         let elapsed = start.elapsed();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("decompressed buffer length"));

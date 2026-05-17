@@ -2,8 +2,8 @@
 //!
 //! Demonstrates TLV frame encoding, streaming, and async sink I/O.
 
-use futures_util::stream::StreamExt;
 use futures_util::SinkExt;
+use futures_util::stream::StreamExt;
 use lightstream::models::encoders::tlv::TLVEncoder;
 use lightstream::models::encoders::tlv::tlv_stream::TLVStreamWriter;
 use lightstream::models::frames::tlv_frame::TLVFrame;
@@ -17,9 +17,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Basic encoding
     println!("1. Basic TLV Encoding");
     let frames = [
-        TLVFrame { t: 1, value: b"Hello" },
-        TLVFrame { t: 2, value: b"World" },
-        TLVFrame { t: 42, value: &[0xDE, 0xAD, 0xBE, 0xEF] },
+        TLVFrame {
+            t: 1,
+            value: b"Hello",
+        },
+        TLVFrame {
+            t: 2,
+            value: b"World",
+        },
+        TLVFrame {
+            t: 42,
+            value: &[0xDE, 0xAD, 0xBE, 0xEF],
+        },
         TLVFrame { t: 100, value: b"" },
     ];
     for frame in &frames {
@@ -27,7 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (encoded, _) = TLVEncoder::encode::<Vec64<u8>>(&mut offset, frame)?;
         assert_eq!(encoded[0], frame.t);
         assert_eq!(encoded.len(), 1 + 4 + frame.value.len());
-        println!("  Type={}, Len={}, Encoded={} bytes", frame.t, frame.value.len(), encoded.len());
+        println!(
+            "  Type={}, Len={}, Encoded={} bytes",
+            frame.t,
+            frame.value.len(),
+            encoded.len()
+        );
     }
 
     // 2. Stream writer

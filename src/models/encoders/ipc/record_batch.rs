@@ -185,7 +185,10 @@ pub(crate) fn compute_body_layout<'a, B: StreamBuffer>(
                 fb_field_nodes.push(fbm::FieldNode::new(n_rows as i64, col.null_count as i64));
             }
 
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
                 push_null_region::<B>(
                     nullable,
@@ -382,7 +385,7 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
                 bufs.push(Vec::new());
             } else {
                 let c = compress(region.data, encoder.compression)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+                    .map_err(|e| io::Error::other(format!("{}", e)))?;
                 let mut wire = Vec::with_capacity(8 + c.len());
                 wire.extend_from_slice(&(region.data.len() as u64).to_le_bytes());
                 wire.extend_from_slice(&c);
@@ -473,7 +476,6 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
     Ok(ipc_size)
 }
 
-
 // ---------------------------------------------------------------------------
 // Layout helpers
 // ---------------------------------------------------------------------------
@@ -489,8 +491,8 @@ fn push_null_region<'a, B: StreamBuffer>(
     regions: &mut Vec<WireRegion<'a>>,
     fb_buffers: &mut Vec<fbm::Buffer>,
 ) {
-    if nullable {
-        if let Some(m) = mask {
+    if nullable
+        && let Some(m) = mask {
             let data = m.bits.as_slice();
             let pad = align_to::<B>(data.len());
             fb_buffers.push(fbm::Buffer::new(*body_offset as i64, data.len() as i64));
@@ -498,7 +500,6 @@ fn push_null_region<'a, B: StreamBuffer>(
             *body_offset += data.len() + pad;
             return;
         }
-    }
     fb_buffers.push(fbm::Buffer::new(0, 0));
 }
 
@@ -514,5 +515,3 @@ fn push_data_region<'a, B: StreamBuffer>(
     regions.push(WireRegion { data, pad });
     *body_offset += data.len() + pad;
 }
-
-

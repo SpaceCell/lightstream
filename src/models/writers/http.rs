@@ -73,7 +73,12 @@ impl HttpTableWriter {
         let (host, port) = host_port(req.uri(), "http", 80)?;
         let tcp = TcpStream::connect((host.as_str(), port)).await?;
         let (send_stream, response_fut) = h2_send_post(tcp, req).await?;
-        Ok(Self::new_inner(send_stream, response_fut, schema, compression)?)
+        Ok(Self::new_inner(
+            send_stream,
+            response_fut,
+            schema,
+            compression,
+        )?)
     }
 
     /// As [`Self::from_request`], over HTTPS h2. Scheme must be `https`.
@@ -98,7 +103,12 @@ impl HttpTableWriter {
             ));
         }
         let (send_stream, response_fut) = h2_send_post(tls, req).await?;
-        Ok(Self::new_inner(send_stream, response_fut, schema, compression)?)
+        Ok(Self::new_inner(
+            send_stream,
+            response_fut,
+            schema,
+            compression,
+        )?)
     }
 
     fn new_inner(
@@ -116,12 +126,9 @@ impl HttpTableWriter {
         });
         let write = H2SendWrite::new(send_stream);
         let sink = match compression {
-            Some(c) => TableSink64::new_with_compression(
-                write,
-                schema,
-                IPCMessageProtocol::Stream,
-                c,
-            )?,
+            Some(c) => {
+                TableSink64::new_with_compression(write, schema, IPCMessageProtocol::Stream, c)?
+            }
             None => TableSink64::new(write, schema, IPCMessageProtocol::Stream)?,
         };
         Ok(Self { sink })

@@ -49,9 +49,7 @@ use std::path::Path;
 
 use minarrow::{SuperTable, Table};
 
-use crate::models::encoders::json::{
-    JsonEncodeOptions, encode_supertable_json, encode_table_json,
-};
+use crate::models::encoders::json::{JsonEncodeOptions, encode_supertable_json, encode_table_json};
 
 /// A streaming JSON writer for [`minarrow::Table`] and [`minarrow::SuperTable`].
 ///
@@ -103,10 +101,7 @@ impl<W: Write> JsonWriter<W> {
 
 impl JsonWriter<File> {
     /// Open the given file path and return a `JsonWriter<File>`.
-    pub fn to_path<P: AsRef<Path>>(
-        path: P,
-        options: JsonEncodeOptions,
-    ) -> io::Result<Self> {
+    pub fn to_path<P: AsRef<Path>>(path: P, options: JsonEncodeOptions) -> io::Result<Self> {
         let file = File::create(path)?;
         Ok(Self::new(file, options))
     }

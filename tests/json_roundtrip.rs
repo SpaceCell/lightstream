@@ -6,7 +6,6 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use lightstream::models::decoders::json::{JsonDecodeOptions, decode_json, decode_ndjson};
-use simd_json::prelude::{ValueAsArray, ValueAsObject, ValueAsScalar};
 use lightstream::models::encoders::json::{JsonEncodeOptions, JsonFormat, encode_table_json};
 use lightstream::models::readers::json_reader::JsonReader;
 use lightstream::models::writers::json_writer::JsonWriter;
@@ -14,6 +13,7 @@ use minarrow::{
     Array, ArrowType, Bitmask, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray,
     StringArray, Table, TextArray, Vec64, vec64,
 };
+use simd_json::prelude::{ValueAsArray, ValueAsObject, ValueAsScalar};
 
 fn parse(bytes: Vec<u8>) -> simd_json::OwnedValue {
     let mut buf = bytes;
@@ -203,8 +203,12 @@ fn ndjson_batched_reader_end_to_end() {
         schema: Some(vec![Field::new("id", ArrowType::Int32, false, None)]),
         ..Default::default()
     };
-    let mut reader =
-        JsonReader::<std::io::BufReader<&[u8]>>::from_slice(&bytes, JsonFormat::Ndjson, dec_opts, 2);
+    let mut reader = JsonReader::<std::io::BufReader<&[u8]>>::from_slice(
+        &bytes,
+        JsonFormat::Ndjson,
+        dec_opts,
+        2,
+    );
 
     let b1 = reader.next_batch().unwrap().unwrap();
     assert_eq!(b1.n_rows, 2);

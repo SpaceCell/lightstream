@@ -3,8 +3,8 @@ use std::sync::Arc;
 use lightstream::models::writers::ipc::table_writer::write_table_to_file;
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use minarrow::{
-    arr_bool, arr_i32, arr_str32, Array, Buffer, CategoricalArray, Field, FieldArray, Table,
-    TextArray, Vec64,
+    Array, Buffer, CategoricalArray, Field, FieldArray, Table, TextArray, Vec64, arr_bool, arr_i32,
+    arr_str32,
 };
 use tokio::runtime::Runtime;
 
@@ -54,7 +54,12 @@ fn main() {
         let cat_col = {
             let indices = Vec64::from_slice(&[0u32, 2, 1, 1]);
             FieldArray::new(
-                Field::new("category", ArrowType::Dictionary(CategoricalIndexType::UInt32), true, None),
+                Field::new(
+                    "category",
+                    ArrowType::Dictionary(CategoricalIndexType::UInt32),
+                    true,
+                    None,
+                ),
                 Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
                     data: Buffer::from(indices),
                     unique_values: categories.clone(),
@@ -67,7 +72,12 @@ fn main() {
         let cat_col = {
             let indices = Vec64::from_slice(&[0u8, 2, 1, 1]);
             FieldArray::new(
-                Field::new("category", ArrowType::Dictionary(CategoricalIndexType::UInt8), true, None),
+                Field::new(
+                    "category",
+                    ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                    true,
+                    None,
+                ),
                 Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
                     data: Buffer::from(indices),
                     unique_values: categories.clone(),

@@ -20,8 +20,7 @@ use crate::models::decoders::json::backend::JsonRowDecoder;
 use crate::models::decoders::json::builder::ColumnBuilder;
 use crate::models::decoders::json::simd_backend::SimdJsonBackend;
 use crate::models::decoders::json::{
-    JsonDecodeOptions, append_ndjson_line, decode_json, finish_table, make_builders,
-    make_field_map,
+    JsonDecodeOptions, append_ndjson_line, decode_json, finish_table, make_builders, make_field_map,
 };
 use crate::models::encoders::json::JsonFormat;
 
@@ -168,10 +167,7 @@ impl<R: BufRead> JsonReader<R> {
                 while let Some(table) = self.next_batch()? {
                     batches.push(Arc::new(table));
                 }
-                Ok(SuperTable::from_batches(
-                    batches,
-                    Some(name.into()),
-                ))
+                Ok(SuperTable::from_batches(batches, Some(name.into())))
             }
         }
     }
@@ -185,11 +181,8 @@ impl<R: BufRead> JsonReader<R> {
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "schema is required"))?
             .clone();
-        let mut builders: Vec<ColumnBuilder> = make_builders(
-            &schema,
-            0,
-            self.options.string_bytes_per_row,
-        )?;
+        let mut builders: Vec<ColumnBuilder> =
+            make_builders(&schema, 0, self.options.string_bytes_per_row)?;
         let field_map = make_field_map(&schema);
         loop {
             let n = self.fill_chunk()?;
@@ -224,11 +217,7 @@ impl<R: BufRead> JsonReader<R> {
         }
         self.chunk.push(b']');
 
-        let mut builders = make_builders(
-            &schema,
-            line_count,
-            self.options.string_bytes_per_row,
-        )?;
+        let mut builders = make_builders(&schema, line_count, self.options.string_bytes_per_row)?;
         let field_map = make_field_map(&schema);
         self.backend.decode_rows(
             self.chunk.as_mut_slice(),
@@ -237,9 +226,7 @@ impl<R: BufRead> JsonReader<R> {
             self.options.on_type_mismatch,
         )?;
         self.chunk.clear();
-        Ok(Some(finish_table(
-            &schema, builders,
-        )))
+        Ok(Some(finish_table(&schema, builders)))
     }
 
     /// Fill `self.chunk` with up to `batch_size` lines wrapped as a

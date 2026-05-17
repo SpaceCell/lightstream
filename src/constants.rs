@@ -8,11 +8,11 @@
 //! consistent with the [Apache Arrow specification](https://arrow.apache.org/docs/format/Columnar.html#ipc-file-format).
 
 // Buffer chunk size defaults. Each can be overridden via environment variable.
-const DEFAULT_FILE_IO_CHUNK: usize = 1 * 1024 * 1024;  // 1 MiB
-const DEFAULT_HTTP_CHUNK: usize = 64 * 1024;            // 64 KiB
-const DEFAULT_WEBSOCKET_CHUNK: usize = 32 * 1024;       // 32 KiB
-const DEFAULT_WEBTRANSPORT_CHUNK: usize = 64 * 1024;    // 64 KiB
-const DEFAULT_INMEMORY_CHUNK: usize = 512 * 1024;       // 512 KiB
+const DEFAULT_FILE_IO_CHUNK: usize = 1024 * 1024; // 1 MiB
+const DEFAULT_HTTP_CHUNK: usize = 64 * 1024; // 64 KiB
+const DEFAULT_WEBSOCKET_CHUNK: usize = 32 * 1024; // 32 KiB
+const DEFAULT_WEBTRANSPORT_CHUNK: usize = 64 * 1024; // 64 KiB
+const DEFAULT_INMEMORY_CHUNK: usize = 512 * 1024; // 512 KiB
 
 fn env_or(var: &str, default: usize) -> usize {
     std::env::var(var)
@@ -35,27 +35,47 @@ static INMEMORY_CHUNK: OnceLock<usize> = OnceLock::new();
 
 /// File I/O chunk size. Override with `LIGHTSTREAM_FILE_IO_CHUNK_SIZE`.
 pub fn file_io_chunk_size() -> usize {
-    cached_env(&FILE_IO_CHUNK, "LIGHTSTREAM_FILE_IO_CHUNK_SIZE", DEFAULT_FILE_IO_CHUNK)
+    cached_env(
+        &FILE_IO_CHUNK,
+        "LIGHTSTREAM_FILE_IO_CHUNK_SIZE",
+        DEFAULT_FILE_IO_CHUNK,
+    )
 }
 
 /// HTTP/TCP chunk size. Override with `LIGHTSTREAM_HTTP_CHUNK_SIZE`.
 pub fn http_chunk_size() -> usize {
-    cached_env(&HTTP_CHUNK, "LIGHTSTREAM_HTTP_CHUNK_SIZE", DEFAULT_HTTP_CHUNK)
+    cached_env(
+        &HTTP_CHUNK,
+        "LIGHTSTREAM_HTTP_CHUNK_SIZE",
+        DEFAULT_HTTP_CHUNK,
+    )
 }
 
 /// WebSocket chunk size. Override with `LIGHTSTREAM_WEBSOCKET_CHUNK_SIZE`.
 pub fn websocket_chunk_size() -> usize {
-    cached_env(&WEBSOCKET_CHUNK, "LIGHTSTREAM_WEBSOCKET_CHUNK_SIZE", DEFAULT_WEBSOCKET_CHUNK)
+    cached_env(
+        &WEBSOCKET_CHUNK,
+        "LIGHTSTREAM_WEBSOCKET_CHUNK_SIZE",
+        DEFAULT_WEBSOCKET_CHUNK,
+    )
 }
 
 /// WebTransport/QUIC chunk size. Override with `LIGHTSTREAM_WEBTRANSPORT_CHUNK_SIZE`.
 pub fn webtransport_chunk_size() -> usize {
-    cached_env(&WEBTRANSPORT_CHUNK, "LIGHTSTREAM_WEBTRANSPORT_CHUNK_SIZE", DEFAULT_WEBTRANSPORT_CHUNK)
+    cached_env(
+        &WEBTRANSPORT_CHUNK,
+        "LIGHTSTREAM_WEBTRANSPORT_CHUNK_SIZE",
+        DEFAULT_WEBTRANSPORT_CHUNK,
+    )
 }
 
 /// In-memory chunk size. Override with `LIGHTSTREAM_INMEMORY_CHUNK_SIZE`.
 pub fn inmemory_chunk_size() -> usize {
-    cached_env(&INMEMORY_CHUNK, "LIGHTSTREAM_INMEMORY_CHUNK_SIZE", DEFAULT_INMEMORY_CHUNK)
+    cached_env(
+        &INMEMORY_CHUNK,
+        "LIGHTSTREAM_INMEMORY_CHUNK_SIZE",
+        DEFAULT_INMEMORY_CHUNK,
+    )
 }
 
 // Default allocation size for new frame buffers (1 MB).

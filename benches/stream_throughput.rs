@@ -69,7 +69,9 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         let mut buf = Vec64::with_capacity(0);
                         for _ in 0..n {
                             buf.clear();
-                            codec.encode_stream_batch(&write_table, &mut buf, 0).unwrap();
+                            codec
+                                .encode_stream_batch(&write_table, &mut buf, 0)
+                                .unwrap();
                             stream.write_all(buf.as_ref()).await.unwrap();
                         }
                         buf.clear();
@@ -157,15 +159,12 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         .handshake::<_, bytes::Bytes>(tcp)
                         .await
                         .unwrap();
-                    let (req, mut respond) =
-                        h2.accept().await.unwrap().unwrap();
+                    let (req, mut respond) = h2.accept().await.unwrap().unwrap();
                     let response = http::Response::builder().status(200).body(()).unwrap();
                     let _ = respond.send_response(response, true).unwrap();
 
                     // Drive the connection while reading the request body.
-                    let driver = tokio::spawn(async move {
-                        while h2.accept().await.is_some() {}
-                    });
+                    let driver = tokio::spawn(async move { while h2.accept().await.is_some() {} });
 
                     let mut reader = HttpTableReader::from_recv(req.into_body());
 
@@ -226,7 +225,9 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         let mut buf = Vec64::with_capacity(0);
                         for _ in 0..n {
                             buf.clear();
-                            codec.encode_stream_batch(&write_table, &mut buf, 0).unwrap();
+                            codec
+                                .encode_stream_batch(&write_table, &mut buf, 0)
+                                .unwrap();
                             stream.write_all(buf.as_ref()).await.unwrap();
                         }
                         buf.clear();
@@ -266,4 +267,3 @@ fn bench_stream_throughput(c: &mut Criterion) {
 
 criterion_group!(benches, bench_stream_throughput);
 criterion_main!(benches);
-

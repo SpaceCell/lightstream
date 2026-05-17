@@ -48,8 +48,12 @@ impl QuicTableWriter {
         schema: Vec<Field>,
         compression: Compression,
     ) -> io::Result<Self> {
-        let sink =
-            TableSink64::new_with_compression(send, schema, IPCMessageProtocol::Stream, compression)?;
+        let sink = TableSink64::new_with_compression(
+            send,
+            schema,
+            IPCMessageProtocol::Stream,
+            compression,
+        )?;
         Ok(Self { sink })
     }
 }

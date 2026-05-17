@@ -55,8 +55,12 @@ impl UdsTableWriter {
     ) -> io::Result<Self> {
         let stream = UnixStream::connect(path).await?;
         let (_read, write) = stream.into_split();
-        let sink =
-            TableSink64::new_with_compression(write, schema, IPCMessageProtocol::Stream, compression)?;
+        let sink = TableSink64::new_with_compression(
+            write,
+            schema,
+            IPCMessageProtocol::Stream,
+            compression,
+        )?;
         Ok(Self { sink })
     }
 

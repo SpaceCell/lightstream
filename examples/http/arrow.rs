@@ -57,21 +57,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let response = http::Response::builder().status(200).body(()).unwrap();
         // end_of_stream=true: response is headers only, no body. The
         // client's drain task sees END_STREAM immediately and returns.
-        let _send_resp = respond.send_response(response, true).expect("send response");
+        let _send_resp = respond
+            .send_response(response, true)
+            .expect("send response");
 
         // The h2 Connection is the I/O driver for all in-flight streams,
         // including the body of the request we just accepted. After
         // accept() returns we have to keep polling it or the RecvStream
         // never receives DATA frames. Spawning accept() in a loop drives
         // the connection until the peer closes.
-        let driver = tokio::spawn(async move {
-            while h2.accept().await.is_some() {}
-        });
+        let driver = tokio::spawn(async move { while h2.accept().await.is_some() {} });
 
         let reader = HttpTableReader::from_recv(req.into_body());
         let tables = reader.read_all_tables().await.expect("read tables");
         for t in &tables {
-            println!("  Server got table: {} rows, {} cols", t.n_rows, t.cols.len());
+            println!(
+                "  Server got table: {} rows, {} cols",
+                t.n_rows,
+                t.cols.len()
+            );
         }
         assert_eq!(tables.len(), 3);
         println!("Server received all {} tables over HTTP/2.", tables.len());

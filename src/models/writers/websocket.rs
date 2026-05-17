@@ -42,7 +42,9 @@ use crate::traits::transport_writer::IPCTransportWriter;
 /// Uses `WsWrite` for WebSocket frame encoding after the tungstenite
 /// handshake. Vec64 for 64-byte SIMD aligned encoding.
 pub struct WebSocketTableWriter {
-    sink: TableSink64<WsWrite<tokio::io::WriteHalf<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>>,
+    sink: TableSink64<
+        WsWrite<tokio::io::WriteHalf<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
+    >,
 }
 
 impl WebSocketTableWriter {
@@ -77,8 +79,12 @@ impl WebSocketTableWriter {
         let raw = ws_stream.into_inner();
         let (_read_half, write_half) = tokio::io::split(raw);
         let (_shared, ws_write) = WsWrite::new(write_half);
-        let sink =
-            TableSink64::new_with_compression(ws_write, schema, IPCMessageProtocol::Stream, compression)?;
+        let sink = TableSink64::new_with_compression(
+            ws_write,
+            schema,
+            IPCMessageProtocol::Stream,
+            compression,
+        )?;
         Ok(Self { sink })
     }
 
@@ -96,7 +102,7 @@ impl WebSocketTableWriter {
         schema: Vec<Field>,
         compression: Option<Compression>,
     ) -> io::Result<Self> {
-        use tokio_tungstenite::{connect_async_tls_with_config, Connector};
+        use tokio_tungstenite::{Connector, connect_async_tls_with_config};
         let connector = Connector::Rustls(config);
         // tokio-tungstenite's positional args: tungstenite WebSocketConfig
         // override (None = library defaults: max frame size, accept-unmasked
@@ -112,7 +118,9 @@ impl WebSocketTableWriter {
         let (_read_half, write_half) = tokio::io::split(raw);
         let (_shared, ws_write) = WsWrite::new(write_half);
         let sink = match compression {
-            Some(c) => TableSink64::new_with_compression(ws_write, schema, IPCMessageProtocol::Stream, c)?,
+            Some(c) => {
+                TableSink64::new_with_compression(ws_write, schema, IPCMessageProtocol::Stream, c)?
+            }
             None => TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream)?,
         };
         Ok(Self { sink })

@@ -8,6 +8,8 @@
 //! Consistent with the Arrow IPC file specification; expects opening/closing magic,
 //! footer length, and block tables.
 //!
+use minarrow::Vec64;
+use minarrow::structs::shared_buffer::SharedBuffer;
 /// # Which reader?
 /// - **Speed**: Prefer the mmap variant [`MmapTableReader`] when zero-copy performance is required -
 /// for e.g., the MMAP version can read millions of rows in microseconds, microseconds, and very large volumes in milliseconds.
@@ -21,8 +23,6 @@ use std::os::unix::fs::FileExt;
 use std::os::windows::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
-use minarrow::Vec64;
-use minarrow::structs::shared_buffer::SharedBuffer;
 
 /// Read exactly `buf.len()` bytes starting at `offset` without touching
 /// the file's seek position. Backed by `pread(2)` on Unix and a
@@ -137,9 +137,8 @@ impl FileTableReader {
         let mut footer_buf = vec![0u8; footer_len];
         read_at(&file, &mut footer_buf, footer_start as u64)?;
 
-        let footer_msg = flatbuffers::root::<fbf::Footer>(&footer_buf).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("bad footer: {e}"))
-        })?;
+        let footer_msg = flatbuffers::root::<fbf::Footer>(&footer_buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad footer: {e}")))?;
 
         let fb_schema = footer_msg
             .schema()
@@ -249,16 +248,21 @@ impl FileTableReader {
         // we just exposed via `set_len` or returns Err, in which case
         // `buf` is dropped without anyone observing the uninitialised
         // tail. No bytes between [0..total] are read before read_at writes.
-        unsafe { buf.set_len(total); }
+        unsafe {
+            buf.set_len(total);
+        }
         read_at(&self.file, &mut buf, blk.offset as u64)?;
         Ok(buf)
     }
 
     /// Parse the IPC frame header from a block buffer, returning the
     /// metadata slice. Validates the continuation marker.
-    fn parse_frame_header<'a>(buf: &'a [u8]) -> io::Result<&'a [u8]> {
+    fn parse_frame_header(buf: &[u8]) -> io::Result<&[u8]> {
         if buf.len() < 8 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "block too short"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "block too short",
+            ));
         }
         let cont = u32::from_le_bytes(buf[..4].try_into().unwrap());
         if cont != 0xFFFF_FFFF {
@@ -298,11 +302,16 @@ impl FileTableReader {
     fn resolve_column_indices(&self, columns: &[&str]) -> io::Result<HashSet<usize>> {
         let mut indices = HashSet::with_capacity(columns.len());
         for name in columns {
-            let idx = self.schema.iter().position(|f| f.name == *name)
-                .ok_or_else(|| io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("column '{}' not found in schema", name),
-                ))?;
+            let idx = self
+                .schema
+                .iter()
+                .position(|f| f.name == *name)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("column '{}' not found in schema", name),
+                    )
+                })?;
             indices.insert(idx);
         }
         Ok(indices)
@@ -340,16 +349,31 @@ impl FileTableReader {
             if is_body_compressed(&buffers, body_data) {
                 let (decompressed_body, _offsets) =
                     decompress_sequential_body(&buffers, body_data)?;
-                let decompressed_shared = SharedBuffer::from_vec64(Vec64::from_slice(&decompressed_body));
+                let decompressed_shared =
+                    SharedBuffer::from_vec64(Vec64::from_slice(&decompressed_body));
                 let (table, _) = decode_record_batch(
-                    &rec, &fields, &self.dictionaries, decompressed_shared, 0, decompressed_body.len(), projection, DecodeLimits::default(),
+                    &rec,
+                    &fields,
+                    &self.dictionaries,
+                    decompressed_shared,
+                    0,
+                    decompressed_body.len(),
+                    projection,
+                    DecodeLimits::default(),
                 )?;
                 return Ok(table);
             }
         }
 
         let (table, _) = decode_record_batch(
-            &rec, &fields, &self.dictionaries, shared.clone(), body_offset, body_len, projection, DecodeLimits::default(),
+            &rec,
+            &fields,
+            &self.dictionaries,
+            shared.clone(),
+            body_offset,
+            body_len,
+            projection,
+            DecodeLimits::default(),
         )?;
         Ok(table)
     }
@@ -498,7 +522,10 @@ mod tests {
                     TextArray::String32(arr) if arr.data.is_shared() => shared_count += 1,
                     #[cfg(feature = "large_string")]
                     TextArray::String64(arr) if arr.data.is_shared() => shared_count += 1,
-                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
                     TextArray::Categorical32(arr) if arr.data.is_shared() => shared_count += 1,
                     #[cfg(feature = "default_categorical_8")]
                     TextArray::Categorical8(arr) if arr.data.is_shared() => shared_count += 1,
@@ -524,5 +551,4 @@ mod tests {
         assert_eq!(table2.n_rows, 4);
         assert_eq!(table2.cols.len(), table.cols.len());
     }
-
 }

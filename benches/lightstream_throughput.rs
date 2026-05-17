@@ -534,4 +534,3 @@ impl rustls::client::danger::ServerCertVerifier for BenchSkipVerification {
         ]
     }
 }
-

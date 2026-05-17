@@ -11,7 +11,7 @@ use lightstream::models::readers::ipc::file_table_reader::FileTableReader;
 use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::streams::disk::DiskByteStream;
 use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
-use minarrow::{arr_i32, arr_str32, Field, FieldArray, Table, Vec64};
+use minarrow::{Field, FieldArray, Table, Vec64, arr_i32, arr_str32};
 use std::path::Path;
 use tempfile::tempdir;
 use tokio::fs::File;
@@ -62,11 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(batch) = reader.next().await {
         total_rows += batch?.n_rows;
     }
-    println!(
-        "  Processed {} rows in {:?}",
-        total_rows,
-        start.elapsed()
-    );
+    println!("  Processed {} rows in {:?}", total_rows, start.elapsed());
 
     Ok(())
 }
@@ -76,8 +72,9 @@ fn make_tables(n: usize, rows: usize, prefix: &str) -> Vec<Table> {
         .map(|i| {
             let start = i * rows;
             let ids: Vec64<i32> = (start..start + rows).map(|x| x as i32).collect();
-            let labels: Vec64<String> =
-                (0..rows).map(|j| format!("{}_{}_row_{}", prefix, i, j)).collect();
+            let labels: Vec64<String> = (0..rows)
+                .map(|j| format!("{}_{}_row_{}", prefix, i, j))
+                .collect();
             let refs: Vec64<&str> = labels.iter().map(String::as_str).collect();
             Table::new(
                 format!("{}_{}", prefix, i),

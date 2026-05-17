@@ -41,9 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Mint a self-signed cert valid for `localhost`. -----------------
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let cert_der: CertificateDer<'static> = cert.cert.der().clone();
-    let key_der: PrivateKeyDer<'static> =
-        PrivateKeyDer::try_from(cert.signing_key.serialize_der())
-            .map_err(|e| format!("private key: {e}"))?;
+    let key_der: PrivateKeyDer<'static> = PrivateKeyDer::try_from(cert.signing_key.serialize_der())
+        .map_err(|e| format!("private key: {e}"))?;
 
     // --- Build server-side TLS acceptor. --------------------------------
     let server_config = ServerConfig::builder()
@@ -72,17 +71,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Server TLS handshake complete");
 
         let (read_half, _write_half) = tokio::io::split(tls);
-        let byte_stream = TcpByteStream::from_tls_read_half(
-            read_half,
-            lightstream::enums::BufferChunkSize::Http,
-        );
+        let byte_stream =
+            TcpByteStream::from_tls_read_half(read_half, lightstream::enums::BufferChunkSize::Http);
         let reader = TcpTableReader::from_stream(
             byte_stream,
             lightstream::enums::IPCMessageProtocol::Stream,
         );
         let tables = reader.read_all_tables().await.expect("read all tables");
         for t in &tables {
-            println!("  Server got table: {} rows, {} cols", t.n_rows, t.cols.len());
+            println!(
+                "  Server got table: {} rows, {} cols",
+                t.n_rows,
+                t.cols.len()
+            );
         }
         assert_eq!(tables.len(), 3);
         println!("Server received all {} tables over TLS.", tables.len());
@@ -90,14 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Client: connect over TLS using the pinned root. ----------------
     let server_name = ServerName::try_from("localhost".to_string())?;
-    let mut writer = TcpTableWriter::connect_tls(
-        addr,
-        server_name,
-        client_config,
-        table_schema(),
-        None,
-    )
-    .await?;
+    let mut writer =
+        TcpTableWriter::connect_tls(addr, server_name, client_config, table_schema(), None).await?;
     println!("Client TLS handshake complete to {addr}");
 
     writer.write_table(make_table("batch_1", 5)).await?;

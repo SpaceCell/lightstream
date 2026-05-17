@@ -162,12 +162,10 @@ impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
                         }
                         break;
                     }
-                    let meta_bytes = &shared.as_slice()
-                        [pos + meta_range.start..pos + meta_range.end];
+                    let meta_bytes =
+                        &shared.as_slice()[pos + meta_range.start..pos + meta_range.end];
                     let body_len = body_range.end - body_range.start;
-                    let body_shared = shared.slice(
-                        pos + body_range.start..pos + body_range.end,
-                    );
+                    let body_shared = shared.slice(pos + body_range.start..pos + body_range.end);
                     match self.decode_frame(meta_bytes, body_shared, body_len)? {
                         IPCFrameResult::Batch(table) => tables.push(table),
                         IPCFrameResult::Schema

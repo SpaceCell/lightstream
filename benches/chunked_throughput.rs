@@ -152,7 +152,9 @@ fn bench_chunked_arrow(c: &mut Criterion) {
 
     // 32 distinct tables in distinct memory so the encoder cannot
     // unrealistically benefit from L2/L3 cache residency.
-    let tables: Vec<Table> = (0..N_CHUNKS).map(|_| make_bench_table(BENCH_ROWS)).collect();
+    let tables: Vec<Table> = (0..N_CHUNKS)
+        .map(|_| make_bench_table(BENCH_ROWS))
+        .collect();
     let table_refs: Vec<&Table> = tables.iter().collect();
 
     // Pre-write the dataset once to learn the real physical byte count,
@@ -203,11 +205,19 @@ fn bench_chunked_arrow(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("write_logical", |b| {
-        b.iter_batched(|| fresh_dir("arrow_write"), &write_serial_logical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("arrow_write"),
+            &write_serial_logical,
+            criterion::BatchSize::PerIteration,
+        );
     });
     group.throughput(Throughput::Bytes(physical_bytes));
     group.bench_function("write_physical", |b| {
-        b.iter_batched(|| fresh_dir("arrow_write"), &write_serial_physical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("arrow_write"),
+            &write_serial_physical,
+            criterion::BatchSize::PerIteration,
+        );
     });
 
     let par_write_logical = |dir: PathBuf| {
@@ -227,11 +237,19 @@ fn bench_chunked_arrow(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("par_write_logical", |b| {
-        b.iter_batched(|| fresh_dir("arrow_par_write"), &par_write_logical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("arrow_par_write"),
+            &par_write_logical,
+            criterion::BatchSize::PerIteration,
+        );
     });
     group.throughput(Throughput::Bytes(physical_bytes));
     group.bench_function("par_write_physical", |b| {
-        b.iter_batched(|| fresh_dir("arrow_par_write"), &par_write_physical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("arrow_par_write"),
+            &par_write_physical,
+            criterion::BatchSize::PerIteration,
+        );
     });
 
     // Read benches use the physical denominator since that's what
@@ -282,7 +300,9 @@ fn bench_chunked_parquet(c: &mut Criterion) {
 
     // 32 distinct tables in distinct memory so the encoder cannot
     // unrealistically benefit from L2/L3 cache residency.
-    let tables: Vec<Table> = (0..N_CHUNKS).map(|_| make_bench_table(BENCH_ROWS)).collect();
+    let tables: Vec<Table> = (0..N_CHUNKS)
+        .map(|_| make_bench_table(BENCH_ROWS))
+        .collect();
     let table_refs: Vec<&Table> = tables.iter().collect();
 
     // Pre-write the dataset once to learn the real physical byte count.
@@ -324,11 +344,19 @@ fn bench_chunked_parquet(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("write_logical", |b| {
-        b.iter_batched(|| fresh_dir("parquet_write"), &write_serial_logical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("parquet_write"),
+            &write_serial_logical,
+            criterion::BatchSize::PerIteration,
+        );
     });
     group.throughput(Throughput::Bytes(physical_bytes));
     group.bench_function("write_physical", |b| {
-        b.iter_batched(|| fresh_dir("parquet_write"), &write_serial_physical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("parquet_write"),
+            &write_serial_physical,
+            criterion::BatchSize::PerIteration,
+        );
     });
 
     let par_write_logical = |dir: PathBuf| {
@@ -348,11 +376,19 @@ fn bench_chunked_parquet(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("par_write_logical", |b| {
-        b.iter_batched(|| fresh_dir("parquet_par_write"), &par_write_logical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("parquet_par_write"),
+            &par_write_logical,
+            criterion::BatchSize::PerIteration,
+        );
     });
     group.throughput(Throughput::Bytes(physical_bytes));
     group.bench_function("par_write_physical", |b| {
-        b.iter_batched(|| fresh_dir("parquet_par_write"), &par_write_physical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("parquet_par_write"),
+            &par_write_physical,
+            criterion::BatchSize::PerIteration,
+        );
     });
 
     group.throughput(Throughput::Bytes(physical_bytes));
@@ -400,14 +436,15 @@ fn bench_chunked_csv(c: &mut Criterion) {
 
     // 32 distinct tables in distinct memory so the encoder cannot
     // unrealistically benefit from L2/L3 cache residency.
-    let tables: Vec<Table> = (0..N_CHUNKS).map(|_| make_bench_table(BENCH_ROWS)).collect();
+    let tables: Vec<Table> = (0..N_CHUNKS)
+        .map(|_| make_bench_table(BENCH_ROWS))
+        .collect();
     let table_refs: Vec<&Table> = tables.iter().collect();
 
     // Pre-write the dataset once to learn the real physical byte count.
     let read_dir = fresh_dir("csv_read");
     {
-        let mut w =
-            ChunkedCsvWriter::new(&read_dir, BASE, CsvEncodeOptions::default()).unwrap();
+        let mut w = ChunkedCsvWriter::new(&read_dir, BASE, CsvEncodeOptions::default()).unwrap();
         for t in &tables {
             w.write_chunk(t).unwrap();
         }
@@ -423,15 +460,13 @@ fn bench_chunked_csv(c: &mut Criterion) {
     // dir. Denominator = output file bytes. Cleanup of the chunk dir
     // is NOT in the timed region.
     let write_serial_logical = |dir: PathBuf| {
-        let mut w =
-            ChunkedCsvWriter::new(&dir, BASE, CsvEncodeOptions::default()).unwrap();
+        let mut w = ChunkedCsvWriter::new(&dir, BASE, CsvEncodeOptions::default()).unwrap();
         for t in &tables {
             w.write_chunk(t).unwrap();
         }
     };
     let write_serial_physical = |dir: PathBuf| {
-        let mut w =
-            ChunkedCsvWriter::new(&dir, BASE, CsvEncodeOptions::default()).unwrap();
+        let mut w = ChunkedCsvWriter::new(&dir, BASE, CsvEncodeOptions::default()).unwrap();
         let mut paths: Vec<PathBuf> = Vec::with_capacity(N_CHUNKS);
         for t in &tables {
             paths.push(w.write_chunk(t).unwrap());
@@ -445,11 +480,19 @@ fn bench_chunked_csv(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("write_logical", |b| {
-        b.iter_batched(|| fresh_dir("csv_write"), &write_serial_logical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("csv_write"),
+            &write_serial_logical,
+            criterion::BatchSize::PerIteration,
+        );
     });
     group.throughput(Throughput::Bytes(physical_bytes));
     group.bench_function("write_physical", |b| {
-        b.iter_batched(|| fresh_dir("csv_write"), &write_serial_physical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("csv_write"),
+            &write_serial_physical,
+            criterion::BatchSize::PerIteration,
+        );
     });
 
     let par_write_logical = |dir: PathBuf| {
@@ -469,11 +512,19 @@ fn bench_chunked_csv(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("par_write_logical", |b| {
-        b.iter_batched(|| fresh_dir("csv_par_write"), &par_write_logical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("csv_par_write"),
+            &par_write_logical,
+            criterion::BatchSize::PerIteration,
+        );
     });
     group.throughput(Throughput::Bytes(physical_bytes));
     group.bench_function("par_write_physical", |b| {
-        b.iter_batched(|| fresh_dir("csv_par_write"), &par_write_physical, criterion::BatchSize::PerIteration);
+        b.iter_batched(
+            || fresh_dir("csv_par_write"),
+            &par_write_physical,
+            criterion::BatchSize::PerIteration,
+        );
     });
 
     group.throughput(Throughput::Bytes(physical_bytes));

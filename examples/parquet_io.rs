@@ -16,9 +16,7 @@ use lightstream::{
 };
 
 #[cfg(feature = "parquet")]
-use minarrow::{
-    arr_bool, arr_f32, arr_f64, arr_i32, arr_i64, arr_str32, FieldArray, Table, Vec64,
-};
+use minarrow::{FieldArray, Table, Vec64, arr_bool, arr_f32, arr_f64, arr_i32, arr_i64, arr_str32};
 #[cfg(feature = "parquet")]
 use std::fs::File;
 #[cfg(feature = "parquet")]
@@ -323,7 +321,8 @@ fn create_complex_types_table() -> Table {
             0 => "A".to_string(),
             1 => "Short".to_string(),
             2 => "Medium length string".to_string(),
-            3 => "This is a considerably longer string for testing variable-length encoding".to_string(),
+            3 => "This is a considerably longer string for testing variable-length encoding"
+                .to_string(),
             _ => format!("Generated string number {} with some content", i),
         })
         .collect();

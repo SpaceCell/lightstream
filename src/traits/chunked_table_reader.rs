@@ -45,10 +45,7 @@ pub trait ChunkedTableReader: Iterator<Item = Result<Table, Self::Error>> + Size
     /// List chunk file paths in `dir` matching this format's naming
     /// pattern, sorted by ascending numeric index. Used by both `open`
     /// and `par_read_all`.
-    fn list_paths<P: AsRef<Path>>(
-        dir: P,
-        base: &str,
-    ) -> Result<Vec<PathBuf>, Self::Error>;
+    fn list_paths<P: AsRef<Path>>(dir: P, base: &str) -> Result<Vec<PathBuf>, Self::Error>;
 
     /// Decode one chunk file into a `Table`. The same per-format decode
     /// path used by the iterator (one chunk at a time) and by
@@ -126,18 +123,20 @@ pub trait ChunkedTableReader: Iterator<Item = Result<Table, Self::Error>> + Size
                 let next_index = &next_index;
                 let paths = &paths;
                 let options = &options;
-                handles.push(s.spawn(move || -> Result<Vec<(usize, Table)>, Self::Error> {
-                    let mut local: Vec<(usize, Table)> = Vec::with_capacity(per_worker_cap);
-                    loop {
-                        let idx = next_index.fetch_add(1, Ordering::Relaxed);
-                        if idx >= n_files {
-                            break;
+                handles.push(
+                    s.spawn(move || -> Result<Vec<(usize, Table)>, Self::Error> {
+                        let mut local: Vec<(usize, Table)> = Vec::with_capacity(per_worker_cap);
+                        loop {
+                            let idx = next_index.fetch_add(1, Ordering::Relaxed);
+                            if idx >= n_files {
+                                break;
+                            }
+                            let table = Self::read_chunk(&paths[idx], options)?;
+                            local.push((idx, table));
                         }
-                        let table = Self::read_chunk(&paths[idx], options)?;
-                        local.push((idx, table));
-                    }
-                    Ok(local)
-                }));
+                        Ok(local)
+                    }),
+                );
             }
             let mut all: Vec<(usize, Table)> = Vec::with_capacity(n_files);
             for h in handles {

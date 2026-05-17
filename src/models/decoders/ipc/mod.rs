@@ -32,9 +32,7 @@ use crate::constants::{
 };
 use crate::enums::{DecodeResult, IPCMessageProtocol};
 use crate::models::decoders::limits::DecodeLimits;
-use crate::models::frames::ipc_message::{
-    ArrowIPCFrameRanges, IPCFrameHeader, IPCFrameResult,
-};
+use crate::models::frames::ipc_message::{ArrowIPCFrameRanges, IPCFrameHeader, IPCFrameResult};
 use crate::traits::frame_decoder::FrameDecoder;
 use crate::traits::stream_buffer::StreamBuffer;
 use crate::utils::{align_8, align_to};
@@ -606,5 +604,7 @@ pub(crate) fn decode_ipc_payload<B: StreamBuffer>(
         .header_as_record_batch()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing RecordBatch header"))?;
 
-    decode_record_batch(&rec, fields, dicts, payload, body_start, body_len, None, limits)
+    decode_record_batch(
+        &rec, fields, dicts, payload, body_start, body_len, None, limits,
+    )
 }

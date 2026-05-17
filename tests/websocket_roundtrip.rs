@@ -119,7 +119,8 @@ fn make_schema(table: &Table) -> Vec<Field> {
 /// a WsRead adapter for Arrow IPC decoding.
 async fn accept_ws_reader(
     listener: &TcpListener,
-) -> WsRead<tokio::io::ReadHalf<tokio::net::TcpStream>, tokio::io::WriteHalf<tokio::net::TcpStream>> {
+) -> WsRead<tokio::io::ReadHalf<tokio::net::TcpStream>, tokio::io::WriteHalf<tokio::net::TcpStream>>
+{
     let (socket, _) = listener.accept().await.unwrap();
     let ws = accept_async(socket).await.unwrap();
     let raw = ws.into_inner();

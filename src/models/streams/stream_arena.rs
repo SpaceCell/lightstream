@@ -25,7 +25,7 @@ const DEFAULT_ARENA_CAPACITY: usize = 2 * 1024 * 1024 * 1024;
 /// Uses UnsafeCell because the writer accesses spare capacity while
 /// windows hold immutable references to earlier regions. These never
 /// overlap - writes are always ahead of reads.
-/// 
+///
 /// We use Vec64 so that it is cache and SIMD optimal via Minarrow.
 struct ArenaBacking {
     data: UnsafeCell<Vec64<u8>>,

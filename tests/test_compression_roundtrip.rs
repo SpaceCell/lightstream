@@ -463,8 +463,8 @@ async fn test_compression_data_integrity() {
 #[cfg(feature = "zstd")]
 #[tokio::test]
 async fn test_zstd_dictionary_roundtrip() {
-    use minarrow::ffi::arrow_dtype::CategoricalIndexType;
     use minarrow::CategoricalArray;
+    use minarrow::ffi::arrow_dtype::CategoricalIndexType;
 
     let temp_file = NamedTempFile::new().unwrap();
     let file_path = temp_file.path();
@@ -578,8 +578,10 @@ async fn test_zstd_dictionary_roundtrip() {
         );
         for i in 0..n_rows {
             assert_eq!(
-                arr.data[i], (i % 3) as u32,
-                "category index mismatch at row {}", i
+                arr.data[i],
+                (i % 3) as u32,
+                "category index mismatch at row {}",
+                i
             );
         }
     } else {
@@ -595,8 +597,10 @@ async fn test_zstd_dictionary_roundtrip() {
         );
         for i in 0..n_rows {
             assert_eq!(
-                arr.data[i], (i % 3) as u8,
-                "category index mismatch at row {}", i
+                arr.data[i],
+                (i % 3) as u8,
+                "category index mismatch at row {}",
+                i
             );
         }
     } else {

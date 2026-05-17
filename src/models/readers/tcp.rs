@@ -88,9 +88,13 @@ impl TcpTableReader {
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
         chunk: Option<BufferChunkSize>,
     ) -> io::Result<Self> {
-        let stream =
-            crate::models::streams::tcp::TcpByteStream::connect_tls(addr, server_name, config, chunk)
-                .await?;
+        let stream = crate::models::streams::tcp::TcpByteStream::connect_tls(
+            addr,
+            server_name,
+            config,
+            chunk,
+        )
+        .await?;
         let inner = TableReader::<Vec64<u8>>::new(
             stream,
             chunk.unwrap_or(BufferChunkSize::Http).chunk_size(),

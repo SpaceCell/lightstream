@@ -7,7 +7,7 @@
 
 use lightstream::models::readers::csv_reader::CsvReader;
 use lightstream::models::writers::csv_writer::CsvWriter;
-use minarrow::{arr_f64, arr_i32, arr_str32, FieldArray, Table, Vec64};
+use minarrow::{FieldArray, Table, Vec64, arr_f64, arr_i32, arr_str32};
 use std::path::Path;
 use tempfile::tempdir;
 

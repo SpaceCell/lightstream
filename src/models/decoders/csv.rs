@@ -226,7 +226,11 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
     }
 
     // Trailing data without a closing newline still forms a row.
-    let trailing_data = field_starts.last().copied().map(|s| (s as usize) < n).unwrap_or(false);
+    let trailing_data = field_starts
+        .last()
+        .copied()
+        .map(|s| (s as usize) < n)
+        .unwrap_or(false);
     if trailing_data {
         let just_closed = field_starts.len() - 1;
         // Sentinel so cell end == `buf.len()` for the last field.
@@ -401,44 +405,124 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
 
         let array = match &field.dtype {
             ArrowType::Int32 => build_int_col_inline::<i32>(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::Int64 => build_int_col_inline::<i64>(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::UInt32 => build_int_col_inline::<u32>(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::UInt64 => build_int_col_inline::<u64>(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::Float32 => build_float_col_inline::<f32>(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::Float64 => build_float_col_inline::<f64>(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::Boolean => build_bool_col_inline(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::String => build_string_col_inline(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             ArrowType::Dictionary(_) => build_categorical_col_inline(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
             _ => build_string_col_inline(
-                buf, &field_starts, n_cols, data_row_offset, col_idx, n_rows,
-                quote, &nulls, &mut null_bools, &mut null_count,
+                buf,
+                &field_starts,
+                n_cols,
+                data_row_offset,
+                col_idx,
+                n_rows,
+                quote,
+                &nulls,
+                &mut null_bools,
+                &mut null_count,
             )?,
         };
 
@@ -498,8 +582,18 @@ fn is_null_bytes(bytes: &[u8], nulls: &[&'static str]) -> bool {
 fn is_bool_token(bytes: &[u8]) -> bool {
     matches!(
         bytes,
-        b"true" | b"True" | b"TRUE" | b"false" | b"False" | b"FALSE"
-            | b"1" | b"0" | b"t" | b"T" | b"f" | b"F"
+        b"true"
+            | b"True"
+            | b"TRUE"
+            | b"false"
+            | b"False"
+            | b"FALSE"
+            | b"1"
+            | b"0"
+            | b"t"
+            | b"T"
+            | b"f"
+            | b"F"
     )
 }
 
@@ -541,7 +635,10 @@ fn unquote<'a>(bytes: &'a [u8], quote: u8) -> Cow<'a, [u8]> {
 /// Trim leading/trailing ASCII whitespace without allocating.
 #[inline]
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let start = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
     let end = bytes
         .iter()
         .rposition(|b| !b.is_ascii_whitespace())
@@ -589,9 +686,8 @@ where
             *null_count += 1;
             continue;
         }
-        out[r] = super::int_ascii::parse_ascii_int::<T>(vb).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "failed to parse integer")
-        })?;
+        out[r] = super::int_ascii::parse_ascii_int::<T>(vb)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "failed to parse integer"))?;
     }
     pack_numeric(out, null_bools)
 }
@@ -625,9 +721,8 @@ where
             *null_count += 1;
             continue;
         }
-        out[r] = fast_float2::parse::<T, _>(vb).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "failed to parse float")
-        })?;
+        out[r] = fast_float2::parse::<T, _>(vb)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "failed to parse float"))?;
     }
     pack_numeric(out, null_bools)
 }

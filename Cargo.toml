@@ -30,7 +30,7 @@ flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
 minarrow = { version = "0.11.0", features = ["chunked", "views", "large_string", "arena", "vmap64", "size"] }
-vec64 = { path = "../vec64", features = ["mmap"] }
+vec64 = { version = "0.4.3", features = ["mmap"] }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 zstd = { version = "0.13", optional = true }
@@ -243,3 +243,8 @@ required-features = ["protocol", "webtransport", "msgpack"]
 name = "webtransport_arrow"
 path = "examples/webtransport/arrow.rs"
 required-features = ["webtransport"]
+
+[[example]]
+name = "csv_basic"
+path = "examples/csv_basic.rs"
+required-features = ["csv"]

@@ -326,11 +326,16 @@ impl MmapTableReader {
     fn resolve_column_indices(&self, columns: &[&str]) -> io::Result<HashSet<usize>> {
         let mut indices = HashSet::with_capacity(columns.len());
         for name in columns {
-            let idx = self.schema.iter().position(|f| f.name == *name)
-                .ok_or_else(|| io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("column '{}' not found in schema", name),
-                ))?;
+            let idx = self
+                .schema
+                .iter()
+                .position(|f| f.name == *name)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("column '{}' not found in schema", name),
+                    )
+                })?;
             indices.insert(idx);
         }
         Ok(indices)
@@ -562,7 +567,10 @@ mod tests {
                         owned_count += 1;
                     }
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
                     if a.data.is_shared() {
                         shared_count += 1;
@@ -657,7 +665,10 @@ mod tests {
                         let owned = arr.data.to_owned_copy();
                         assert!(!owned.bits.is_shared());
                     }
-                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
                     Array::TextArray(TextArray::Categorical32(arr)) => {
                         if arr.data.is_shared() {
                             debug!("Categorical32 is shared");
@@ -687,5 +698,4 @@ mod tests {
         let err = rdr.read_batch(1000).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
-
 }

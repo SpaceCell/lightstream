@@ -129,7 +129,9 @@ where
     /// Emits schema and any required dictionaries as needed.
     pub fn write(&mut self, table: &Table) -> io::Result<()> {
         if self.encoder.state == WriterState::Closed {
-            return Err(io::Error::new(io::ErrorKind::Other, "writer already finished"));
+            return Err(io::Error::other(
+                "writer already finished",
+            ));
         }
         if table.cols.len() != self.encoder.schema.len() {
             return Err(io::Error::new(
@@ -234,8 +236,8 @@ where
     /// Frame a (meta, body) pair as an IPC frame and queue it.
     /// Tracks file protocol block metadata for footer generation.
     fn emit_frame(&mut self, meta: Vec<u8>, body: B, header_type: fbm::MessageHeader) {
-        let is_first = self.encoder.protocol == IPCMessageProtocol::File
-            && self.frame_offsets.is_empty();
+        let is_first =
+            self.encoder.protocol == IPCMessageProtocol::File && self.frame_offsets.is_empty();
 
         let frame = IPCFrame {
             meta: &meta,

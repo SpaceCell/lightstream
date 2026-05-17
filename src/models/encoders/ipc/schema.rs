@@ -1,5 +1,5 @@
 //! # IPC FlatBuffers Builders
-//! 
+//!
 //! Internal Helpers that construct FlatBuffer-encoded Arrow IPC artefacts used by the encoder.
 //! This includes schema messages, record batches, dictionary batches, and the file footer with block metadata.
 //!
@@ -28,8 +28,8 @@ use crate::traits::stream_buffer::StreamBuffer;
 ///
 /// # Errors
 /// Returns error for any unsupported Arrow type.
-pub fn build_flatbuf_schema<'a>(
-    fbb: &'a mut flatbuffers::FlatBufferBuilder<'static>,
+pub fn build_flatbuf_schema(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'static>,
     schema: &[Field],
 ) -> io::Result<Vec<u8>> {
     fbb.reset();
@@ -62,7 +62,7 @@ pub fn build_flatbuf_schema<'a>(
     Ok(flatbuffers)
 }
 
-/// Build a vector of Arrow schema `Field` objects using the message-specific 
+/// Build a vector of Arrow schema `Field` objects using the message-specific
 /// FlatBuffers definitions.
 ///
 /// This constructs FlatBuffers offsets for each Arrow field, with each field
@@ -258,7 +258,10 @@ fn build_flatbuf_field<'fbb>(
         ArrowType::Dictionary(idx_ty) => {
             // Build index type for dictionary
             let idx_width = match idx_ty {
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 CategoricalIndexType::UInt32 => 32,
                 #[cfg(feature = "default_categorical_8")]
                 CategoricalIndexType::UInt8 => 8,
@@ -332,8 +335,8 @@ fn build_flatbuf_field<'fbb>(
 ///
 /// # Errors
 /// Returns error if unsupported column type or shape mismatch.
-pub(crate) fn build_flatbuf_recordbatch<'a>(
-    fbb: &'a mut flatbuffers::FlatBufferBuilder<'static>,
+pub(crate) fn build_flatbuf_recordbatch(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'static>,
     n_rows: usize,
     fb_field_nodes: &[fbm::FieldNode],
     fb_buffers: &[fbm::Buffer],
@@ -387,8 +390,8 @@ pub(crate) fn build_flatbuf_recordbatch<'a>(
 ///
 /// # Errors
 /// Returns error if input is inconsistent or unsupported.
-pub fn encode_flatbuf_dictionary<'a, B: StreamBuffer>(
-    fbb: &'a mut flatbuffers::FlatBufferBuilder<'static>,
+pub fn encode_flatbuf_dictionary<B: StreamBuffer>(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'static>,
     id: i64,
     uniques: &[String],
 ) -> io::Result<(Vec<u8>, B)> {
@@ -664,7 +667,10 @@ fn build_flatbuf_field_file<'fbb>(
         }
         ArrowType::Dictionary(idx_ty) => {
             let idx_width = match idx_ty {
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 CategoricalIndexType::UInt32 => 32,
                 #[cfg(feature = "default_categorical_8")]
                 CategoricalIndexType::UInt8 => 8,
@@ -742,8 +748,8 @@ pub struct FooterBlockMeta {
 ///
 /// # Errors
 /// Returns error for any unsupported Arrow type.
-pub fn build_flatbuf_footer<'a>(
-    fbb: &'a mut flatbuffers::FlatBufferBuilder<'static>,
+pub fn build_flatbuf_footer(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'static>,
     schema: &[Field],
     blocks_dictionaries: &[FooterBlockMeta],
     blocks_record_batches: &[FooterBlockMeta],

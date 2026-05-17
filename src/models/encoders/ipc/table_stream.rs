@@ -327,13 +327,13 @@ mod tests {
 
         let mut writer = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt8, true),
-            IPCMessageProtocol::Stream
+            IPCMessageProtocol::Stream,
         );
 
         let arr = CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
             unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, true, false, true]))
+            null_mask: Some(make_bitmask(&[true, true, false, true])),
         };
 
         writer.register_dictionary(0, dict_strs());
@@ -344,11 +344,11 @@ mod tests {
                     name: "col".to_string(),
                     dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
                     nullable: true,
-                    metadata: Default::default()
+                    metadata: Default::default(),
                 },
-                Array::TextArray(TextArray::Categorical8(Arc::new(arr)))
+                Array::TextArray(TextArray::Categorical8(Arc::new(arr))),
             ),
-            4
+            4,
         );
 
         writer.write_table(&tbl).unwrap();
@@ -371,13 +371,13 @@ mod tests {
 
         let mut writer = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt16, false),
-            IPCMessageProtocol::Stream
+            IPCMessageProtocol::Stream,
         );
 
         let arr = CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[2u16, 1, 0, 2])),
             unique_values: Vec64::from(dict_strs()),
-            null_mask: None
+            null_mask: None,
         };
 
         writer.register_dictionary(0, dict_strs());
@@ -388,11 +388,11 @@ mod tests {
                     name: "col".to_string(),
                     dtype: ArrowType::Dictionary(CategoricalIndexType::UInt16),
                     nullable: false,
-                    metadata: Default::default()
+                    metadata: Default::default(),
                 },
-                Array::TextArray(TextArray::Categorical16(Arc::new(arr)))
+                Array::TextArray(TextArray::Categorical16(Arc::new(arr))),
             ),
-            4
+            4,
         );
 
         writer.write_table(&tbl).unwrap();
@@ -415,13 +415,13 @@ mod tests {
 
         let mut writer = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt64, false),
-            IPCMessageProtocol::Stream
+            IPCMessageProtocol::Stream,
         );
 
         let arr = CategoricalArray {
             data: Buffer::from(Vec64::from_slice(&[0u64, 2, 1, 0])),
             unique_values: Vec64::from(dict_strs()),
-            null_mask: None
+            null_mask: None,
         };
 
         writer.register_dictionary(0, dict_strs());
@@ -432,11 +432,11 @@ mod tests {
                     name: "col".to_string(),
                     dtype: ArrowType::Dictionary(CategoricalIndexType::UInt64),
                     nullable: false,
-                    metadata: Default::default()
+                    metadata: Default::default(),
                 },
-                Array::TextArray(TextArray::Categorical64(Arc::new(arr)))
+                Array::TextArray(TextArray::Categorical64(Arc::new(arr))),
             ),
-            4
+            4,
         );
 
         writer.write_table(&tbl).unwrap();

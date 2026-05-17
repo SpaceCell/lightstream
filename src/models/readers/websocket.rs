@@ -138,7 +138,7 @@ impl WebSocketTableReader {
         url: &str,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
     ) -> io::Result<Self> {
-        use tokio_tungstenite::{connect_async_tls_with_config, Connector};
+        use tokio_tungstenite::{Connector, connect_async_tls_with_config};
         let connector = Connector::Rustls(config);
         // Positional args: tungstenite WebSocketConfig override (None = library
         // defaults) and a Nagle disable flag (false = leave socket default).

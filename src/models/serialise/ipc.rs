@@ -214,7 +214,9 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for BooleanArray<()> {
 
     fn decode(bytes: &[u8]) -> Result<Self, IoError> {
         match <Array as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(bytes)? {
-            Array::BooleanArray(arc) => Ok(Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone())),
+            Array::BooleanArray(arc) => {
+                Ok(Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
+            }
             other => Err(IoError::InputDataError(format!(
                 "Serialise decode for BooleanArray got a different Array category: {:?}",
                 other.arrow_type()
@@ -355,7 +357,10 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for minarrow::CategoricalArray<u16> {
     }
 }
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+#[cfg(any(
+    not(feature = "default_categorical_8"),
+    feature = "extended_categorical"
+))]
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for minarrow::CategoricalArray<u32> {
     type Error = IoError;
 
@@ -463,7 +468,10 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperTable {
         let mut codec = fresh_codec(Vec::new());
         let tables = codec.decode_stream(bytes)?;
         let batches: Vec<Arc<Table>> = tables.into_iter().map(Arc::new).collect();
-        Ok(SuperTable::from_batches(batches, Some("super_table".into())))
+        Ok(SuperTable::from_batches(
+            batches,
+            Some("super_table".into()),
+        ))
     }
 }
 
@@ -480,10 +488,12 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperArray {
         // Build the schema from the first chunk so the codec emits
         // the correct field metadata. Empty SuperArrays produce a
         // self-contained payload with no record batches.
-        let first_field_array: Option<FieldArray> = self
-            .chunks()
-            .first()
-            .map(|arr| arr.clone().fa(self.field().map(|f| f.name.clone()).unwrap_or_else(|| "col".into())));
+        let first_field_array: Option<FieldArray> = self.chunks().first().map(|arr| {
+            arr.clone().fa(self
+                .field()
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| "col".into()))
+        });
         let schema: Vec<minarrow::Field> = match &first_field_array {
             Some(fa) => vec![(*fa.field).clone()],
             None => Vec::new(),
@@ -578,8 +588,7 @@ mod tests {
     fn field_array_round_trip() {
         let fa = FieldArray::from_arr("nums", arr_i32![7, 8, 9]);
         let bytes = <FieldArray as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&fa).unwrap();
-        let back =
-            <FieldArray as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(&bytes).unwrap();
+        let back = <FieldArray as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(&bytes).unwrap();
         assert_eq!(back.field.name, fa.field.name);
         assert_eq!(back.field.dtype, fa.field.dtype);
         assert_eq!(back.len(), fa.len());
@@ -591,7 +600,8 @@ mod tests {
             data: Buffer::from(vec64![100_i64, 200, 300]),
             null_mask: None,
         };
-        let bytes = <IntegerArray<i64> as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&ia).unwrap();
+        let bytes =
+            <IntegerArray<i64> as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&ia).unwrap();
         let back =
             <IntegerArray<i64> as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(&bytes).unwrap();
         assert_eq!(ia.data.as_ref(), back.data.as_ref());
@@ -624,8 +634,7 @@ mod tests {
     fn decode_owned_skips_copy() {
         let t = sample_table();
         let bytes = <Table as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&t).unwrap();
-        let back =
-            <Table as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode_owned(bytes).unwrap();
+        let back = <Table as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode_owned(bytes).unwrap();
         assert_eq!(back.n_rows, t.n_rows);
         assert_eq!(back.cols.len(), t.cols.len());
     }
@@ -636,8 +645,7 @@ mod tests {
         let b2 = Arc::new(sample_table());
         let st = SuperTable::from_batches(vec![b1, b2], Some("super".into()));
         let bytes = <SuperTable as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&st).unwrap();
-        let back =
-            <SuperTable as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(&bytes).unwrap();
+        let back = <SuperTable as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(&bytes).unwrap();
         assert_eq!(back.n_batches(), 2);
         assert_eq!(back.n_rows(), st.n_rows());
     }

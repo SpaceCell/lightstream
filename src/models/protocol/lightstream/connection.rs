@@ -48,10 +48,7 @@ where
     B: StreamBuffer + Unpin,
 {
     /// Create a connection from an AsyncRead source and AsyncWrite destination.
-    pub fn new(
-        source: impl AsyncRead + Unpin + Send + 'static,
-        writer_dest: W,
-    ) -> Self {
+    pub fn new(source: impl AsyncRead + Unpin + Send + 'static, writer_dest: W) -> Self {
         Self {
             writer: LightstreamWriter::new(writer_dest),
             reader: LightstreamReader::new(source),
@@ -190,9 +187,8 @@ mod websocket_impl {
     ///
     /// Extracts the raw TCP stream after the tungstenite handshake
     /// and uses WsRead/WsWrite for frame parsing on the data path.
-    pub type WebSocketLightstreamConnection<T> = LightstreamConnection<
-        WsWrite<tokio::io::WriteHalf<T>>,
-    >;
+    pub type WebSocketLightstreamConnection<T> =
+        LightstreamConnection<WsWrite<tokio::io::WriteHalf<T>>>;
 
     impl<T> WebSocketLightstreamConnection<T>
     where
@@ -237,8 +233,7 @@ mod webtransport_impl {
     use super::*;
 
     /// Lightstream protocol connection over WebTransport.
-    pub type WebTransportLightstreamConnection =
-        LightstreamConnection<wtransport::SendStream>;
+    pub type WebTransportLightstreamConnection = LightstreamConnection<wtransport::SendStream>;
 
     impl WebTransportLightstreamConnection {
         /// Create a connection from WebTransport send and receive streams.

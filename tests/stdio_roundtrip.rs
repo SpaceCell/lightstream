@@ -117,7 +117,8 @@ fn make_schema(table: &Table) -> Vec<Field> {
 fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
     use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
 
-    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
+    let mut writer =
+        TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
 
     // Register dictionary for categorical column
     writer.register_dictionary(
@@ -140,7 +141,8 @@ fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
 fn encode_tables_to_bytes(tables: &[&Table], schema: &[Field]) -> Vec<u8> {
     use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
 
-    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
+    let mut writer =
+        TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream);
 
     writer.register_dictionary(
         3,

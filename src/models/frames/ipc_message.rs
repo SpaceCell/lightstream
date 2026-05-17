@@ -32,7 +32,6 @@ pub struct IPCFrame<'a> {
     pub footer_bytes: Option<&'a [u8]>,
 }
 
-
 /// Result of parsing an IPC frame header without requiring the body.
 /// Used by the zero-copy decoder to learn the body length before reading
 /// the body directly into a dedicated buffer.

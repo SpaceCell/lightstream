@@ -197,8 +197,7 @@ impl<B: StreamBuffer + Unpin> Stream for LightstreamReader<B> {
             }
 
             // Payload complete - hand to the codec for zero-copy decode.
-            let frame_payload =
-                std::mem::replace(&mut this.payload, Vec64::with_capacity(0));
+            let frame_payload = std::mem::replace(&mut this.payload, Vec64::with_capacity(0));
             this.header_filled = 0;
             this.payload_target = 0;
             let msg = this.codec.decode_frame(this.tag, frame_payload)?;

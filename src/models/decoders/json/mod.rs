@@ -82,10 +82,7 @@ impl Default for JsonDecodeOptions {
 /// object-boundary-aligned ranges by a single pre-pass, then parsed in
 /// parallel via [`std::thread::scope`]; the per-thread Tables are
 /// concatenated into one.
-pub fn decode_json_slice(
-    input: &mut [u8],
-    options: &JsonDecodeOptions,
-) -> io::Result<Table> {
+pub fn decode_json_slice(input: &mut [u8], options: &JsonDecodeOptions) -> io::Result<Table> {
     let schema = options
         .schema
         .as_ref()
@@ -146,8 +143,11 @@ fn decode_array_buffer(
     options: &JsonDecodeOptions,
 ) -> io::Result<Table> {
     let mut backend = SimdJsonBackend::new();
-    let mut builders =
-        make_builders(schema, estimate_rows_array(input), options.string_bytes_per_row)?;
+    let mut builders = make_builders(
+        schema,
+        estimate_rows_array(input),
+        options.string_bytes_per_row,
+    )?;
     let field_map = make_field_map(schema);
     backend.decode_rows(input, &mut builders, &field_map, options.on_type_mismatch)?;
     Ok(finish_table(schema, builders))
@@ -284,10 +284,7 @@ pub fn decode_json<R: BufRead>(mut reader: R, options: &JsonDecodeOptions) -> io
 ///
 /// For sources that arrive incrementally over a reader (and may exceed
 /// available memory), use [`decode_ndjson`].
-pub fn decode_ndjson_slice(
-    input: &[u8],
-    options: &JsonDecodeOptions,
-) -> io::Result<Table> {
+pub fn decode_ndjson_slice(input: &[u8], options: &JsonDecodeOptions) -> io::Result<Table> {
     let schema = options
         .schema
         .as_ref()
@@ -517,11 +514,7 @@ pub fn decode_ndjson_batch<R: BufRead>(
 /// Trim a raw NDJSON line and append it to `chunk` with a leading `,` separator
 /// when needed. Wraps the chunk in `[...]` lazily on first append. Returns
 /// false for blank/whitespace-only lines.
-pub(crate) fn append_ndjson_line(
-    line: &[u8],
-    chunk: &mut Vec<u8>,
-    line_count: &mut usize,
-) -> bool {
+pub(crate) fn append_ndjson_line(line: &[u8], chunk: &mut Vec<u8>, line_count: &mut usize) -> bool {
     let mut start = 0usize;
     let mut end = line.len();
     while end > start && matches!(line[end - 1], b'\n' | b'\r') {
@@ -582,7 +575,11 @@ pub(crate) fn make_builders(
 ) -> io::Result<Vec<ColumnBuilder>> {
     let mut out = Vec::with_capacity(schema.len());
     for field in schema {
-        out.push(ColumnBuilder::for_field(field, n_rows, string_bytes_per_row)?);
+        out.push(ColumnBuilder::for_field(
+            field,
+            n_rows,
+            string_bytes_per_row,
+        )?);
     }
     Ok(out)
 }
@@ -658,7 +655,10 @@ mod tests {
     #[test]
     fn decode_array_basic() {
         let json = br#"[{"i":1,"s":"hello","b":true},{"i":2,"s":"world","b":false}]"#;
-        let opts = JsonDecodeOptions { schema: Some(schema()), ..Default::default() };
+        let opts = JsonDecodeOptions {
+            schema: Some(schema()),
+            ..Default::default()
+        };
         let tbl = decode_json(io::Cursor::new(&json[..]), &opts).unwrap();
         assert_eq!(tbl.n_rows, 2);
         assert_eq!(tbl.cols.len(), 3);
@@ -667,7 +667,10 @@ mod tests {
     #[test]
     fn decode_ndjson_basic() {
         let json = b"{\"i\":1,\"s\":\"hello\",\"b\":true}\n{\"i\":2,\"s\":\"world\",\"b\":false}\n";
-        let opts = JsonDecodeOptions { schema: Some(schema()), ..Default::default() };
+        let opts = JsonDecodeOptions {
+            schema: Some(schema()),
+            ..Default::default()
+        };
         let tbl = decode_ndjson(io::Cursor::new(&json[..]), &opts).unwrap();
         assert_eq!(tbl.n_rows, 2);
     }
@@ -763,7 +766,10 @@ mod tests {
     fn ndjson_batch_drains_correctly() {
         let json = b"{\"i\":1,\"s\":\"a\",\"b\":true}\n{\"i\":2,\"s\":\"b\",\"b\":false}\n{\"i\":3,\"s\":\"c\",\"b\":true}\n";
         let mut reader = io::Cursor::new(&json[..]);
-        let opts = JsonDecodeOptions { schema: Some(schema()), ..Default::default() };
+        let opts = JsonDecodeOptions {
+            schema: Some(schema()),
+            ..Default::default()
+        };
         let b1 = decode_ndjson_batch(&mut reader, &opts, 2).unwrap().unwrap();
         assert_eq!(b1.n_rows, 2);
         let b2 = decode_ndjson_batch(&mut reader, &opts, 2).unwrap().unwrap();

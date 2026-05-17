@@ -6,11 +6,11 @@
 
 use std::io;
 
+#[cfg(feature = "datetime")]
+use minarrow::DatetimeArray;
 use minarrow::traits::masked_array::MaskedArray;
 use minarrow::traits::type_unions::Integer;
 use minarrow::{BooleanArray, CategoricalArray, StringArray};
-#[cfg(feature = "datetime")]
-use minarrow::DatetimeArray;
 
 use crate::models::decoders::json::backend::{JsonValueRef, MismatchAction, handle_type_mismatch};
 use crate::models::decoders::json::builder::{ColumnBuilder, TypeMismatchPolicy};
@@ -31,13 +31,13 @@ pub fn push_value_into(
     }
 
     match builder {
-        ColumnBuilder::Int32(a) => push_int(a, value, policy, row, field, |v| {
-            i32::try_from(v).ok()
-        })?,
+        ColumnBuilder::Int32(a) => {
+            push_int(a, value, policy, row, field, |v| i32::try_from(v).ok())?
+        }
         ColumnBuilder::Int64(a) => push_int(a, value, policy, row, field, |v| Some(v))?,
-        ColumnBuilder::UInt32(a) => push_uint(a, value, policy, row, field, |v| {
-            u32::try_from(v).ok()
-        })?,
+        ColumnBuilder::UInt32(a) => {
+            push_uint(a, value, policy, row, field, |v| u32::try_from(v).ok())?
+        }
         ColumnBuilder::UInt64(a) => push_uint(a, value, policy, row, field, |v| Some(v))?,
         ColumnBuilder::Float32(a) => push_float(a, value, policy, row, field, |v| v as f32)?,
         ColumnBuilder::Float64(a) => push_float(a, value, policy, row, field, |v| v)?,
@@ -45,7 +45,10 @@ pub fn push_value_into(
         ColumnBuilder::String32(a) => push_string(a, value, policy, row, field)?,
         #[cfg(feature = "large_string")]
         ColumnBuilder::String64(a) => push_string(a, value, policy, row, field)?,
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         ColumnBuilder::Categorical32(a) => push_cat(a, value, policy, row, field)?,
         #[cfg(feature = "default_categorical_8")]
         ColumnBuilder::Categorical8(a) => push_cat(a, value, policy, row, field)?,
@@ -54,25 +57,25 @@ pub fn push_value_into(
         #[cfg(feature = "extended_categorical")]
         ColumnBuilder::Categorical64(a) => push_cat(a, value, policy, row, field)?,
         #[cfg(feature = "datetime")]
-        ColumnBuilder::Date32(a) => push_date(a, value, policy, row, field, |v| i32::try_from(v).ok())?,
+        ColumnBuilder::Date32(a) => {
+            push_date(a, value, policy, row, field, |v| i32::try_from(v).ok())?
+        }
         #[cfg(feature = "datetime")]
         ColumnBuilder::Date64(a) => push_date(a, value, policy, row, field, |v| Some(v))?,
         #[cfg(feature = "extended_numeric_types")]
-        ColumnBuilder::Int8(a) => push_int(a, value, policy, row, field, |v| {
-            i8::try_from(v).ok()
-        })?,
+        ColumnBuilder::Int8(a) => push_int(a, value, policy, row, field, |v| i8::try_from(v).ok())?,
         #[cfg(feature = "extended_numeric_types")]
-        ColumnBuilder::Int16(a) => push_int(a, value, policy, row, field, |v| {
-            i16::try_from(v).ok()
-        })?,
+        ColumnBuilder::Int16(a) => {
+            push_int(a, value, policy, row, field, |v| i16::try_from(v).ok())?
+        }
         #[cfg(feature = "extended_numeric_types")]
-        ColumnBuilder::UInt8(a) => push_uint(a, value, policy, row, field, |v| {
-            u8::try_from(v).ok()
-        })?,
+        ColumnBuilder::UInt8(a) => {
+            push_uint(a, value, policy, row, field, |v| u8::try_from(v).ok())?
+        }
         #[cfg(feature = "extended_numeric_types")]
-        ColumnBuilder::UInt16(a) => push_uint(a, value, policy, row, field, |v| {
-            u16::try_from(v).ok()
-        })?,
+        ColumnBuilder::UInt16(a) => {
+            push_uint(a, value, policy, row, field, |v| u16::try_from(v).ok())?
+        }
     }
     Ok(())
 }
@@ -206,7 +209,11 @@ where
         JsonValueRef::I64(v) => v as f64,
         JsonValueRef::U64(v) => v as f64,
         JsonValueRef::Bool(b) => {
-            if b { 1.0 } else { 0.0 }
+            if b {
+                1.0
+            } else {
+                0.0
+            }
         }
         JsonValueRef::Str(s) => match policy {
             TypeMismatchPolicy::Coerce => match s.parse::<f64>() {

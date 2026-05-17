@@ -10,7 +10,7 @@ use lightstream::enums::IPCMessageProtocol;
 #[cfg(feature = "mmap")]
 use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
 use lightstream::models::writers::ipc::table_writer::TableWriter;
-use minarrow::{arr_bool, arr_f64, arr_i64, arr_u32, Field, FieldArray, Table, Vec64};
+use minarrow::{Field, FieldArray, Table, Vec64, arr_bool, arr_f64, arr_i64, arr_u32};
 use std::path::Path;
 use tempfile::tempdir;
 use tokio::fs::File;

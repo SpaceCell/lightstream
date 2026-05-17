@@ -10,8 +10,8 @@
 
 use std::io;
 
-use minarrow::{Field, Vec64};
 use minarrow::structs::shared_buffer::SharedBuffer;
+use minarrow::{Field, Vec64};
 use tokio_uring::buf::BoundedBuf;
 use tokio_uring::net::TcpStream;
 

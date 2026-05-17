@@ -67,12 +67,16 @@ impl ChunkedTableReader for ChunkedCsvReader {
         for entry in fs::read_dir(dir.as_ref())? {
             let entry = entry?;
             let path = entry.path();
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
             if !name.starts_with(&prefix) || !name.ends_with(".csv") {
                 continue;
             }
             let index_str = &name[prefix.len()..name.len() - ".csv".len()];
-            let Ok(index) = index_str.parse::<u64>() else { continue };
+            let Ok(index) = index_str.parse::<u64>() else {
+                continue;
+            };
             indexed.push((index, path));
         }
         indexed.sort_by_key(|(i, _)| *i);
@@ -82,8 +86,7 @@ impl ChunkedTableReader for ChunkedCsvReader {
     fn read_chunk(path: &Path, options: &ChunkedCsvReadOptions) -> io::Result<Table> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let mut csv =
-            CsvReader::from_reader(reader, options.decode.clone(), options.batch_size);
+        let mut csv = CsvReader::from_reader(reader, options.decode.clone(), options.batch_size);
         // A chunk file is one complete CSV; pull its single batch (or
         // accumulate batches if the chunk is large enough that the reader
         // splits internally) into one Table.
@@ -127,14 +130,16 @@ mod tests {
         let dir = std::env::temp_dir().join("lightstream_chunked_csv_test_reader");
         let _ = fs::remove_dir_all(&dir);
 
-        let mut w =
-            ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
+        let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
         w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 1, 2, 3)])))
             .unwrap();
         w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 4, 5)])))
             .unwrap();
-        w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 6, 7, 8, 9)])))
-            .unwrap();
+        w.write_chunk(&Table::new(
+            "b".into(),
+            Some(vec![fa_i32!("n", 6, 7, 8, 9)]),
+        ))
+        .unwrap();
 
         let reader = ChunkedCsvReader::open(
             &dir,
@@ -157,11 +162,13 @@ mod tests {
         let dir = std::env::temp_dir().join("lightstream_chunked_csv_par_reader");
         let _ = fs::remove_dir_all(&dir);
 
-        let mut w =
-            ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
+        let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
         for i in 0..12i32 {
-            w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!["n", i, i + 100]])))
-                .unwrap();
+            w.write_chunk(&Table::new(
+                "b".into(),
+                Some(vec![fa_i32!["n", i, i + 100]]),
+            ))
+            .unwrap();
         }
 
         let st = ChunkedCsvReader::par_read_all(
@@ -196,8 +203,7 @@ mod tests {
         let dir = std::env::temp_dir().join("lightstream_chunked_csv_test_iter");
         let _ = fs::remove_dir_all(&dir);
 
-        let mut w =
-            ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
+        let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
         w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 10)])))
             .unwrap();
         w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 20, 21)])))

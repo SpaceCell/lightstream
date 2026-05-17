@@ -217,10 +217,7 @@ fn count_byte_swar(haystack: &[u8], byte: u8) -> usize {
         // Zero-byte detection: each lane of `xor` that is zero gets its
         // high bit set in `zeros`. Standard SWAR pattern.
         let xor = bytes ^ needle;
-        let zeros = xor
-            .wrapping_sub(0x0101_0101_0101_0101)
-            & !xor
-            & 0x8080_8080_8080_8080;
+        let zeros = xor.wrapping_sub(0x0101_0101_0101_0101) & !xor & 0x8080_8080_8080_8080;
         count += zeros.count_ones() as usize;
     }
     for &b in chunks.remainder() {

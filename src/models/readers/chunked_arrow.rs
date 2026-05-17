@@ -56,12 +56,16 @@ impl ChunkedTableReader for ChunkedArrowReader {
         for entry in fs::read_dir(dir.as_ref())? {
             let entry = entry?;
             let path = entry.path();
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
             if !name.starts_with(&prefix) || !name.ends_with(".arrow") {
                 continue;
             }
             let index_str = &name[prefix.len()..name.len() - ".arrow".len()];
-            let Ok(index) = index_str.parse::<u64>() else { continue };
+            let Ok(index) = index_str.parse::<u64>() else {
+                continue;
+            };
             indexed.push((index, path));
         }
         indexed.sort_by_key(|(i, _)| *i);
@@ -111,8 +115,11 @@ mod tests {
 
         let mut w = ChunkedArrowWriter::new(&dir, "part").unwrap();
         for i in 0..16i32 {
-            w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", i, i + 100)])))
-                .unwrap();
+            w.write_chunk(&Table::new(
+                "b".into(),
+                Some(vec![fa_i32!("n", i, i + 100)]),
+            ))
+            .unwrap();
         }
 
         let st = ChunkedArrowReader::par_read_all(&dir, "part", (), None).unwrap();

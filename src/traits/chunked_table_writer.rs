@@ -66,8 +66,12 @@ pub trait ChunkedTableWriter: Sized {
     /// base, matching the layout used by both `write_chunk` and
     /// `par_write_all`.
     fn chunk_path_for(&self, index: u64) -> PathBuf {
-        self.dir()
-            .join(format!("{}-{:010}.{}", self.base(), index, Self::extension()))
+        self.dir().join(format!(
+            "{}-{:010}.{}",
+            self.base(),
+            index,
+            Self::extension()
+        ))
     }
 
     /// Encode `table` into a complete chunk file at `path`, using any
@@ -132,10 +136,7 @@ pub trait ChunkedTableWriter: Sized {
         let default_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let n_threads = threads
-            .unwrap_or(default_threads)
-            .max(1)
-            .min(tables.len());
+        let n_threads = threads.unwrap_or(default_threads).max(1).min(tables.len());
         let n_files = tables.len();
 
         // Reserve a contiguous index range off the writer's shared

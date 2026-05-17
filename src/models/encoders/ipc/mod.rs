@@ -166,7 +166,7 @@ impl IPCFrameEncoder {
         // Pad metadata as per the supplied buffer `ALIGN`.
         // Padding is computed against the running `global_offset`.
         // This is at minimum for compliance with the Arrow spec (`8-bytes`) or `64-bytes` for *SIMD*.
-        ipc_frame_meta.meta_pad = align_to::<B>(*global_offset as usize + 4 + meta.len());
+        ipc_frame_meta.meta_pad = align_to::<B>(*global_offset + 4 + meta.len());
 
         // Metadata size, including any padding
         let metadata_size =

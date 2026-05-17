@@ -43,7 +43,11 @@ impl TcpTableWriter {
     pub async fn connect(addr: impl ToSocketAddrs, schema: Vec<Field>) -> io::Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         let (_read, write) = stream.into_split();
-        let sink = TableSink64::new(TcpWriteHalf::Plain(write), schema, IPCMessageProtocol::Stream)?;
+        let sink = TableSink64::new(
+            TcpWriteHalf::Plain(write),
+            schema,
+            IPCMessageProtocol::Stream,
+        )?;
         Ok(Self { sink })
     }
 
@@ -95,7 +99,9 @@ impl TcpTableWriter {
         let (_read_half, write_half) = tokio::io::split(tls);
         let half = TcpWriteHalf::Tls(Box::new(write_half));
         let sink = match compression {
-            Some(c) => TableSink64::new_with_compression(half, schema, IPCMessageProtocol::Stream, c)?,
+            Some(c) => {
+                TableSink64::new_with_compression(half, schema, IPCMessageProtocol::Stream, c)?
+            }
             None => TableSink64::new(half, schema, IPCMessageProtocol::Stream)?,
         };
         Ok(Self { sink })

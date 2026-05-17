@@ -116,11 +116,19 @@ fn estimate_cell_width(arr: &Array, n_rows: usize) -> usize {
         },
         Array::BooleanArray(_) => 5,
         Array::TextArray(TextArray::String32(arr)) => {
-            if n_rows == 0 { 8 } else { arr.data.len() / n_rows + 4 }
+            if n_rows == 0 {
+                8
+            } else {
+                arr.data.len() / n_rows + 4
+            }
         }
         #[cfg(feature = "large_string")]
         Array::TextArray(TextArray::String64(arr)) => {
-            if n_rows == 0 { 8 } else { arr.data.len() / n_rows + 4 }
+            if n_rows == 0 {
+                8
+            } else {
+                arr.data.len() / n_rows + 4
+            }
         }
         Array::TextArray(_) => {
             // Categorical columns: rough average over dictionary entries.
@@ -159,7 +167,10 @@ pub fn encode_table_csv<W: Write>(
             Array::NumericArray(arr) => null_masks.push(arr.null_mask()),
             Array::BooleanArray(arr) => null_masks.push(arr.null_mask.as_ref()),
             Array::TextArray(TextArray::String32(arr)) => null_masks.push(arr.null_mask.as_ref()),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
                 null_masks.push(arr.null_mask.as_ref())
             }
@@ -305,7 +316,10 @@ pub fn encode_table_csv<W: Write>(
                         quote,
                     );
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 Array::TextArray(TextArray::Categorical32(arr)) => {
                     // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
@@ -396,8 +410,7 @@ pub fn encode_supertable_csv<W: Write>(
 #[cfg(test)]
 mod tests {
     use minarrow::{
-        Array, ArrowType, Bitmask, Buffer, Field, FieldArray, NumericArray, Table, TextArray,
-        vec64,
+        Array, ArrowType, Bitmask, Buffer, Field, FieldArray, NumericArray, Table, TextArray, vec64,
     };
 
     use super::*;

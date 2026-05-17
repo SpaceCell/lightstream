@@ -51,12 +51,16 @@ impl ChunkedTableReader for ChunkedParquetReader {
         for entry in fs::read_dir(dir.as_ref())? {
             let entry = entry?;
             let path = entry.path();
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
             if !name.starts_with(&prefix) || !name.ends_with(".parquet") {
                 continue;
             }
             let index_str = &name[prefix.len()..name.len() - ".parquet".len()];
-            let Ok(index) = index_str.parse::<u64>() else { continue };
+            let Ok(index) = index_str.parse::<u64>() else {
+                continue;
+            };
             indexed.push((index, path));
         }
         indexed.sort_by_key(|(i, _)| *i);
@@ -93,8 +97,11 @@ mod tests {
 
         let mut w = ChunkedParquetWriter::new(&dir, "part", Compression::None).unwrap();
         for i in 0..8i32 {
-            w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", i, i + 100)])))
-                .unwrap();
+            w.write_chunk(&Table::new(
+                "b".into(),
+                Some(vec![fa_i32!("n", i, i + 100)]),
+            ))
+            .unwrap();
         }
 
         let st = ChunkedParquetReader::par_read_all(&dir, "part", (), None).unwrap();
@@ -123,14 +130,13 @@ mod tests {
         // length prefix was parsed as garbage - causing
         // `parse_dictionary_values` to ask for ~50 MB and fail with
         // `UnexpectedEof`. This test exercises the round-trip end-to-end.
-        use std::sync::Arc;
-        use minarrow::{
-            Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, TextArray,
-            Vec64,
-            ffi::arrow_dtype::CategoricalIndexType,
-        };
         use crate::models::readers::parquet_reader::read_parquet_table;
         use crate::models::writers::parquet_writer::write_parquet_table;
+        use minarrow::{
+            Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, TextArray,
+            Vec64, ffi::arrow_dtype::CategoricalIndexType,
+        };
+        use std::sync::Arc;
 
         let n_rows = 256usize;
         let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
@@ -162,10 +168,8 @@ mod tests {
         )
         .unwrap();
 
-        let got = read_parquet_table(std::io::BufReader::new(
-            std::fs::File::open(&path).unwrap(),
-        ))
-        .expect("categorical column must round-trip via Parquet");
+        let got = read_parquet_table(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
+            .expect("categorical column must round-trip via Parquet");
         assert_eq!(got.n_rows, n_rows);
         assert_eq!(got.cols.len(), 1);
 

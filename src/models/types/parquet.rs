@@ -277,7 +277,10 @@ pub(crate) fn arrow_type_to_parquet(
                 is_signed: false,
             },
         )),
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         ArrowType::Dictionary(CategoricalIndexType::UInt32) => {
             Ok((ParquetPhysicalType::Int32, ParquetLogicalType::NoneType))
         }

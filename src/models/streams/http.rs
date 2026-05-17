@@ -30,7 +30,10 @@ pub struct H2RecvRead {
 
 impl H2RecvRead {
     pub fn new(recv: h2::RecvStream) -> Self {
-        Self { recv, leftover: Bytes::new() }
+        Self {
+            recv,
+            leftover: Bytes::new(),
+        }
     }
 }
 
@@ -78,7 +81,10 @@ pub struct H2SendWrite {
 
 impl H2SendWrite {
     pub fn new(send: h2::SendStream<Bytes>) -> Self {
-        Self { send, finished: false }
+        Self {
+            send,
+            finished: false,
+        }
     }
 }
 
@@ -115,9 +121,7 @@ impl AsyncWrite for H2SendWrite {
 
         let to_send = granted.min(buf.len());
         let chunk = Bytes::copy_from_slice(&buf[..to_send]);
-        me.send
-            .send_data(chunk, false)
-            .map_err(io::Error::other)?;
+        me.send.send_data(chunk, false).map_err(io::Error::other)?;
         Poll::Ready(Ok(to_send))
     }
 

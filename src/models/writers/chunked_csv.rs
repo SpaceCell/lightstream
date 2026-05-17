@@ -42,11 +42,7 @@ impl ChunkedCsvWriter {
     /// Create a new chunked writer rooted at `dir`. Each chunk filename
     /// will be `<base>-NNNNNNNNNN.csv` with a 10-digit zero-padded
     /// index. The directory is created if it does not exist.
-    pub fn new<P: AsRef<Path>>(
-        dir: P,
-        base: &str,
-        options: CsvEncodeOptions,
-    ) -> io::Result<Self> {
+    pub fn new<P: AsRef<Path>>(dir: P, base: &str, options: CsvEncodeOptions) -> io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
         Ok(Self {
@@ -110,10 +106,16 @@ mod tests {
             .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 0, 1, 2)])))
             .unwrap();
         let p1 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 10, 11, 12)])))
+            .write_chunk(&Table::new(
+                "b".into(),
+                Some(vec![fa_i32!("n", 10, 11, 12)]),
+            ))
             .unwrap();
         let p2 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 20, 21, 22)])))
+            .write_chunk(&Table::new(
+                "b".into(),
+                Some(vec![fa_i32!("n", 20, 21, 22)]),
+            ))
             .unwrap();
 
         assert_eq!(p0.file_name().unwrap(), "part-0000000000.csv");
@@ -149,13 +151,9 @@ mod tests {
         }
         assert_eq!(w.batches_written(), 10);
 
-        let st = ChunkedCsvReader::par_read_all(
-            &dir,
-            "part",
-            ChunkedCsvReadOptions::default(),
-            None,
-        )
-        .unwrap();
+        let st =
+            ChunkedCsvReader::par_read_all(&dir, "part", ChunkedCsvReadOptions::default(), None)
+                .unwrap();
         assert_eq!(st.batches.len(), 10);
 
         fs::remove_dir_all(&dir).ok();

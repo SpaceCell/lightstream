@@ -152,8 +152,7 @@ pub fn write_tables_to_file_sync(
     schema: Vec<Field>,
 ) -> io::Result<()> {
     let file = std::fs::File::create(file_path)?;
-    let mut writer =
-        SyncTableWriter::<_, Vec64<u8>>::new(file, schema, IPCMessageProtocol::File);
+    let mut writer = SyncTableWriter::<_, Vec64<u8>>::new(file, schema, IPCMessageProtocol::File);
     for table in tables {
         writer.write_table(table)?;
     }
@@ -223,11 +222,8 @@ mod tests {
         let schema: Vec<Field> = t1.cols.iter().map(|c| (*c.field).clone()).collect();
 
         let mut buf: Vec<u8> = Vec::new();
-        let mut writer = SyncTableWriter::<_, Vec64<u8>>::new(
-            &mut buf,
-            schema,
-            IPCMessageProtocol::Stream,
-        );
+        let mut writer =
+            SyncTableWriter::<_, Vec64<u8>>::new(&mut buf, schema, IPCMessageProtocol::Stream);
         writer.write_table(&t1).unwrap();
         writer.write_table(&t2).unwrap();
         writer.finish().unwrap();

@@ -81,11 +81,10 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
             let batch = batch?;
             tables.push(batch);
             count += 1;
-            if let Some(max) = n {
-                if count >= max {
+            if let Some(max) = n
+                && count >= max {
                     break;
                 }
-            }
         }
         Ok(tables)
     }
@@ -110,11 +109,10 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
             n_rows += batch.n_rows;
             batches.push(Arc::new(batch));
             count += 1;
-            if let Some(max) = n {
-                if count >= max {
+            if let Some(max) = n
+                && count >= max {
                     break;
                 }
-            }
         }
         Ok(SuperTable {
             batches,
@@ -176,7 +174,7 @@ fn combine_batches_to_table(batches: Vec<Table>, name: Option<String>) -> io::Re
     // Concatenate by column
     let cols = combined_cols
         .into_iter()
-        .map(|col_batches| concat_field_arrays(col_batches))
+        .map(concat_field_arrays)
         .collect::<Result<Vec<FieldArray>, io::Error>>()?;
 
     Ok(Table { cols, n_rows, name })
