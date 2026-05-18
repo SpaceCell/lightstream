@@ -34,6 +34,13 @@ use crate::models::sinks::table_sink::TableSink64;
 use crate::models::streams::websocket::WsWrite;
 use crate::traits::transport_writer::IPCTransportWriter;
 
+/// Concrete write-half type carried by [`WebSocketTableWriter`]. Boxing
+/// the underlying [`tokio::io::AsyncWrite`] lets [`Self::connect`],
+/// [`Self::connect_tls`] and [`Self::from_halves`] all return the same
+/// struct type despite handing in different concrete write halves
+/// (plaintext TCP, rustls TLS, or server-side accepted streams).
+type WsAsyncWrite = Box<dyn tokio::io::AsyncWrite + Send + Sync + Unpin + 'static>;
+
 /// Async Arrow IPC writer over a WebSocket connection.
 ///
 /// Connects to a remote WebSocket endpoint and writes Arrow IPC stream
@@ -42,9 +49,7 @@ use crate::traits::transport_writer::IPCTransportWriter;
 /// Uses `WsWrite` for WebSocket frame encoding after the tungstenite
 /// handshake. Vec64 for 64-byte SIMD aligned encoding.
 pub struct WebSocketTableWriter {
-    sink: TableSink64<
-        WsWrite<tokio::io::WriteHalf<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
-    >,
+    sink: TableSink64<WsWrite<WsAsyncWrite>>,
 }
 
 impl WebSocketTableWriter {
@@ -56,36 +61,25 @@ impl WebSocketTableWriter {
     ///
     /// The read half is dropped - use the Lightstream connection for
     /// bidirectional communication.
-    pub async fn connect(url: &str, schema: Vec<Field>) -> io::Result<Self> {
-        let (ws_stream, _response) = connect_async(url)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let raw = ws_stream.into_inner();
-        let (_read_half, write_half) = tokio::io::split(raw);
-        let (_shared, ws_write) = WsWrite::new(write_half);
-        let sink = TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream)?;
+    pub async fn connect(
+        url: &str,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let ws_write = Self::plain_ws_write(url).await?;
+        let sink = TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 
-    /// Connect with optional compression.
-    pub async fn connect_with_compression(
-        url: &str,
-        schema: Vec<Field>,
-        compression: Compression,
-    ) -> io::Result<Self> {
+    async fn plain_ws_write(url: &str) -> io::Result<WsWrite<WsAsyncWrite>> {
         let (ws_stream, _response) = connect_async(url)
             .await
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
         let raw = ws_stream.into_inner();
         let (_read_half, write_half) = tokio::io::split(raw);
-        let (_shared, ws_write) = WsWrite::new(write_half);
-        let sink = TableSink64::new_with_compression(
-            ws_write,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
-        Ok(Self { sink })
+        let boxed: WsAsyncWrite = Box::new(write_half);
+        let (_shared, ws_write) = WsWrite::new(boxed);
+        Ok(ws_write)
     }
 
     /// Connect to a `wss://` endpoint, performing the TLS handshake using
@@ -102,12 +96,21 @@ impl WebSocketTableWriter {
         schema: Vec<Field>,
         compression: Option<Compression>,
     ) -> io::Result<Self> {
+        let ws_write = Self::tls_ws_write(url, config).await?;
+        let sink = TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream, compression)?;
+        Ok(Self { sink })
+    }
+
+    #[cfg(feature = "tls")]
+    async fn tls_ws_write(
+        url: &str,
+        config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
+    ) -> io::Result<WsWrite<WsAsyncWrite>> {
         use tokio_tungstenite::{Connector, connect_async_tls_with_config};
         let connector = Connector::Rustls(config);
         // tokio-tungstenite's positional args: tungstenite WebSocketConfig
-        // override (None = library defaults: max frame size, accept-unmasked
-        // policy, etc.) and a Nagle disable flag (false = leave Nagle as the
-        // socket's default).
+        // override (None = library defaults) and a Nagle disable flag (false
+        // = leave the socket's default).
         let ws_config: Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig> = None;
         let disable_nagle = false;
         let (ws_stream, _response) =
@@ -116,13 +119,31 @@ impl WebSocketTableWriter {
                 .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
         let raw = ws_stream.into_inner();
         let (_read_half, write_half) = tokio::io::split(raw);
-        let (_shared, ws_write) = WsWrite::new(write_half);
-        let sink = match compression {
-            Some(c) => {
-                TableSink64::new_with_compression(ws_write, schema, IPCMessageProtocol::Stream, c)?
-            }
-            None => TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream)?,
-        };
+        let boxed: WsAsyncWrite = Box::new(write_half);
+        let (_shared, ws_write) = WsWrite::new(boxed);
+        Ok(ws_write)
+    }
+
+    /// Build a table writer from the raw post-handshake read and write
+    /// halves of a WebSocket-upgraded TCP/TLS stream. The read half is
+    /// retained inside a shared `WsWrite` so the writer can answer
+    /// inbound ping frames with pongs on the same socket.
+    ///
+    /// Symmetric to
+    /// [`WebSocketTableReader::from_halves`](crate::models::readers::websocket::WebSocketTableReader::from_halves).
+    pub fn from_halves<R, W>(
+        _read_half: R,
+        write_half: W,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
+    {
+        let boxed: WsAsyncWrite = Box::new(write_half);
+        let (_shared, ws_write) = WsWrite::new(boxed);
+        let sink = TableSink64::new(ws_write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

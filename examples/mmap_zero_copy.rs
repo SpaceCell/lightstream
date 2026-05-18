@@ -82,7 +82,7 @@ async fn write_arrow_file(
         println!("  Creating file and writer...");
         let file = File::create(file_path).await?;
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None)?;
 
         println!("  Starting write_all_tables...");
         writer.write_all_tables(vec![table]).await?;

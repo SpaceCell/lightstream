@@ -85,7 +85,7 @@ async fn test_mmap_creates_shared_buffers() {
     {
         let file = File::create(file_path).await.unwrap();
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File).unwrap();
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None).unwrap();
         writer.write_all_tables(vec![table]).await.unwrap();
     }
 
@@ -185,7 +185,7 @@ async fn test_mmap_alignment_with_shared_buffers() {
     {
         let file = File::create(file_path).await.unwrap();
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File).unwrap();
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None).unwrap();
         writer.write_all_tables(vec![table]).await.unwrap();
     }
 

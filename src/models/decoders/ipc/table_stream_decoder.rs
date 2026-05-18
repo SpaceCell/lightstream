@@ -20,7 +20,6 @@ use minarrow::*;
 use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::arrow::message::org::apache::arrow::flatbuf as fb;
-use crate::compression::Compression;
 use crate::enums::{BatchState, IPCMessageProtocol};
 use crate::models::codecs::ipc::ArrowIpcCodec;
 use crate::models::decoders::ipc::{ArrowIPCFrameDecoder, IPCFrameHeader};
@@ -87,7 +86,7 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
             eof: false,
             state: BatchState::NeedSchema,
             phase: Phase::Metadata,
-            codec: ArrowIpcCodec::new(Vec::new(), protocol, Compression::None, limits),
+            codec: ArrowIpcCodec::new(Vec::new(), protocol, None, limits),
             arena: StreamArena::new(),
         }
     }

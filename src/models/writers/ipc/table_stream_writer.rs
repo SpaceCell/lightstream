@@ -88,28 +88,16 @@ impl<B> TableStreamWriter<B>
 where
     B: StreamBuffer + Unpin + 'static,
 {
-    /// Create a new streaming Arrow Table writer with the given schema and protocol.
-    pub fn new(schema: Vec<Field>, protocol: IPCMessageProtocol) -> Self {
-        Self {
-            encoder: TableStreamEncoder::new(schema, protocol),
-            out_frames: VecDeque::new(),
-            finished: false,
-            global_offset: 0,
-            blocks_record_batches: Vec::new(),
-            blocks_dictionaries: Vec::new(),
-            frame_offsets: Vec::new(),
-            total_len_offset: 0,
-        }
-    }
-
-    /// Create a new streaming Arrow Table writer with compression.
-    pub fn new_with_compression(
+    /// Create a new streaming Arrow Table writer. Pass `None` for
+    /// `compression` to write uncompressed batches; `Some(codec)`
+    /// compresses every record-batch body.
+    pub fn new(
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> Self {
         Self {
-            encoder: TableStreamEncoder::new_with_compression(schema, protocol, compression),
+            encoder: TableStreamEncoder::new(schema, protocol, compression),
             out_frames: VecDeque::new(),
             finished: false,
             global_offset: 0,
@@ -305,7 +293,7 @@ where
     W: AsyncWrite + Unpin + Send + Sync,
     B: StreamBuffer + Unpin,
 {
-    let mut writer = TableStreamWriter::<B>::new(schema, protocol);
+    let mut writer = TableStreamWriter::<B>::new(schema, protocol, None);
 
     for table in tables {
         for (col_idx, col) in table.cols.iter().enumerate() {
@@ -341,7 +329,7 @@ where
     W: AsyncWrite + Unpin + Send + Sync,
     B: StreamBuffer + Unpin,
 {
-    let mut writer = TableStreamWriter::<B>::new(schema, protocol);
+    let mut writer = TableStreamWriter::<B>::new(schema, protocol, None);
 
     // Register dictionaries (if any categorical columns present)
     for (col_idx, col) in table.cols.iter().enumerate() {
@@ -380,7 +368,7 @@ mod tests {
     fn test_table_stream_writer_schema_and_finish() {
         let schema = all_types_schema();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         assert_eq!(writer.schema(), &schema[..]);
         assert!(!writer.is_finished());
         writer.finish().unwrap();
@@ -393,7 +381,7 @@ mod tests {
         let table = test_table();
 
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table.cols.iter().enumerate() {
             if let Some(values) = dict_values(col) {
@@ -423,7 +411,7 @@ mod tests {
         table2.name = "another".into();
 
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table1.cols.iter().enumerate() {
             if let Some(values) = dict_values(col) {
@@ -445,7 +433,7 @@ mod tests {
     #[test]
     fn test_next_frame_returns_none_when_empty() {
         let schema = all_types_schema();
-        let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
+        let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
         assert!(writer.next_frame().is_none());
         writer.finish().unwrap();
         assert!(writer.next_frame().is_none());
@@ -456,7 +444,7 @@ mod tests {
         let schema = all_types_schema();
         let mut bad_table = test_table();
         bad_table.cols.pop(); // Now schema and columns mismatch
-        let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
+        let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
         let err = writer.write(&bad_table).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
@@ -470,7 +458,7 @@ mod tests {
     //     schema.push(dict_col.field.as_ref().clone());
     //     table.cols.push(dict_col.clone());
 
-    //     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+    //     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
     //     // Register dictionary explicitly
     //     writer.register_dictionary((table.cols.len() - 1) as i64, dict_col.array.as_dict_values().unwrap());
     //     writer.write(&table).unwrap();
@@ -485,7 +473,7 @@ mod tests {
         let schema = all_types_schema();
         let table = test_table();
 
-        let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
+        let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table.cols.iter().enumerate() {
             if let Some(values) = dict_values(col) {

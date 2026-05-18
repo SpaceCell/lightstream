@@ -33,27 +33,17 @@ pub struct QuicTableWriter {
 
 impl QuicTableWriter {
     /// Wrap a QUIC send stream and prepare to write Arrow IPC tables.
+    /// Pass `None` for `compression` to write uncompressed batches.
     ///
     /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
-    pub fn new(send: quinn::SendStream, schema: Vec<Field>) -> io::Result<Self> {
-        let sink = TableSink64::new(send, schema, IPCMessageProtocol::Stream)?;
-        Ok(Self { sink })
-    }
-
-    /// Wrap a QUIC send stream with optional compression.
-    pub fn new_with_compression(
+    pub fn new(
         send: quinn::SendStream,
         schema: Vec<Field>,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> io::Result<Self> {
-        let sink = TableSink64::new_with_compression(
-            send,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink = TableSink64::new(send, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

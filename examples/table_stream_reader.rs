@@ -93,7 +93,7 @@ async fn write_stream(
     protocol: IPCMessageProtocol,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let schema: Vec<Field> = tables[0].schema().iter().map(|f| (**f).clone()).collect();
-    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, protocol);
+    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, protocol, None);
     for table in tables {
         writer.write(table)?;
     }

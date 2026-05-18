@@ -36,9 +36,12 @@ use crate::error::IoError;
 use crate::arrow::message::org::apache::arrow::flatbuf::CompressionType;
 
 /// Supported compression codecs.
+///
+/// Variants are feature-gated; with neither `zstd` nor `snappy` enabled
+/// this enum is uninhabited, meaning the only `Option<Compression>` a
+/// caller can construct is `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
-    None,
     #[cfg(feature = "snappy")]
     Snappy,
     #[cfg(feature = "zstd")]
@@ -46,15 +49,12 @@ pub enum Compression {
 }
 
 impl Compression {
-    /// Convert to the Arrow IPC BodyCompression type.
-    ///
-    /// Returns `None` for uncompressed. Returns an error for codecs
-    /// not supported by the Arrow IPC spec.
-    pub fn to_arrow_ipc_type(self) -> io::Result<Option<CompressionType>> {
+    /// Convert to the Arrow IPC BodyCompression type. Errors for codecs
+    /// outside the Arrow IPC spec.
+    pub fn to_arrow_ipc_type(self) -> io::Result<CompressionType> {
         match self {
-            Compression::None => Ok(None),
             #[cfg(feature = "zstd")]
-            Compression::Zstd => Ok(Some(CompressionType::ZSTD)),
+            Compression::Zstd => Ok(CompressionType::ZSTD),
             #[cfg(feature = "snappy")]
             Compression::Snappy => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -72,10 +72,9 @@ impl Compression {
 /// - `codec`: Compression algorithm to apply.
 ///
 /// # Errors
-/// Returns [`IoError::Compression`] if codec fails or is not enabled.
+/// Returns [`IoError::Compression`] if codec fails.
 pub fn compress(input: &[u8], codec: Compression) -> Result<Vec<u8>, IoError> {
     match codec {
-        Compression::None => Ok(input.to_vec()),
         #[cfg(feature = "snappy")]
         Compression::Snappy => snappy_compress(input),
         #[cfg(feature = "zstd")]
@@ -116,7 +115,6 @@ fn zstd_compress(input: &[u8]) -> Result<Vec<u8>, IoError> {
 /// Returns [`IoError::Compression`] on failure or if codec not enabled.
 pub fn decompress(input: &[u8], codec: Compression) -> Result<Vec<u8>, IoError> {
     match codec {
-        Compression::None => Ok(input.to_vec()),
         #[cfg(feature = "snappy")]
         Compression::Snappy => snappy_decompress(input),
         #[cfg(feature = "zstd")]
@@ -139,13 +137,14 @@ fn zstd_decompress(input: &[u8]) -> Result<Vec<u8>, IoError> {
         .map_err(|e| IoError::Compression(format!("Zstd decompression failed: {e}")))
 }
 
-/// Returns the codec as a Parquet-format string identifier.
-pub fn parquet_codec_name(codec: Compression) -> &'static str {
+/// Returns the codec as a Parquet-format string identifier. `None` is
+/// the uncompressed case.
+pub fn parquet_codec_name(codec: Option<Compression>) -> &'static str {
     match codec {
-        Compression::None => "UNCOMPRESSED",
+        None => "UNCOMPRESSED",
         #[cfg(feature = "snappy")]
-        Compression::Snappy => "SNAPPY",
+        Some(Compression::Snappy) => "SNAPPY",
         #[cfg(feature = "zstd")]
-        Compression::Zstd => "ZSTD",
+        Some(Compression::Zstd) => "ZSTD",
     }
 }

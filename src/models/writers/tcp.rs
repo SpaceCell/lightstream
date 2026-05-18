@@ -36,30 +36,19 @@ pub struct TcpTableWriter {
 
 impl TcpTableWriter {
     /// Connect to a TCP server and prepare to write Arrow IPC tables.
+    /// Pass `None` for `compression` to write uncompressed batches.
     ///
     /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
-    pub async fn connect(addr: impl ToSocketAddrs, schema: Vec<Field>) -> io::Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        let (_read, write) = stream.into_split();
-        let sink = TableSink64::new(
-            TcpWriteHalf::Plain(write),
-            schema,
-            IPCMessageProtocol::Stream,
-        )?;
-        Ok(Self { sink })
-    }
-
-    /// Connect with optional compression.
-    pub async fn connect_with_compression(
+    pub async fn connect(
         addr: impl ToSocketAddrs,
         schema: Vec<Field>,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> io::Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         let (_read, write) = stream.into_split();
-        let sink = TableSink64::new_with_compression(
+        let sink = TableSink64::new(
             TcpWriteHalf::Plain(write),
             schema,
             IPCMessageProtocol::Stream,
@@ -69,11 +58,16 @@ impl TcpTableWriter {
     }
 
     /// Wrap an existing TCP write half as a table writer.
-    pub fn from_write_half(write_half: OwnedWriteHalf, schema: Vec<Field>) -> io::Result<Self> {
+    pub fn from_write_half(
+        write_half: OwnedWriteHalf,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
         let sink = TableSink64::new(
             TcpWriteHalf::Plain(write_half),
             schema,
             IPCMessageProtocol::Stream,
+            compression,
         )?;
         Ok(Self { sink })
     }
@@ -92,19 +86,22 @@ impl TcpTableWriter {
         schema: Vec<Field>,
         compression: Option<Compression>,
     ) -> io::Result<Self> {
-        use crate::models::streams::tcp::TcpWriteHalf;
+        let half = Self::tls_write_half(addr, server_name, config).await?;
+        let sink = TableSink64::new(half, schema, IPCMessageProtocol::Stream, compression)?;
+        Ok(Self { sink })
+    }
+
+    #[cfg(feature = "tls")]
+    async fn tls_write_half(
+        addr: impl ToSocketAddrs,
+        server_name: rustls_pki_types::ServerName<'static>,
+        config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
+    ) -> io::Result<TcpWriteHalf> {
         let tcp = TcpStream::connect(addr).await?;
         let connector = tokio_rustls::TlsConnector::from(config);
         let tls = connector.connect(server_name, tcp).await?;
         let (_read_half, write_half) = tokio::io::split(tls);
-        let half = TcpWriteHalf::Tls(Box::new(write_half));
-        let sink = match compression {
-            Some(c) => {
-                TableSink64::new_with_compression(half, schema, IPCMessageProtocol::Stream, c)?
-            }
-            None => TableSink64::new(half, schema, IPCMessageProtocol::Stream)?,
-        };
-        Ok(Self { sink })
+        Ok(TcpWriteHalf::Tls(Box::new(write_half)))
     }
 }
 

@@ -60,7 +60,7 @@ impl StdinTableReader {
     /// Uses `IPCMessageProtocol::Stream` and a 64 KiB chunk size.
     pub fn new() -> Self {
         let stream = from_stdin_default();
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::InMemory.chunk_size(), IPCMessageProtocol::Stream);
         Self { inner }
     }
 
@@ -73,7 +73,7 @@ impl StdinTableReader {
 
     /// Wrap an existing `StdinByteStream` as a table reader.
     pub fn from_stream(stream: StdinByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::InMemory.chunk_size(), protocol);
         Self { inner }
     }
 }

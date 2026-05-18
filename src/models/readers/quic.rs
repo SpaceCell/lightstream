@@ -51,7 +51,7 @@ impl QuicTableReader {
     /// The default chunk size is `BufferChunkSize::WebTransport` (64 KiB).
     pub fn from_recv(recv: quinn::RecvStream) -> Self {
         let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::WebTransport.chunk_size(), IPCMessageProtocol::Stream);
         Self { inner }
     }
 
@@ -68,7 +68,7 @@ impl QuicTableReader {
 
     /// Wrap an existing `QuicByteStream` as a table reader.
     pub fn from_stream(stream: QuicByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::WebTransport.chunk_size(), protocol);
         Self { inner }
     }
 }

@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let raw = ws_stream.into_inner();
         let (read_half, write_half) = tokio::io::split(raw);
-        let reader = WebSocketTableReader::from_split_halves(
+        let reader = WebSocketTableReader::from_halves(
             read_half,
             write_half,
             IPCMessageProtocol::Stream,
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Client: connect via WebSocket and write ---
     let url = format!("ws://{}", addr);
-    let mut writer = WebSocketTableWriter::connect(&url, schema).await?;
+    let mut writer = WebSocketTableWriter::connect(&url, schema, None).await?;
     println!("Client WebSocket connected to {}", url);
 
     writer.write_table(make_table("batch_1", 5)).await?;

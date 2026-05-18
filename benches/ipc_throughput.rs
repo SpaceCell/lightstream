@@ -89,6 +89,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                     let mut writer = lightstream::models::writers::tcp::TcpTableWriter::connect(
                         addr,
                         write_schema,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -143,6 +144,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                     let mut writer = lightstream::models::writers::uds::UdsTableWriter::connect(
                         &path,
                         write_schema,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -196,6 +198,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                         lightstream::models::writers::websocket::WebSocketTableWriter::connect(
                             &url,
                             write_schema,
+                            None,
                         )
                         .await
                         .unwrap();
@@ -282,6 +285,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                     let mut writer = lightstream::models::writers::quic::QuicTableWriter::new(
                         send,
                         write_schema,
+                        None,
                     )
                     .unwrap();
                     writer.register_dictionary(
@@ -350,6 +354,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                         lightstream::models::writers::webtransport::WebTransportTableWriter::new(
                             send,
                             write_schema,
+                            None,
                         )
                         .unwrap();
                     writer.register_dictionary(

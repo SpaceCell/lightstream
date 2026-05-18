@@ -52,7 +52,7 @@ impl TcpTableReader {
     /// Uses 8-byte alignment for compatibility with all Arrow producers.
     pub async fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
         let stream = TcpByteStream::connect(addr).await?;
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), IPCMessageProtocol::Stream);
         Ok(Self { inner })
     }
 
@@ -69,15 +69,16 @@ impl TcpTableReader {
 
     /// Wrap an existing `TcpByteStream` as a table reader.
     pub fn from_stream(stream: TcpByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), protocol);
         Self { inner }
     }
 
     /// Connect to a TCP server, upgrade the channel to TLS via the supplied
     /// `rustls::ClientConfig`, and return a table reader over the encrypted
-    /// channel. Pass `None` for `chunk` to use `BufferChunkSize::Http`.
-    /// Protocol is always `IPCMessageProtocol::Stream` - TCP is unbounded
-    /// by nature.
+    /// channel. Uses `BufferChunkSize::Http` (64 KiB) and protocol
+    /// `IPCMessageProtocol::Stream` - TCP is unbounded by nature. Callers
+    /// that need different chunk sizing should build a `TcpByteStream`
+    /// directly and hand it to [`Self::from_stream`].
     ///
     /// No default root store is bundled - the caller supplies one through
     /// their `ClientConfig`.
@@ -86,18 +87,13 @@ impl TcpTableReader {
         addr: impl tokio::net::ToSocketAddrs,
         server_name: rustls_pki_types::ServerName<'static>,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
-        chunk: Option<BufferChunkSize>,
     ) -> io::Result<Self> {
-        let stream = crate::models::streams::tcp::TcpByteStream::connect_tls(
-            addr,
-            server_name,
-            config,
-            chunk,
-        )
-        .await?;
+        let stream =
+            crate::models::streams::tcp::TcpByteStream::connect_tls(addr, server_name, config)
+                .await?;
         let inner = TableReader::<Vec64<u8>>::new(
             stream,
-            chunk.unwrap_or(BufferChunkSize::Http).chunk_size(),
+            BufferChunkSize::Http.chunk_size(),
             IPCMessageProtocol::Stream,
         );
         Ok(Self { inner })

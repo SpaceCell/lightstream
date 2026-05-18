@@ -28,7 +28,7 @@ use crate::traits::chunked_table_writer::ChunkedTableWriter;
 pub struct ChunkedParquetWriter {
     dir: PathBuf,
     base: String,
-    compression: Compression,
+    compression: Option<Compression>,
     next_index: AtomicU64,
 }
 
@@ -39,7 +39,7 @@ impl ChunkedParquetWriter {
     pub fn new<P: AsRef<Path>>(
         dir: P,
         base: &str,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> Result<Self, IoError> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
@@ -97,7 +97,7 @@ mod tests {
     fn writes_indexed_chunk_files_and_round_trips() {
         let dir = std::env::temp_dir().join("lightstream_chunked_parquet_test_writer");
         let _ = fs::remove_dir_all(&dir);
-        let mut w = ChunkedParquetWriter::new(&dir, "part", Compression::None).unwrap();
+        let mut w = ChunkedParquetWriter::new(&dir, "part", None).unwrap();
         let p0 = w
             .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 1, 2, 3)])))
             .unwrap();
@@ -132,7 +132,7 @@ mod tests {
         let dir = std::env::temp_dir().join("lightstream_chunked_parquet_par_writer");
         let _ = fs::remove_dir_all(&dir);
 
-        let w = ChunkedParquetWriter::new(&dir, "part", Compression::None).unwrap();
+        let w = ChunkedParquetWriter::new(&dir, "part", None).unwrap();
         let tables: Vec<Table> = (0..6i32)
             .map(|i| Table::new("b".into(), Some(vec![fa_i32!("n", i, i + 100)])))
             .collect();

@@ -142,7 +142,7 @@ async fn test_ws_single_table_roundtrip() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let mut writer = WebSocketTableWriter::connect(&url, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(
@@ -177,7 +177,7 @@ async fn test_ws_multi_table_roundtrip() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let mut writer = WebSocketTableWriter::connect(&url, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(
@@ -216,7 +216,7 @@ async fn test_ws_stream_trait() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let mut writer = WebSocketTableWriter::connect(&url, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(
@@ -256,7 +256,7 @@ async fn test_ws_read_to_super_table() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = WebSocketTableWriter::connect(&url, write_schema)
+        let mut writer = WebSocketTableWriter::connect(&url, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(

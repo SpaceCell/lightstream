@@ -68,34 +68,17 @@ where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
     B: StreamBuffer + std::fmt::Debug + Unpin + 'static,
 {
-    /// Create a new generic Arrow Table writer.
-    pub fn new(sink: W, schema: Vec<Field>, protocol: IPCMessageProtocol) -> io::Result<Self> {
-        let file_writer = if protocol == IPCMessageProtocol::File {
-            Some(TableStreamWriter::new(schema.clone(), protocol))
-        } else {
-            None
-        };
-        Ok(Self {
-            codec: ArrowIpcCodec::new(schema.clone(), protocol, Compression::None, None),
-            schema,
-            destination: sink,
-            protocol,
-            finished: false,
-            frame_buf: None,
-            frame_pos: 0,
-            encode_buf: B::with_capacity(0),
-            file_writer,
-        })
-    }
-
-    pub fn new_with_compression(
+    /// Create a new generic Arrow Table writer. Pass `None` for
+    /// `compression` to write uncompressed batches; `Some(codec)` compresses
+    /// every record-batch body.
+    pub fn new(
         sink: W,
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> io::Result<Self> {
         let file_writer = if protocol == IPCMessageProtocol::File {
-            Some(TableStreamWriter::new(schema.clone(), protocol))
+            Some(TableStreamWriter::new(schema.clone(), protocol, compression))
         } else {
             None
         };

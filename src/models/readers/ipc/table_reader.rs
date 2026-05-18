@@ -275,7 +275,7 @@ mod tests {
         println!("Schema:");
         println!("{:?}", schema);
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -306,7 +306,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         // three batches
         writer.write(&table).unwrap();
@@ -334,7 +334,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -365,7 +365,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -394,7 +394,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.finish().unwrap();
@@ -437,7 +437,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.write(&table).unwrap();
@@ -467,7 +467,7 @@ mod tests {
         let table = make_all_types_table();
         let schema = make_schema_all_types();
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         writer.write(&table).unwrap();
         writer.finish().unwrap();

@@ -120,7 +120,7 @@ async fn open_reader(path: &Path) -> Result<TableReader<Vec64<u8>>, Box<dyn std:
 
 async fn write_stream(tables: &[Table], path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let schema: Vec<Field> = tables[0].schema().iter().map(|f| (**f).clone()).collect();
-    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
+    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
     for table in tables {
         writer.write(table)?;
     }

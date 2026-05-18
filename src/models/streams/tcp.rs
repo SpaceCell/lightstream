@@ -131,24 +131,23 @@ impl TcpByteStream {
 
     /// Connect, upgrade the channel to TLS via the supplied
     /// `rustls::ClientConfig`, and return a byte stream over the encrypted
-    /// channel. The caller controls verifier and root store through their
-    /// `ClientConfig`; no default root store is bundled. Pass `None` for
-    /// `chunk` to use `BufferChunkSize::Http` (64 KiB).
+    /// channel. Uses `BufferChunkSize::Http` (64 KiB). Callers needing a
+    /// different chunk size should hand an already-upgraded read half to
+    /// [`Self::from_tls_read_half`].
+    ///
+    /// The caller controls verifier and root store through their
+    /// `ClientConfig`; no default root store is bundled.
     #[cfg(feature = "tls")]
     pub async fn connect_tls(
         addr: impl ToSocketAddrs,
         server_name: rustls_pki_types::ServerName<'static>,
         config: Arc<tokio_rustls::rustls::ClientConfig>,
-        chunk: Option<BufferChunkSize>,
     ) -> io::Result<Self> {
         let tcp = TcpStream::connect(addr).await?;
         let connector = tokio_rustls::TlsConnector::from(config);
         let tls = connector.connect(server_name, tcp).await?;
         let (read_half, _write_half) = tokio::io::split(tls);
-        Ok(Self::from_tls_read_half(
-            read_half,
-            chunk.unwrap_or(BufferChunkSize::Http),
-        ))
+        Ok(Self::from_tls_read_half(read_half, BufferChunkSize::Http))
     }
 
     /// Wrap an already-upgraded TLS read half as a byte stream.

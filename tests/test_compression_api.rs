@@ -48,7 +48,7 @@ async fn test_compression_api_compilation() {
     {
         let file = File::create(file_path).await.unwrap();
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File).unwrap();
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None).unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
     }
 

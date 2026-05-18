@@ -54,16 +54,17 @@ pub struct ArrowIpcCodec<B: StreamBuffer> {
 
 impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
     /// Create a new codec for the given schema, protocol, and compression.
+    /// Pass `None` for `compression` to write uncompressed batches.
     /// Pass `None` for `limits` to apply the default per-decode resource caps,
     /// or `Some(...)` to override them.
     pub fn new(
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
-        compression: Compression,
+        compression: Option<Compression>,
         limits: Option<DecodeLimits>,
     ) -> Self {
         Self {
-            encoder: TableStreamEncoder::new_with_compression(schema, protocol, compression),
+            encoder: TableStreamEncoder::new(schema, protocol, compression),
             fields: Vec::new(),
             dicts: HashMap::new(),
             shared_cache: None,

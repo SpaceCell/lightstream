@@ -36,37 +36,29 @@ pub struct UdsTableWriter {
 
 impl UdsTableWriter {
     /// Connect to a UDS server and prepare to write Arrow IPC tables.
+    /// Pass `None` for `compression` to write uncompressed batches.
     ///
     /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
-    pub async fn connect(path: impl AsRef<Path>, schema: Vec<Field>) -> io::Result<Self> {
-        let stream = UnixStream::connect(path).await?;
-        let (_read, write) = stream.into_split();
-        let sink = TableSink64::new(write, schema, IPCMessageProtocol::Stream)?;
-        Ok(Self { sink })
-    }
-
-    /// Connect with optional compression.
-    pub async fn connect_with_compression(
+    pub async fn connect(
         path: impl AsRef<Path>,
         schema: Vec<Field>,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> io::Result<Self> {
         let stream = UnixStream::connect(path).await?;
         let (_read, write) = stream.into_split();
-        let sink = TableSink64::new_with_compression(
-            write,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink = TableSink64::new(write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 
     /// Wrap an existing UDS write half as a table writer.
-    pub fn from_write_half(write_half: OwnedWriteHalf, schema: Vec<Field>) -> io::Result<Self> {
-        let sink = TableSink64::new(write_half, schema, IPCMessageProtocol::Stream)?;
+    pub fn from_write_half(
+        write_half: OwnedWriteHalf,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let sink = TableSink64::new(write_half, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

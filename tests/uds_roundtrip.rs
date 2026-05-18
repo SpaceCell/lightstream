@@ -131,7 +131,7 @@ async fn test_uds_single_table_roundtrip() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(
@@ -213,7 +213,7 @@ async fn test_uds_multi_table_roundtrip() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(
@@ -256,7 +256,7 @@ async fn test_uds_stream_trait() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(
@@ -300,7 +300,7 @@ async fn test_uds_read_to_super_table() {
     let write_schema = schema.clone();
     let writer_sock = sock_path.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema)
+        let mut writer = UdsTableWriter::connect(&writer_sock, write_schema, None)
             .await
             .unwrap();
         writer.register_dictionary(

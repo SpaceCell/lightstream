@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open a bidirectional stream to the server
     let (send_stream, _recv_stream) = connection.open_bi().await?;
 
-    let mut writer = QuicTableWriter::new(send_stream, schema)?;
+    let mut writer = QuicTableWriter::new(send_stream, schema, None)?;
 
     writer.write_table(make_table("batch_1", 5)).await?;
     writer.write_table(make_table("batch_2", 3)).await?;

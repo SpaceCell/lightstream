@@ -52,7 +52,7 @@ impl UdsTableReader {
     /// Uses 8-byte alignment for compatibility with all Arrow producers.
     pub async fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
         let stream = UdsByteStream::connect(path).await?;
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), IPCMessageProtocol::Stream);
         Ok(Self { inner })
     }
 
@@ -69,7 +69,7 @@ impl UdsTableReader {
 
     /// Wrap an existing `UdsByteStream` as a table reader.
     pub fn from_stream(stream: UdsByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), protocol);
         Self { inner }
     }
 }

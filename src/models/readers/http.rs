@@ -35,7 +35,7 @@ use http::{Request, Uri};
 use minarrow::{Field, SuperTable, Table, Vec64};
 use tokio::net::TcpStream;
 
-use crate::enums::IPCMessageProtocol;
+use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
 use crate::models::streams::http::{H2RecvRead, HttpByteStream};
 use crate::traits::transport_reader::IPCTransportReader;
@@ -109,7 +109,7 @@ impl HttpTableReader {
     pub fn from_recv(recv: h2::RecvStream) -> Self {
         let stream =
             HttpByteStream::new(H2RecvRead::new(recv), crate::enums::BufferChunkSize::Http);
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), IPCMessageProtocol::Stream);
         Self { inner }
     }
 }

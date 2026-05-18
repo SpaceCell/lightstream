@@ -8,6 +8,11 @@
 //!
 //! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the
 //! alignment expected by the Arrow IPC frame decoder on the read side.
+//!
+//! ## Stability: unstable
+//!
+//! See the [reader docs](crate::models::readers::webtransport) - same
+//! considerations apply on the write side.
 
 use std::io;
 use std::pin::Pin;
@@ -33,27 +38,17 @@ pub struct WebTransportTableWriter {
 
 impl WebTransportTableWriter {
     /// Wrap a WebTransport send stream and prepare to write Arrow IPC tables.
+    /// Pass `None` for `compression` to write uncompressed batches.
     ///
     /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for network transport where the total number of batches is not
     /// known up front.
-    pub fn new(send: wtransport::SendStream, schema: Vec<Field>) -> io::Result<Self> {
-        let sink = TableSink64::new(send, schema, IPCMessageProtocol::Stream)?;
-        Ok(Self { sink })
-    }
-
-    /// Wrap a WebTransport send stream with optional compression.
-    pub fn new_with_compression(
+    pub fn new(
         send: wtransport::SendStream,
         schema: Vec<Field>,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> io::Result<Self> {
-        let sink = TableSink64::new_with_compression(
-            send,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink = TableSink64::new(send, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

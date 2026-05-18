@@ -97,7 +97,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
             ipc_codec: Some(ArrowIpcCodec::new(
                 schema,
                 crate::enums::IPCMessageProtocol::Stream,
-                crate::compression::Compression::None,
+                None,
                 None,
             )),
         });

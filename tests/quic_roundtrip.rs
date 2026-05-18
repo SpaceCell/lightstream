@@ -214,7 +214,7 @@ async fn test_quic_single_table_roundtrip() {
             .await
             .unwrap();
         let send = conn.open_uni().await.unwrap();
-        let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
+        let mut writer = QuicTableWriter::new(send, write_schema, None).unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
@@ -258,7 +258,7 @@ async fn test_quic_multi_table_roundtrip() {
             .await
             .unwrap();
         let send = conn.open_uni().await.unwrap();
-        let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
+        let mut writer = QuicTableWriter::new(send, write_schema, None).unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
@@ -306,7 +306,7 @@ async fn test_quic_stream_trait() {
             .await
             .unwrap();
         let send = conn.open_uni().await.unwrap();
-        let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
+        let mut writer = QuicTableWriter::new(send, write_schema, None).unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
@@ -354,7 +354,7 @@ async fn test_quic_read_to_super_table() {
             .await
             .unwrap();
         let send = conn.open_uni().await.unwrap();
-        let mut writer = QuicTableWriter::new(send, write_schema).unwrap();
+        let mut writer = QuicTableWriter::new(send, write_schema, None).unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],

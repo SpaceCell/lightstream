@@ -43,24 +43,14 @@ pub struct StdoutTableWriter {
 impl StdoutTableWriter {
     /// Create a new stdout table writer with the given schema.
     ///
+    /// Pass `None` for `compression` to write uncompressed batches.
+    ///
     /// Uses `IPCMessageProtocol::Stream` - the unbounded protocol suited
     /// for pipe-based transport where the total number of batches is not
     /// known up front.
-    pub fn new(schema: Vec<Field>) -> io::Result<Self> {
+    pub fn new(schema: Vec<Field>, compression: Option<Compression>) -> io::Result<Self> {
         let stdout = tokio::io::stdout();
-        let sink = TableSink64::new(stdout, schema, IPCMessageProtocol::Stream)?;
-        Ok(Self { sink })
-    }
-
-    /// Create a stdout table writer with optional compression.
-    pub fn new_with_compression(schema: Vec<Field>, compression: Compression) -> io::Result<Self> {
-        let stdout = tokio::io::stdout();
-        let sink = TableSink64::new_with_compression(
-            stdout,
-            schema,
-            IPCMessageProtocol::Stream,
-            compression,
-        )?;
+        let sink = TableSink64::new(stdout, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

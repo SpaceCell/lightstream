@@ -91,7 +91,7 @@ async fn arrow_file_example(
     {
         let file = File::create(file_path).await?;
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None)?;
         writer.write_all_tables(vec![table.clone()]).await?;
     }
     let write_time = start.elapsed();
@@ -124,7 +124,7 @@ async fn arrow_stream_example(
     {
         let file = File::create(stream_path).await?;
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::Stream)?;
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::Stream, None)?;
         writer.write_all_tables(vec![table.clone()]).await?;
     }
     let write_time = start.elapsed();

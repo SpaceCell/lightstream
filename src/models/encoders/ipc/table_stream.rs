@@ -32,8 +32,8 @@ pub struct TableStreamEncoder<B: StreamBuffer + 'static> {
     pub protocol: IPCMessageProtocol,
     /// Current encoding state
     pub state: WriterState,
-    /// Compression codec for record batch bodies
-    pub compression: Compression,
+    /// Compression codec for record batch bodies. `None` writes uncompressed.
+    pub compression: Option<Compression>,
     /// Arrow schema for this stream
     pub schema: Vec<Field>,
     /// Set of dictionary IDs already encoded
@@ -47,29 +47,22 @@ pub struct TableStreamEncoder<B: StreamBuffer + 'static> {
 }
 
 impl<B: StreamBuffer> TableStreamEncoder<B> {
-    /// Create a new encoder for the given schema and protocol.
-    pub fn new(schema: Vec<Field>, protocol: IPCMessageProtocol) -> Self {
+    /// Create a new encoder. `None` for `compression` writes uncompressed
+    /// batches; `Some(codec)` compresses every record-batch body.
+    pub fn new(
+        schema: Vec<Field>,
+        protocol: IPCMessageProtocol,
+        compression: Option<Compression>,
+    ) -> Self {
         Self {
             protocol,
             state: WriterState::Fresh,
-            compression: Compression::None,
+            compression,
             schema,
             written_dict_ids: HashSet::new(),
             dictionaries: HashMap::new(),
             fbb: flatbuffers::FlatBufferBuilder::with_capacity(4096),
             _alignment: std::marker::PhantomData,
-        }
-    }
-
-    /// Create a new encoder with compression.
-    pub fn new_with_compression(
-        schema: Vec<Field>,
-        protocol: IPCMessageProtocol,
-        compression: Compression,
-    ) -> Self {
-        Self {
-            compression,
-            ..Self::new(schema, protocol)
         }
     }
 
@@ -135,13 +128,17 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
             }
         }
 
+        let fb_compression = match self.compression {
+            Some(c) => Some(c.to_arrow_ipc_type()?),
+            None => None,
+        };
         let meta = build_flatbuf_recordbatch(
             &mut self.fbb,
             tbl.n_rows,
             &layout.fb_field_nodes,
             &layout.fb_buffers,
             layout.body_size,
-            self.compression.to_arrow_ipc_type()?,
+            fb_compression,
         )?;
         Ok((meta, body))
     }
@@ -280,6 +277,7 @@ mod tests {
         let mut writer = TableStreamWriter::<Vec<u8>>::new(
             make_schema(CategoricalIndexType::UInt8, true),
             IPCMessageProtocol::Stream,
+            None,
         );
 
         let arr = CategoricalArray {
@@ -523,6 +521,7 @@ mod tests {
         let mut writer = TableStreamWriter::<Vec<u8>>::new(
             make_schema(CategoricalIndexType::UInt8, true),
             IPCMessageProtocol::File,
+            None,
         );
 
         let arr = CategoricalArray {
@@ -586,7 +585,7 @@ mod tests {
         }];
 
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::File);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::File, None);
 
         // Create a simple Int32 array with null mask
         let data = vec![10i32, 20, 30, 40];

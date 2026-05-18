@@ -178,8 +178,10 @@ fn read_parquet_impl<R: Read + Seek>(
             }
             let mut compr = vec![0u8; ph.compressed_page_size as usize];
             r.read_exact(&mut compr)?;
-            let raw = decompress(&compr, map_codec(cmeta.codec))?;
-            parse_dictionary_values(&raw)?
+            match map_codec(cmeta.codec) {
+                Some(c) => parse_dictionary_values(&decompress(&compr, c)?)?,
+                None => parse_dictionary_values(&compr)?,
+            }
         } else {
             Vec::new()
         };
@@ -274,10 +276,9 @@ fn read_data_page_v2<R: Read>(
     r.read_exact(&mut vs)?;
 
     // 4) decompress if needed
-    let values_raw = if h.is_compressed {
-        decompress(&vs, map_codec(cmeta.codec))?
-    } else {
-        vs
+    let values_raw = match (h.is_compressed, map_codec(cmeta.codec)) {
+        (true, Some(c)) => decompress(&vs, c)?,
+        _ => vs,
     };
 
     // 5) decode definition‐levels (we ignore repetition entirely)
@@ -615,14 +616,14 @@ fn def_levels_count(buf: &[u8], bw: u8) -> usize {
 
 // Misc helpers
 
-fn map_codec(id: i32) -> Compression {
+fn map_codec(id: i32) -> Option<Compression> {
     match id {
-        0 => Compression::None,
+        0 => None,
         #[cfg(feature = "snappy")]
-        1 => Compression::Snappy,
+        1 => Some(Compression::Snappy),
         #[cfg(feature = "zstd")]
-        6 => Compression::Zstd, // spec: ZSTD = 6
-        _ => Compression::None,
+        6 => Some(Compression::Zstd), // spec: ZSTD = 6
+        _ => None,
     }
 }
 

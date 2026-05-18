@@ -46,7 +46,7 @@ use minarrow::{Field, SuperTable, Table, Vec64};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, connect_async};
 
-use crate::enums::IPCMessageProtocol;
+use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table_reader::TableReader;
 use crate::models::streams::websocket::{WsRead, WsWrite};
 use crate::traits::transport_reader::IPCTransportReader;
@@ -78,7 +78,7 @@ impl WebSocketTableReader {
         let (read_half, write_half) = tokio::io::split(raw);
         let (shared_writer, _ws_write) = WsWrite::new(write_half);
         let ws_read = WsRead::new(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), IPCMessageProtocol::Stream);
         Ok(Self { inner })
     }
 
@@ -89,18 +89,18 @@ impl WebSocketTableReader {
     /// `tokio_tungstenite::accept_async(...).into_inner()`. Internally this
     /// constructor wraps the stream in a [`WsRead`] for WS frame parsing,
     /// so passing an already-built `WsRead` here would double-wrap and
-    /// corrupt the parse; use [`Self::from_split_halves`] instead when the
+    /// corrupt the parse; use [`Self::from_halves`] instead when the
     /// caller has the write half too and wants ping/pong support.
     ///
     /// Pong responses route through `tokio::io::sink()`, which silently
-    /// discards them. Use [`Self::from_split_halves`] for full ping/pong.
+    /// discards them. Use [`Self::from_halves`] for full ping/pong.
     pub fn from_raw_stream(
         stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
         protocol: IPCMessageProtocol,
     ) -> Self {
         let shared_writer = Arc::new(Mutex::new(tokio::io::sink()));
         let ws_read = WsRead::new(stream, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), protocol);
         Self { inner }
     }
 
@@ -112,7 +112,7 @@ impl WebSocketTableReader {
     /// Typical use is the server side, where `tokio_tungstenite::accept_async`
     /// returns the upgraded `WebSocketStream`; calling `.into_inner()` and
     /// then `tokio::io::split` yields the two halves to hand here.
-    pub fn from_split_halves<R, W>(
+    pub fn from_halves<R, W>(
         read_half: R,
         write_half: W,
         protocol: IPCMessageProtocol,
@@ -123,7 +123,7 @@ impl WebSocketTableReader {
     {
         let (shared_writer, _ws_write) = WsWrite::new(write_half);
         let ws_read = WsRead::new(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), protocol);
         Self { inner }
     }
 
@@ -152,7 +152,7 @@ impl WebSocketTableReader {
         let (read_half, write_half) = tokio::io::split(raw);
         let (shared_writer, _ws_write) = WsWrite::new(write_half);
         let ws_read = WsRead::new(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), IPCMessageProtocol::Stream);
         Ok(Self { inner })
     }
 }

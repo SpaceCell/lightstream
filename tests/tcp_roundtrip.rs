@@ -127,7 +127,7 @@ async fn test_tcp_single_table_roundtrip() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = TcpTableWriter::connect(addr, write_schema).await.unwrap();
+        let mut writer = TcpTableWriter::connect(addr, write_schema, None).await.unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
@@ -161,7 +161,7 @@ async fn test_tcp_multi_table_roundtrip() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = TcpTableWriter::connect(addr, write_schema).await.unwrap();
+        let mut writer = TcpTableWriter::connect(addr, write_schema, None).await.unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
@@ -199,7 +199,7 @@ async fn test_tcp_stream_trait() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = TcpTableWriter::connect(addr, write_schema).await.unwrap();
+        let mut writer = TcpTableWriter::connect(addr, write_schema, None).await.unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
@@ -239,7 +239,7 @@ async fn test_tcp_read_to_super_table() {
     let write_table = table.clone();
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = TcpTableWriter::connect(addr, write_schema).await.unwrap();
+        let mut writer = TcpTableWriter::connect(addr, write_schema, None).await.unwrap();
         writer.register_dictionary(
             3,
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],

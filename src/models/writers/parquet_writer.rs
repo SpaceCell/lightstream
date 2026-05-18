@@ -85,7 +85,7 @@ pub const PARQUET_PAGE_CHUNK_SIZE: usize = 32_768;
 pub fn write_parquet_table<W: Write + Seek>(
     table: &Table,
     mut out: W,
-    compression: Compression,
+    compression: Option<Compression>,
 ) -> Result<(), IoError> {
     // file-header magic
     out.write_all(PARQUET_MAGIC)?;
@@ -275,16 +275,21 @@ pub fn write_parquet_table<W: Write + Seek>(
             let rep_len = rep_buf.len();
             let def_len = def_buf.len();
 
-            // compress values
-            let values_compressed = compress(&values_raw, compression)?;
-            let compressed_page_size = rep_len + def_len + values_compressed.len();
+            // Compress values when a codec is selected; otherwise the raw
+            // bytes are the page's value payload directly.
+            let values_compressed = match compression {
+                Some(c) => Some(compress(&values_raw, c)?),
+                None => None,
+            };
+            let values_on_wire: &[u8] = values_compressed.as_deref().unwrap_or(&values_raw);
+            let compressed_page_size = rep_len + def_len + values_on_wire.len();
             let uncompressed_page_size = rep_len + def_len + values_raw.len();
 
             // assemble page body
             let mut page_body = Vec::with_capacity(compressed_page_size);
             page_body.extend_from_slice(&rep_buf);
             page_body.extend_from_slice(&def_buf);
-            page_body.extend_from_slice(&values_compressed);
+            page_body.extend_from_slice(values_on_wire);
 
             // per-page statistics. This only supports null_count at the present time.
             let stats = Statistics {
@@ -315,7 +320,7 @@ pub fn write_parquet_table<W: Write + Seek>(
                     },
                     definition_levels_byte_length: def_buf.len() as i32,
                     repetition_levels_byte_length: rep_buf.len() as i32,
-                    is_compressed: compression != Compression::None,
+                    is_compressed: compression.is_some(),
                     statistics: Some(stats.clone()),
                 }),
             }
@@ -344,7 +349,13 @@ pub fn write_parquet_table<W: Write + Seek>(
                 type_: phys,
                 encodings: encodings.clone(),
                 path_in_schema: vec![col.field.name.clone()],
-                codec: compression as i32,
+                codec: match compression {
+                    None => 0,
+                    #[cfg(feature = "snappy")]
+                    Some(Compression::Snappy) => 1,
+                    #[cfg(feature = "zstd")]
+                    Some(Compression::Zstd) => 6,
+                },
                 num_values: col_num_values,
                 total_uncompressed_size,
                 total_compressed_size,
@@ -384,7 +395,7 @@ fn write_dictionary_page<'a, W, I>(
     out: &mut W,
     offset: &mut i64,
     values: I,
-    compression: Compression,
+    compression: Option<Compression>,
 ) -> Result<(), IoError>
 where
     W: Write + Seek,
@@ -400,15 +411,19 @@ where
         entry_count += 1;
     }
 
-    // 2) Compress the dictionary payload
-    let compressed = compress(&raw, compression)?;
+    // 2) Compress the dictionary payload when a codec is selected.
+    let compressed = match compression {
+        Some(c) => Some(compress(&raw, c)?),
+        None => None,
+    };
+    let body_on_wire: &[u8] = compressed.as_deref().unwrap_or(&raw);
 
     // 3) Write the header
     let mut header_buf = Vec::new();
     PageHeader {
         type_: PageType::DictionaryPage,
         uncompressed_page_size: raw.len() as i32,
-        compressed_page_size: compressed.len() as i32,
+        compressed_page_size: body_on_wire.len() as i32,
         data_page_header: None,
         dictionary_page_header: Some(DictionaryPageHeader {
             num_values: entry_count,
@@ -421,8 +436,8 @@ where
     out.write_all(&header_buf)?;
     *offset = out.stream_position()? as i64;
 
-    // 4) Write the compressed payload
-    out.write_all(&compressed)?;
+    // 4) Write the page body (compressed or raw).
+    out.write_all(body_on_wire)?;
     *offset = out.stream_position()? as i64;
 
     Ok(())

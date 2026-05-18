@@ -21,7 +21,6 @@ use minarrow::{
     SuperArray, SuperTable, Table, TextArray, Vec64,
 };
 
-use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::error::IoError;
 use crate::models::codecs::ipc::ArrowIpcCodec;
@@ -43,7 +42,7 @@ impl<T> IpcSerialise for T where T: Serialise<ArrowIpcCodec<Vec64<u8>>, Error = 
 /// decode. Schema is supplied for encode and left empty for decode -
 /// the codec accumulates schema from the first decoded frame.
 fn fresh_codec(schema: Vec<minarrow::Field>) -> ArrowIpcCodec<Vec64<u8>> {
-    ArrowIpcCodec::new(schema, IPCMessageProtocol::Stream, Compression::None, None)
+    ArrowIpcCodec::new(schema, IPCMessageProtocol::Stream, None, None)
 }
 
 // =====================================================================

@@ -14,25 +14,46 @@ Lightstream gives you Arrow IPC streaming with SIMD-aligned buffers across TCP, 
 
 ## Transports
 
-| Transport | Feature Flag | Description |
-|-----------|--------------|-------------|
-| TCP | `tcp` | Raw TCP sockets |
-| WebSocket | `websocket` | Browser-compatible streaming |
-| QUIC | `quic` | Modern UDP-based, multiplexed connections |
-| Unix Domain Socket | `uds` | Fast local IPC |
-| Stdio | `stdio` | Pipe-based communication |
-| WebTransport | `webtransport` | Modern WebTransport support via `wtransport` crate |
+| Transport | Feature Flag | Stability | Description |
+|-----------|--------------|-----------|-------------|
+| TCP | `tcp` | stable | Raw TCP sockets |
+| WebSocket | `websocket` | stable | Browser-compatible streaming |
+| HTTP/2 | `http` | stable | h2 GET/POST (h2c plaintext or h2 over TLS) |
+| QUIC | `quic` | stable | UDP-based, multiplexed connections (RFC 9000) |
+| Unix Domain Socket | `uds` | stable | Local IPC |
+| Stdio | `stdio` | stable | Pipe-based communication |
+| WebTransport | `webtransport` | unstable | Wire format still pre-RFC; `wtransport` crate at 0.x |
+| io_uring (UDS) | `io_uring` | unstable | Linux-only; `tokio-uring` at 0.x |
 
-All transports use the same codec layer. Switch transports without changing your framing logic.
+All transports use the same codec layer. Switch transports without
+changing your framing logic.
+
+The library handles framing/encoding; the caller handles connection
+lifecycle (bind / accept / auth / routing). Each transport exposes
+`from_stream` / `from_recv` / `from_halves` constructors so a
+caller-built accept loop can hand off the accepted stream.
+
+### Constructor vocabulary
+
+Across all transports the constructor verbs are consistent:
+
+- `connect` / `connect_tls` - dial out (TCP, UDS, WebSocket, HTTP).
+- `new` - wrap a pre-built send/recv stream (QUIC, WebTransport, stdio).
+- `from_recv` / `from_stream` / `from_halves` - wrap a server-side
+  accepted stream or split halves.
+- `*_with_compression` - same shape as the base method, plus a
+  `Compression` argument. Writers only.
 
 ### TLS
 
-Build with the `tls` feature to enable encrypted TCP and WebSocket
-transports. `TcpTableReader::connect_tls` / `TcpTableWriter::connect_tls`
-take an `rustls::ClientConfig` and a `ServerName`. WebSocket gains the
-equivalent `connect_tls` for callers that need pinned roots, a custom
-verifier, or client-auth keys; plain `connect("wss://...")` continues to
-work via tokio-tungstenite's webpki-roots integration (also gated by the
+Build with the `tls` feature to enable encrypted TCP, WebSocket and
+HTTP/2 transports. `connect_tls(addr, name, config, schema)` and
+`connect_tls_with_compression(..., compression)` form the TLS pair on
+writers; readers expose `connect_tls(addr, name, config)` (or the
+URL-based equivalent for WS/HTTP). For pinned roots, custom verifiers
+or client-auth keys, supply a `rustls::ClientConfig` directly. Plain
+`connect("wss://...")` / `get("https://...")` paths use
+tokio-tungstenite's bundled webpki-roots verifier (gated by the same
 `tls` feature). QUIC and WebTransport mandate TLS at the protocol level
 and already accept their own rustls config. No default root store is
 bundled - supply one through your `ClientConfig`.
@@ -168,7 +189,8 @@ Lightstream is layered and composable. Swap any layer without rewriting the stac
 |---------|-------------|
 | `tcp` | TCP transport |
 | `websocket` | WebSocket transport |
-| `tls` | TLS layer for TCP and WebSocket via tokio-rustls (ring provider) |
+| `http` | HTTP/2 transport (h2 directly, no hyper) |
+| `tls` | TLS layer for TCP, WebSocket and HTTP via tokio-rustls (ring provider) |
 | `quic` | QUIC transport |
 | `uds` | Unix domain socket transport |
 | `stdio` | Stdin/stdout transport |

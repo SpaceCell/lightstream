@@ -45,20 +45,22 @@ impl<W> TableWriter<W>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
 {
-    /// Create a new Arrow Table writer.
+    /// Create a new Arrow Table writer. Pass `None` for `compression` to
+    /// write uncompressed batches; `Some(codec)` compresses every
+    /// record-batch body.
     pub fn new(
         destination: W,
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
+        compression: Option<Compression>,
     ) -> io::Result<Self> {
         Ok(Self {
-            sink: GTableSink::new(destination, schema, protocol)?,
+            sink: GTableSink::new(destination, schema, protocol, compression)?,
         })
     }
 
-    /// Create a new Arrow Table writer from a Table's schema.
-    ///
-    /// Extracts the schema from `Table::schema()` directly.
+    /// Create a new Arrow Table writer from a Table's schema. Extracts
+    /// the fields from `Table::schema()` directly and writes uncompressed.
     pub fn from_schema(
         destination: W,
         schema: Vec<std::sync::Arc<Field>>,
@@ -66,19 +68,7 @@ where
     ) -> io::Result<Self> {
         let fields: Vec<Field> = schema.into_iter().map(|f| (*f).clone()).collect();
         Ok(Self {
-            sink: GTableSink::new(destination, fields, protocol)?,
-        })
-    }
-
-    /// Create a new Arrow Table writer with compression.
-    pub fn new_with_compression(
-        destination: W,
-        schema: Vec<Field>,
-        protocol: IPCMessageProtocol,
-        compression: Compression,
-    ) -> io::Result<Self> {
-        Ok(Self {
-            sink: GTableSink::new_with_compression(destination, schema, protocol, compression)?,
+            sink: GTableSink::new(destination, fields, protocol, None)?,
         })
     }
 
@@ -138,7 +128,7 @@ pub async fn write_tables_to_file(
     schema: Vec<Field>,
 ) -> io::Result<()> {
     let file = File::create(file_path).await?;
-    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None)?;
     // Automatically register any Categorical dictionaries found in the tables.
     for table in tables {
         for (col_idx, col) in table.cols.iter().enumerate() {
@@ -159,7 +149,7 @@ pub async fn write_table_to_file(
     schema: Vec<Field>,
 ) -> io::Result<()> {
     let file = File::create(file_path).await?;
-    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File)?;
+    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None)?;
     // Automatically register any Categorical dictionaries found in the table.
     for (col_idx, col) in table.cols.iter().enumerate() {
         if let Some(values) = dict_values(col) {
@@ -278,7 +268,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new(file, schema.clone(), IPCMessageProtocol::File).unwrap();
+        let mut writer = TableWriter::new(file, schema.clone(), IPCMessageProtocol::File, None).unwrap();
         writer.register_dictionary(0, dict_strs());
 
         let tbl = make_table();
@@ -302,7 +292,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::Stream).unwrap();
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::Stream, None).unwrap();
         writer.register_dictionary(0, dict_strs());
 
         let tbl = make_table();
@@ -323,7 +313,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::Stream).unwrap();
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::Stream, None).unwrap();
         writer.register_dictionary(0, dict_strs());
 
         let tbl = make_table();
@@ -340,7 +330,7 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File).unwrap();
+        let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None).unwrap();
         writer.register_dictionary(0, dict_strs());
 
         let tbl = make_table();
@@ -359,7 +349,7 @@ mod tests {
         // Use an io::sink, which always returns Ok, so this just checks for panics.
         let schema = make_schema();
         let sink = tokio::io::sink();
-        let mut writer = TableWriter::new(sink, schema, IPCMessageProtocol::File).unwrap();
+        let mut writer = TableWriter::new(sink, schema, IPCMessageProtocol::File, None).unwrap();
         // writing nothing should simply close without error
         writer.write_all_tables(Vec::<Table>::new()).await.unwrap();
     }
@@ -371,11 +361,11 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer.register_dictionary(0, dict_strs());
@@ -400,11 +390,11 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Snappy,
+            Some(Compression::Snappy),
         )
         .unwrap();
         writer.register_dictionary(0, dict_strs());
@@ -433,11 +423,11 @@ mod tests {
 
         let file = File::create(&path).await.unwrap();
         let schema = make_schema();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Zstd,
+            Some(Compression::Zstd),
         )
         .unwrap();
         writer.register_dictionary(0, dict_strs());
@@ -474,7 +464,7 @@ mod tests {
         {
             let file = File::create(&path1).await.unwrap();
             let mut writer =
-                TableWriter::new(file, schema.clone(), IPCMessageProtocol::File).unwrap();
+                TableWriter::new(file, schema.clone(), IPCMessageProtocol::File, None).unwrap();
             writer.register_dictionary(0, dict_strs());
             writer.write_all_tables(vec![tbl.clone()]).await.unwrap();
         }
@@ -482,11 +472,11 @@ mod tests {
         // Write with compression = None
         {
             let file = File::create(&path2).await.unwrap();
-            let mut writer = TableWriter::new_with_compression(
+            let mut writer = TableWriter::new(
                 file,
                 schema.clone(),
                 IPCMessageProtocol::File,
-                Compression::None,
+                None,
             )
             .unwrap();
             writer.register_dictionary(0, dict_strs());

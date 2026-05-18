@@ -63,7 +63,7 @@ async fn write_to_file(table: &Table) -> NamedTempFile {
         .map(|c| c.field.as_ref().clone())
         .collect();
     let file = File::create(temp.path()).await.unwrap();
-    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File).unwrap();
+    let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None).unwrap();
     writer.write_table(table.clone()).await.unwrap();
     writer.finish().await.unwrap();
     temp

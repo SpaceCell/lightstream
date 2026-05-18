@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // --- Client: connect and write ---
-    let mut writer = TcpTableWriter::connect(addr, schema).await?;
+    let mut writer = TcpTableWriter::connect(addr, schema, None).await?;
     println!("Client connected to {}", addr);
 
     writer.write_table(make_table("batch_1", 5)).await?;

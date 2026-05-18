@@ -128,7 +128,7 @@ fn bench_stream_throughput(c: &mut Criterion) {
 
                     let writer = tokio::spawn(async move {
                         let url = format!("http://{addr}/ingest");
-                        let mut w = HttpTableWriter::post(&url, write_schema, None)
+                        let mut w = HttpTableWriter::post(&url, write_schema,    None,)
                             .await
                             .unwrap();
                         w.register_dictionary(

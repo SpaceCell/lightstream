@@ -54,24 +54,17 @@ where
     W: io::Write,
     B: StreamBuffer + Unpin + 'static,
 {
-    /// Create a new sync table writer.
-    pub fn new(sink: W, schema: Vec<Field>, protocol: IPCMessageProtocol) -> Self {
-        Self {
-            inner: TableStreamWriter::new(schema, protocol),
-            sink,
-            finished: false,
-        }
-    }
-
-    /// Create a new sync table writer with compression.
-    pub fn new_with_compression(
+    /// Create a new sync table writer. Pass `None` for `compression` to
+    /// write uncompressed batches; `Some(codec)` compresses every
+    /// record-batch body.
+    pub fn new(
         sink: W,
         schema: Vec<Field>,
         protocol: IPCMessageProtocol,
-        compression: Compression,
+        compression: Option<Compression>,
     ) -> Self {
         Self {
-            inner: TableStreamWriter::new_with_compression(schema, protocol, compression),
+            inner: TableStreamWriter::new(schema, protocol, compression),
             sink,
             finished: false,
         }
@@ -152,7 +145,7 @@ pub fn write_tables_to_file_sync(
     schema: Vec<Field>,
 ) -> io::Result<()> {
     let file = std::fs::File::create(file_path)?;
-    let mut writer = SyncTableWriter::<_, Vec64<u8>>::new(file, schema, IPCMessageProtocol::File);
+    let mut writer = SyncTableWriter::<_, Vec64<u8>>::new(file, schema, IPCMessageProtocol::File, None);
     for table in tables {
         writer.write_table(table)?;
     }
@@ -199,6 +192,7 @@ mod tests {
             std::fs::File::create(&path).unwrap(),
             schema,
             IPCMessageProtocol::File,
+            None,
         );
         writer.write_table(&t1).unwrap();
         writer.write_table(&t2).unwrap();
@@ -223,7 +217,7 @@ mod tests {
 
         let mut buf: Vec<u8> = Vec::new();
         let mut writer =
-            SyncTableWriter::<_, Vec64<u8>>::new(&mut buf, schema, IPCMessageProtocol::Stream);
+            SyncTableWriter::<_, Vec64<u8>>::new(&mut buf, schema, IPCMessageProtocol::Stream, None);
         writer.write_table(&t1).unwrap();
         writer.write_table(&t2).unwrap();
         writer.finish().unwrap();
@@ -256,6 +250,7 @@ mod tests {
             file.reopen().unwrap(),
             vec![],
             IPCMessageProtocol::Stream,
+            None,
         );
         writer.finish().unwrap();
         writer.finish().unwrap();

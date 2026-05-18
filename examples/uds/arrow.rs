@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // --- Client: connect and write ---
-    let mut writer = UdsTableWriter::connect(&socket_path, schema).await?;
+    let mut writer = UdsTableWriter::connect(&socket_path, schema, None).await?;
     println!("Client connected.");
 
     writer.write_table(make_table("batch_1", 5)).await?;

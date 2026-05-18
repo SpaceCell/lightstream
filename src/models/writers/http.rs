@@ -49,7 +49,8 @@ impl HttpTableWriter {
 
     /// POST an Arrow IPC stream to an `https://` URL over h2. ALPN must
     /// be set to `h2` on the supplied `rustls::ClientConfig`. No default
-    /// root store is bundled.
+    /// root store is bundled. Pass `None` for `compression` to write
+    /// uncompressed batches.
     #[cfg(feature = "tls")]
     pub async fn post_tls(
         url: &str,
@@ -64,7 +65,7 @@ impl HttpTableWriter {
     /// Issue a fully-built request (typically POST) and stream Arrow
     /// IPC batches into its body. Use when the request needs custom
     /// headers like `Authorization` or `Content-Type`. Scheme must be
-    /// `http`.
+    /// `http`. Pass `None` for `compression` to write uncompressed batches.
     pub async fn from_request(
         req: Request<()>,
         schema: Vec<Field>,
@@ -73,12 +74,7 @@ impl HttpTableWriter {
         let (host, port) = host_port(req.uri(), "http", 80)?;
         let tcp = TcpStream::connect((host.as_str(), port)).await?;
         let (send_stream, response_fut) = h2_send_post(tcp, req).await?;
-        Ok(Self::new_inner(
-            send_stream,
-            response_fut,
-            schema,
-            compression,
-        )?)
+        Self::install_sink(send_stream, response_fut, schema, compression)
     }
 
     /// As [`Self::from_request`], over HTTPS h2. Scheme must be `https`.
@@ -103,15 +99,10 @@ impl HttpTableWriter {
             ));
         }
         let (send_stream, response_fut) = h2_send_post(tls, req).await?;
-        Ok(Self::new_inner(
-            send_stream,
-            response_fut,
-            schema,
-            compression,
-        )?)
+        Self::install_sink(send_stream, response_fut, schema, compression)
     }
 
-    fn new_inner(
+    fn install_sink(
         send_stream: h2::SendStream<Bytes>,
         response_fut: h2::client::ResponseFuture,
         schema: Vec<Field>,
@@ -125,12 +116,7 @@ impl HttpTableWriter {
             let _ = response_fut.await;
         });
         let write = H2SendWrite::new(send_stream);
-        let sink = match compression {
-            Some(c) => {
-                TableSink64::new_with_compression(write, schema, IPCMessageProtocol::Stream, c)?
-            }
-            None => TableSink64::new(write, schema, IPCMessageProtocol::Stream)?,
-        };
+        let sink = TableSink64::new(write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
 }

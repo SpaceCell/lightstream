@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write tables to stream, processing frames individually
     let schema: Vec<Field> = tables[0].schema().iter().map(|f| (**f).clone()).collect();
-    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream);
+    let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
 
     for table in &tables {
         writer.write(table)?;

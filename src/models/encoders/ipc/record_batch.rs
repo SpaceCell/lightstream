@@ -15,7 +15,7 @@ use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::{Array, Bitmask, NumericArray, TextArray};
 
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
-use crate::compression::{Compression, compress};
+use crate::compression::compress;
 use crate::enums::{IPCMessageProtocol, WriterState};
 use crate::models::encoders::ipc::schema::build_flatbuf_recordbatch;
 use crate::models::encoders::ipc::table_stream::TableStreamEncoder;
@@ -378,13 +378,13 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
 
     // If compression is active, compress each buffer and recompute sizes.
     // Each compressed buffer gets a u64 LE uncompressed length prefix.
-    let compressed: Option<Vec<Vec<u8>>> = if encoder.compression != Compression::None {
+    let compressed: Option<Vec<Vec<u8>>> = if let Some(codec) = encoder.compression {
         let mut bufs = Vec::with_capacity(layout.regions.len());
         for region in &layout.regions {
             if region.data.is_empty() {
                 bufs.push(Vec::new());
             } else {
-                let c = compress(region.data, encoder.compression)
+                let c = compress(region.data, codec)
                     .map_err(|e| io::Error::other(format!("{}", e)))?;
                 let mut wire = Vec::with_capacity(8 + c.len());
                 wire.extend_from_slice(&(region.data.len() as u64).to_le_bytes());
@@ -412,7 +412,10 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
         (layout.body_size, layout.fb_buffers)
     };
 
-    let compression_type = encoder.compression.to_arrow_ipc_type()?;
+    let compression_type = match encoder.compression {
+        Some(c) => Some(c.to_arrow_ipc_type()?),
+        None => None,
+    };
     let meta = build_flatbuf_recordbatch(
         &mut encoder.fbb,
         table.n_rows,

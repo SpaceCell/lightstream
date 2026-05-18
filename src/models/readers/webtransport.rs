@@ -6,6 +6,15 @@
 //! Wraps [`TableReader`] over a [`WebTransportByteStream`], hiding the wiring
 //! so callers get a one-liner API.
 //!
+//! ## Stability: unstable
+//!
+//! WebTransport-over-HTTP/3 is not yet an IETF RFC; the wire format may
+//! shift between drafts, and browser support is uneven (Chrome / Firefox
+//! / Edge ship it; Safari does not). The underlying `wtransport` crate is
+//! at 0.x and its API still evolves across minor versions. Pin
+//! aggressively. Server-to-server use is solid; browser-to-server use
+//! depends on your target browsers.
+//!
 //! ## Continuous streaming
 //!
 //! `WebTransportTableReader` implements `Stream<Item = io::Result<Table>>`, so it
@@ -51,7 +60,7 @@ impl WebTransportTableReader {
     /// The default chunk size is `BufferChunkSize::WebTransport` (64 KiB).
     pub fn from_recv(recv: wtransport::RecvStream) -> Self {
         let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::WebTransport.chunk_size(), IPCMessageProtocol::Stream);
         Self { inner }
     }
 
@@ -68,7 +77,7 @@ impl WebTransportTableReader {
 
     /// Wrap an existing `WebTransportByteStream` as a table reader.
     pub fn from_stream(stream: WebTransportByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, protocol);
+        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::WebTransport.chunk_size(), protocol);
         Self { inner }
     }
 }

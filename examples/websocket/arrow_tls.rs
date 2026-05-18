@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let raw = ws_stream.into_inner();
         let (read_half, write_half) = tokio::io::split(raw);
-        let reader = WebSocketTableReader::from_split_halves(
+        let reader = WebSocketTableReader::from_halves(
             read_half,
             write_half,
             IPCMessageProtocol::Stream,

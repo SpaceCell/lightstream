@@ -291,7 +291,7 @@ mod integration {
             match mode {
                 IPCMessageProtocol::File => {
                     let file = tokio::fs::File::create(&path).await.unwrap();
-                    let mut writer = TableWriter::new(file, schema, mode).unwrap();
+                    let mut writer = TableWriter::new(file, schema, mode, None).unwrap();
                     for (dict_id, unique) in dicts_for_table(&table) {
                         writer.register_dictionary(dict_id, unique.to_vec());
                     }
@@ -300,7 +300,7 @@ mod integration {
                 IPCMessageProtocol::Stream => {
                     // Use TableWriter consistently for both protocols
                     let file = tokio::fs::File::create(&path).await.unwrap();
-                    let mut writer = TableWriter::new(file, schema, mode).unwrap();
+                    let mut writer = TableWriter::new(file, schema, mode, None).unwrap();
                     for (dict_id, unique) in dicts_for_table(&table) {
                         writer.register_dictionary(dict_id, unique.to_vec());
                     }
@@ -450,7 +450,7 @@ mod integration {
         let (mut tx, rx) = duplex(64 * 1024);
 
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         for (dict_id, unique) in dicts_for_table(&table) {
             writer.register_dictionary(dict_id, unique.to_vec());
         }
@@ -533,7 +533,7 @@ mod integration {
         let (mut tx, rx) = duplex(64 * 1024);
 
         let mut writer =
-            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream);
+            TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         for (dict_id, unique) in dicts_for_table(&table) {
             writer.register_dictionary(dict_id, unique.to_vec());
         }
@@ -717,7 +717,7 @@ mod integration {
             match fmt {
                 IPCMessageProtocol::File => {
                     let file = tokio::fs::File::create(&path).await.unwrap();
-                    let mut wr = TableWriter::new(file, schema, fmt).unwrap();
+                    let mut wr = TableWriter::new(file, schema, fmt, None).unwrap();
                     wr.register_dictionary(3, uniqs); // cat column is 3rd here
                     wr.write_all_tables(vec![table.clone()]).await.unwrap();
                 }
@@ -782,7 +782,7 @@ mod integration {
         let p = dir.path().join("arrow.bin");
         {
             let file = tokio::fs::File::create(&p).await.unwrap();
-            let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File).unwrap();
+            let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None).unwrap();
             for (id, u) in dicts_for_table(&table) {
                 writer.register_dictionary(id, vec64_to_vec(u));
             }
