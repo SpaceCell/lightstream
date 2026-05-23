@@ -11,7 +11,7 @@
 use lightstream::{
     compression::Compression,
     models::{
-        readers::parquet_reader::read_parquet_table, writers::parquet_writer::write_parquet_table,
+        readers::parquet_reader::load_parquet_table, writers::parquet_writer::write_parquet_table,
     },
 };
 
@@ -84,7 +84,7 @@ async fn basic_parquet_example(file_path: &Path) -> Result<(), Box<dyn std::erro
     let start = std::time::Instant::now();
     {
         let mut file = File::create(file_path)?;
-        write_parquet_table(&table, &mut file, Compression::None)?;
+        write_parquet_table(&table, &mut file, None)?;
     }
     let write_time = start.elapsed();
 
@@ -100,7 +100,7 @@ async fn basic_parquet_example(file_path: &Path) -> Result<(), Box<dyn std::erro
     let start = std::time::Instant::now();
     let read_table = {
         let mut file = File::open(file_path)?;
-        read_parquet_table(&mut file)?
+        load_parquet_table(&mut file)?
     };
     let read_time = start.elapsed();
 
@@ -126,12 +126,12 @@ async fn compression_example(compression_dir: &Path) -> Result<(), Box<dyn std::
         table.n_rows
     );
 
-    let compressions = vec![
-        ("none", Compression::None),
+    let compressions: Vec<(&str, Option<Compression>)> = vec![
+        ("none", None),
         #[cfg(feature = "snappy")]
-        ("snappy", Compression::Snappy),
+        ("snappy", Some(Compression::Snappy)),
         #[cfg(feature = "zstd")]
-        ("zstd", Compression::Zstd),
+        ("zstd", Some(Compression::Zstd)),
     ];
 
     println!("  Testing different compression algorithms:");
@@ -153,7 +153,7 @@ async fn compression_example(compression_dir: &Path) -> Result<(), Box<dyn std::
         let start = std::time::Instant::now();
         let read_table = {
             let mut file = File::open(&file_path)?;
-            read_parquet_table(&mut file)?
+            load_parquet_table(&mut file)?
         };
         let read_time = start.elapsed();
 
@@ -189,7 +189,7 @@ async fn complex_types_example(_file_path: &Path) -> Result<(), Box<dyn std::err
     }
 
     // Round-trip test
-    let read_table = roundtrip_parquet(&table, Compression::None)?;
+    let read_table = roundtrip_parquet(&table, None)?;
 
     println!("  ✓ Complex types round-trip successful");
     println!(
@@ -223,18 +223,18 @@ async fn large_dataset_example(file_path: &Path) -> Result<(), Box<dyn std::erro
     println!("  Created large table with {} rows", table.n_rows);
 
     // Write with best compression for large files
-    let compression = {
+    let compression: Option<Compression> = {
         #[cfg(feature = "zstd")]
         {
-            Compression::Zstd
+            Some(Compression::Zstd)
         }
         #[cfg(all(feature = "snappy", not(feature = "zstd")))]
         {
-            Compression::Snappy
+            Some(Compression::Snappy)
         }
         #[cfg(all(not(feature = "zstd"), not(feature = "snappy")))]
         {
-            Compression::None
+            None
         }
     };
 
@@ -259,7 +259,7 @@ async fn large_dataset_example(file_path: &Path) -> Result<(), Box<dyn std::erro
     let start = std::time::Instant::now();
     let read_table = {
         let mut file = File::open(file_path)?;
-        read_parquet_table(&mut file)?
+        load_parquet_table(&mut file)?
     };
     let read_time = start.elapsed();
 
@@ -410,11 +410,11 @@ fn verify_simple_table(
 /// Round-trip a table through Parquet format
 fn roundtrip_parquet(
     table: &Table,
-    compression: Compression,
+    compression: Option<Compression>,
 ) -> Result<Table, Box<dyn std::error::Error>> {
     let mut buf = Cursor::new(Vec::new());
     write_parquet_table(table, &mut buf, compression)?;
     buf.seek(SeekFrom::Start(0))?;
-    let read_table = read_parquet_table(&mut buf)?;
+    let read_table = load_parquet_table(&mut buf)?;
     Ok(read_table)
 }

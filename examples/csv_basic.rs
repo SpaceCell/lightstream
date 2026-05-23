@@ -77,7 +77,7 @@ async fn write_csv(table: &Table, file_path: &Path) -> Result<(), Box<dyn std::e
 async fn read_csv(file_path: &Path) -> Result<Table, Box<dyn std::error::Error>> {
     use lightstream::models::decoders::csv::CsvDecodeOptions;
     let reader = CsvReader::from_path(file_path, CsvDecodeOptions::default(), 1000)?;
-    let table = reader.into_table()?;
+    let table = reader.load_table()?;
     Ok(table)
 }
 

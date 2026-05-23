@@ -124,6 +124,7 @@ pub struct MmapTableReader {
     /// Loaded dictionaries keyed by dictionary id
     dictionaries: std::collections::HashMap<i64, Vec<String>>,
     /// Offset from original file start to the chosen 64-byte aligned data start
+    #[allow(dead_code)]
     aligned_offset: usize,
 }
 
@@ -272,7 +273,7 @@ impl MmapTableReader {
     ///
     /// For the mmap reader, this means pages backing skipped columns are
     /// never faulted in - a significant win for wide tables on cold reads.
-    pub fn read_columns(&self, idx: usize, columns: &[&str]) -> io::Result<Table> {
+    pub fn read_batch_cols(&self, idx: usize, columns: &[&str]) -> io::Result<Table> {
         let blk = self
             .record_blocks
             .get(idx)
@@ -281,21 +282,52 @@ impl MmapTableReader {
         self.parse_batch_block(blk, Some(&projection))
     }
 
-    /// Alias of [`read_batch`].
-    #[inline]
-    pub fn into_table(&self, idx: usize) -> io::Result<Table> {
-        self.read_batch(idx)
-    }
-
-    /// Read all record batches and assemble them into a `SuperTable`.
-    ///
-    /// If `name_override` is provided, that name is used for the resulting table.
-    pub fn into_supertable(&self, name_override: Option<String>) -> io::Result<SuperTable> {
+    /// Read every record batch into a `SuperTable` whose batches are
+    /// zero-copy views over the mmap region. Each `Arc<Table>` holds
+    /// `SharedBuffer` references into the mapping; total resident
+    /// memory is bounded by the OS page cache, not by the file size,
+    /// so a multi-GiB file can be wrapped on a smaller-RAM host.
+    pub fn load_batched(&self, name_override: Option<String>) -> io::Result<SuperTable> {
         let mut batches = Vec::with_capacity(self.record_blocks.len());
         for blk in &self.record_blocks {
             batches.push(Arc::new(self.parse_batch_block(blk, None)?));
         }
         Ok(SuperTable::from_batches(batches, name_override))
+    }
+
+    /// As [`Self::load_batched`] but materialising only the named
+    /// columns from every batch. The mmap pages backing non-projected
+    /// columns are never faulted in for any batch.
+    pub fn load_batched_cols(
+        &self,
+        columns: &[&str],
+        name_override: Option<String>,
+    ) -> io::Result<SuperTable> {
+        let projection = self.resolve_column_indices(columns)?;
+        let mut batches = Vec::with_capacity(self.record_blocks.len());
+        for blk in &self.record_blocks {
+            batches.push(Arc::new(self.parse_batch_block(blk, Some(&projection))?));
+        }
+        Ok(SuperTable::from_batches(batches, name_override))
+    }
+
+    /// Read every record batch and consolidate into a single contiguous
+    /// `Table`. Equivalent to `load_batched(None).consolidate()`.
+    ///
+    /// Consolidation copies every chunk's columns into one contiguous
+    /// buffer per column, so this requires the resulting Table fits in
+    /// RAM. For larger-than-memory files use [`Self::load_batched`] or
+    /// the per-batch `read_batch[_cols]` family instead.
+    pub fn load_table(&self) -> io::Result<Table> {
+        use minarrow::Consolidate;
+        Ok(self.load_batched(None)?.consolidate())
+    }
+
+    /// As [`Self::load_table`] but reading only the named columns. The
+    /// consolidated Table contains just the projection.
+    pub fn load_table_cols(&self, columns: &[&str]) -> io::Result<Table> {
+        use minarrow::Consolidate;
+        Ok(self.load_batched_cols(columns, None)?.consolidate())
     }
 
     /// Load and materialise all dictionary batches declared in the footer.
@@ -526,12 +558,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_into_table_and_sharedness() {
+    async fn test_read_batch_and_sharedness() {
         let table = make_all_types_table();
         let temp = write_test_table_to_file(&[table.clone()]).await;
         let rdr = MmapTableReader::open(&temp.path()).unwrap();
 
-        let t2 = rdr.into_table(0).unwrap();
+        let t2 = rdr.read_batch(0).unwrap();
         // Note: Currently mmap requires copying data to create Arc<[u8]>
         // so we check for shared OR owned buffers. True zero-copy would require
         // modifying minarrow to accept mmap memory directly.
@@ -590,7 +622,7 @@ mod tests {
             }
         }
         debug!(
-            "Mmap into_table: {} shared, {} owned buffers",
+            "Mmap read_batch: {} shared, {} owned buffers",
             shared_count, owned_count
         );
         drop(temp)
@@ -606,7 +638,7 @@ mod tests {
         assert_eq!(rdr.num_batches(), 2);
 
         let supertbl = rdr
-            .into_supertable(Some("my_supertable".to_string()))
+            .load_batched(Some("my_supertable".to_string()))
             .unwrap();
         assert_eq!(supertbl.n_rows, 8);
         assert_eq!(supertbl.batches.len(), 2);
@@ -627,7 +659,7 @@ mod tests {
         let tables: Vec<Table> = (0..10).map(|_| make_all_types_table()).collect();
         let temp = write_test_table_to_file(&tables).await;
         let rdr = MmapTableReader::open(temp.path()).unwrap();
-        let supertbl = rdr.into_supertable(None).unwrap();
+        let supertbl = rdr.load_batched(None).unwrap();
         assert_eq!(supertbl.batches.len(), 10);
 
         for batch in &supertbl.batches {

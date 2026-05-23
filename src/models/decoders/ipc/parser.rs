@@ -27,6 +27,7 @@
 
 use std::io;
 use std::sync::Arc;
+use log::warn;
 use tracing::debug;
 
 use flatbuffers::Vector;
@@ -641,14 +642,12 @@ impl RecordBatchParser {
     ) -> minarrow::Buffer<T> {
         let ptr = slice.as_ptr() as *const T;
 
-        // Minimum alignment requirement
-        let aligned_8 = (ptr as usize).is_multiple_of(8);
-        let aligned_64 = (ptr as usize).is_multiple_of(64);
-
+        // Alignment diagnostics. Computed inline so the bindings do not
+        // sit unused in release where `debug_println!` expands to nothing.
         debug_println!(
             "Creating buffer with:\nAligned 8: {:?}\nAligned 64: {:?}\narc_bytes is some: {:?}\n",
-            aligned_8,
-            aligned_64,
+            (ptr as usize).is_multiple_of(8),
+            (ptr as usize).is_multiple_of(64),
             arc_bytes.is_some()
         );
 
@@ -659,7 +658,7 @@ impl RecordBatchParser {
                 // if it is not 64-byte aligned, the function will copy data to an owned buffer and flag it.
                 unsafe { minarrow::Buffer::from_shared_raw(arc.clone(), ptr, len) }
             } else {
-                debug_println!("Aligned: Allocating new buffer from slice");
+                Self::warn_no_arc_bytes_copy_once();
                 // No reusable Arc -> copy.
                 let mut v = Vec64::with_capacity(len);
                 unsafe { std::ptr::copy_nonoverlapping(ptr, v.as_mut_ptr(), len) };
@@ -667,8 +666,7 @@ impl RecordBatchParser {
                 minarrow::Buffer::from(v)
             }
         } else {
-            // Unaligned - must copy.
-            debug_println!("Not aligned: Copying");
+            Self::warn_unaligned_copy_once();
             let elem_size = std::mem::size_of::<T>();
             let mut v = Vec64::with_capacity(len);
             unsafe {
@@ -681,6 +679,37 @@ impl RecordBatchParser {
             unsafe { v.set_len(len) };
             minarrow::Buffer::from(v)
         }
+    }
+
+    /// One-shot warning: emitted once per process the first time the
+    /// decoder copies a misaligned buffer into a fresh `Vec64`. The
+    /// source IPC file was produced by a writer that did not align
+    /// buffers to 64 bytes; the decoder still works, but a copy is
+    /// added on every misaligned buffer.
+    #[inline(never)]
+    fn warn_unaligned_copy_once() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            warn!(
+                "decoder copying misaligned input buffer; source file is not 64-byte aligned"
+            );
+        });
+    }
+
+    /// One-shot warning: emitted once per process the first time the
+    /// decoder is handed an aligned source pointer with no owning
+    /// allocation reference, forcing a copy of the buffer rather than
+    /// a zero-copy reference.
+    #[inline(never)]
+    fn warn_no_arc_bytes_copy_once() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            warn!(
+                "decoder copying aligned input buffer; no owning allocation reference supplied"
+            );
+        });
     }
 
     /// Consume a validity‑bitmap buffer when present and build the proper

@@ -176,7 +176,7 @@ fn verify_tables_equal(original: &Table, roundtrip: &Table) {
     }
 }
 
-async fn write_and_read_roundtrip(compression: Compression) -> (Table, Table) {
+async fn write_and_read_roundtrip(compression: Option<Compression>) -> (Table, Table) {
     let temp_file = NamedTempFile::new().unwrap();
     let file_path = temp_file.path();
 
@@ -185,7 +185,7 @@ async fn write_and_read_roundtrip(compression: Compression) -> (Table, Table) {
     // Write with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
@@ -210,15 +210,15 @@ async fn write_and_read_roundtrip(compression: Compression) -> (Table, Table) {
 
 #[tokio::test]
 async fn test_compression_none_roundtrip() {
-    let (original, roundtrip) = write_and_read_roundtrip(Compression::None).await;
+    let (original, roundtrip) = write_and_read_roundtrip(None).await;
     verify_tables_equal(&original, &roundtrip);
-    println!("✓ Compression::None roundtrip test passed");
+    println!("✓ Uncompressed roundtrip test passed");
 }
 
 #[cfg(feature = "snappy")]
 #[tokio::test]
 async fn test_snappy_compression_roundtrip() {
-    let (original, roundtrip) = write_and_read_roundtrip(Compression::Snappy).await;
+    let (original, roundtrip) = write_and_read_roundtrip(Some(Compression::Snappy)).await;
     verify_tables_equal(&original, &roundtrip);
     println!("✓ Snappy compression roundtrip test passed");
 }
@@ -226,7 +226,7 @@ async fn test_snappy_compression_roundtrip() {
 #[cfg(feature = "zstd")]
 #[tokio::test]
 async fn test_zstd_compression_roundtrip() {
-    let (original, roundtrip) = write_and_read_roundtrip(Compression::Zstd).await;
+    let (original, roundtrip) = write_and_read_roundtrip(Some(Compression::Zstd)).await;
     verify_tables_equal(&original, &roundtrip);
     println!("✓ Zstd compression roundtrip test passed");
 }
@@ -245,11 +245,11 @@ async fn test_compression_multiple_tables_roundtrip() {
     // Write with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer
@@ -310,11 +310,11 @@ async fn test_compression_large_table_roundtrip() {
     // Test with compression that should be effective on repetitive data
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None, // Start with None, can test others with features enabled
+            None,
         )
         .unwrap();
         writer
@@ -344,11 +344,11 @@ async fn test_stream_protocol_compression_roundtrip() {
     // Write with Stream protocol and compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::Stream,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer
@@ -406,11 +406,11 @@ async fn test_compression_data_integrity() {
     // Write with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer
@@ -533,11 +533,11 @@ async fn test_zstd_dictionary_roundtrip() {
     // Write with zstd compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Zstd,
+            Some(Compression::Zstd),
         )
         .unwrap();
         writer.register_dictionary(1, dict_values.clone());

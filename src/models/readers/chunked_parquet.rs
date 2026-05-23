@@ -11,7 +11,7 @@
 //! The default [`Iterator`] path is sync and serial. Per-file Parquet
 //! decode is CPU-heavy (decompression, page parsing, dictionary
 //! resolution), so across files the gain from parallel reads is larger
-//! than for raw IPC. [`ChunkedTableReader::par_read_all`] (inherited from
+//! than for raw IPC. [`ChunkedTableReader::par_load_batched`] (inherited from
 //! the trait) uses `std::thread::scope` to fan per-chunk work end-to-end
 //! across worker threads and returns a `SuperTable` with batches in
 //! write order.
@@ -23,15 +23,20 @@ use std::path::{Path, PathBuf};
 use minarrow::Table;
 
 use crate::error::IoError;
-use crate::models::readers::parquet_reader::read_parquet_table;
+use crate::models::readers::parquet_reader::{load_parquet_table_cols, load_parquet_table};
 use crate::traits::chunked_table_reader::ChunkedTableReader;
+
+use std::sync::Arc;
+
+use minarrow::SuperTable;
 
 /// Iterator over chunk files in a directory written by
 /// `ChunkedParquetWriter`. Yields one `Table` per chunk file in ascending
 /// index order; the previous chunk's file handle is dropped before the
 /// next is opened.
 pub struct ChunkedParquetReader {
-    paths: std::vec::IntoIter<PathBuf>,
+    paths: Vec<PathBuf>,
+    cursor: usize,
 }
 
 impl ChunkedTableReader for ChunkedParquetReader {
@@ -40,9 +45,11 @@ impl ChunkedTableReader for ChunkedParquetReader {
 
     fn open<P: AsRef<Path>>(dir: P, base: &str, _options: ()) -> Result<Self, IoError> {
         let paths = Self::list_paths(dir, base)?;
-        Ok(Self {
-            paths: paths.into_iter(),
-        })
+        Ok(Self { paths, cursor: 0 })
+    }
+
+    fn paths(&self) -> &[PathBuf] {
+        &self.paths
     }
 
     fn list_paths<P: AsRef<Path>>(dir: P, base: &str) -> Result<Vec<PathBuf>, IoError> {
@@ -67,9 +74,30 @@ impl ChunkedTableReader for ChunkedParquetReader {
         Ok(indexed.into_iter().map(|(_, p)| p).collect())
     }
 
-    fn read_chunk(path: &Path, _options: &()) -> Result<Table, IoError> {
+    fn read_chunk(&self, path: &Path) -> Result<Table, IoError> {
         let file = File::open(path).map_err(IoError::from)?;
-        read_parquet_table(BufReader::new(file))
+        load_parquet_table(BufReader::new(file))
+    }
+
+    fn read_chunk_cols(&self, path: &Path, columns: &[&str]) -> Result<Table, IoError> {
+        let file = File::open(path).map_err(IoError::from)?;
+        load_parquet_table_cols(BufReader::new(file), columns)
+    }
+
+    fn load_batched_cols(self, columns: &[&str]) -> Result<SuperTable, IoError> {
+        let mut batches: Vec<Arc<Table>> = Vec::new();
+        let mut name: Option<String> = None;
+        for path in &self.paths[self.cursor..] {
+            let table = self.read_chunk_cols(path, columns)?;
+            if name.is_none() {
+                name = Some(table.name.clone());
+            }
+            batches.push(Arc::new(table));
+        }
+        Ok(SuperTable::from_batches(
+            batches,
+            name.or(Some("chunked".into())),
+        ))
     }
 }
 
@@ -77,8 +105,9 @@ impl Iterator for ChunkedParquetReader {
     type Item = Result<Table, IoError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let path = self.paths.next()?;
-        Some(Self::read_chunk(&path, &()))
+        let path = self.paths.get(self.cursor)?.clone();
+        self.cursor += 1;
+        Some(self.read_chunk(&path))
     }
 }
 
@@ -91,7 +120,7 @@ mod tests {
     use minarrow::{Table, fa_i32};
 
     #[test]
-    fn par_read_all_returns_batches_in_write_order() {
+    fn par_load_batched_returns_batches_in_write_order() {
         let dir = std::env::temp_dir().join("lightstream_chunked_parquet_par_reader");
         let _ = fs::remove_dir_all(&dir);
 
@@ -104,7 +133,7 @@ mod tests {
             .unwrap();
         }
 
-        let st = ChunkedParquetReader::par_read_all(&dir, "part", (), None).unwrap();
+        let st = ChunkedParquetReader::par_load_batched(&dir, "part", (), None).unwrap();
         assert_eq!(st.batches.len(), 8);
         for (i, batch) in st.batches.iter().enumerate() {
             assert_eq!(batch.n_rows, 2);
@@ -130,7 +159,7 @@ mod tests {
         // length prefix was parsed as garbage - causing
         // `parse_dictionary_values` to ask for ~50 MB and fail with
         // `UnexpectedEof`. This test exercises the round-trip end-to-end.
-        use crate::models::readers::parquet_reader::read_parquet_table;
+        use crate::models::readers::parquet_reader::load_parquet_table;
         use crate::models::writers::parquet_writer::write_parquet_table;
         use minarrow::{
             Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, TextArray,
@@ -168,7 +197,7 @@ mod tests {
         )
         .unwrap();
 
-        let got = read_parquet_table(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
+        let got = load_parquet_table(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
             .expect("categorical column must round-trip via Parquet");
         assert_eq!(got.n_rows, n_rows);
         assert_eq!(got.cols.len(), 1);
@@ -177,12 +206,12 @@ mod tests {
     }
 
     #[test]
-    fn par_read_all_handles_empty_directory() {
+    fn par_load_batched_handles_empty_directory() {
         let dir = std::env::temp_dir().join("lightstream_chunked_parquet_par_reader_empty");
         let _ = fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let st = ChunkedParquetReader::par_read_all(&dir, "part", (), None).unwrap();
+        let st = ChunkedParquetReader::par_load_batched(&dir, "part", (), None).unwrap();
         assert!(st.batches.is_empty());
         assert_eq!(st.n_rows, 0);
 

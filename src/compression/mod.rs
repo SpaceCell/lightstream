@@ -73,6 +73,10 @@ impl Compression {
 ///
 /// # Errors
 /// Returns [`IoError::Compression`] if codec fails.
+#[cfg_attr(
+    not(any(feature = "snappy", feature = "zstd")),
+    allow(unused_variables)
+)]
 pub fn compress(input: &[u8], codec: Compression) -> Result<Vec<u8>, IoError> {
     match codec {
         #[cfg(feature = "snappy")]
@@ -113,6 +117,10 @@ fn zstd_compress(input: &[u8]) -> Result<Vec<u8>, IoError> {
 ///
 /// # Errors
 /// Returns [`IoError::Compression`] on failure or if codec not enabled.
+#[cfg_attr(
+    not(any(feature = "snappy", feature = "zstd")),
+    allow(unused_variables)
+)]
 pub fn decompress(input: &[u8], codec: Compression) -> Result<Vec<u8>, IoError> {
     match codec {
         #[cfg(feature = "snappy")]

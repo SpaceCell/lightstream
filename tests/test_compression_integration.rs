@@ -83,11 +83,11 @@ async fn test_compression_none_integration() {
     // Write with no compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -117,11 +117,11 @@ async fn test_snappy_compression_integration() {
     // Write with Snappy compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Snappy,
+            Some(Compression::Snappy),
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -155,11 +155,11 @@ async fn test_zstd_compression_integration() {
     // Write with Zstd compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Zstd,
+            Some(Compression::Zstd),
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -192,11 +192,11 @@ async fn test_compression_size_comparison() {
     // Write uncompressed
     {
         let file = File::create(temp_none.path()).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -208,11 +208,11 @@ async fn test_compression_size_comparison() {
     #[cfg(feature = "snappy")]
     {
         let file = File::create(_temp_snappy.path()).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Snappy,
+            Some(Compression::Snappy),
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -225,11 +225,11 @@ async fn test_compression_size_comparison() {
     #[cfg(feature = "zstd")]
     {
         let file = File::create(_temp_zstd.path()).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::Zstd,
+            Some(Compression::Zstd),
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -264,11 +264,11 @@ async fn test_stream_protocol_with_compression() {
     // Write with Stream protocol and compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::Stream,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer.write_all_tables(vec![table.clone()]).await.unwrap();
@@ -298,11 +298,11 @@ async fn test_multiple_tables_with_compression() {
     // Write multiple tables with compression
     {
         let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new_with_compression(
+        let mut writer = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
         writer.write_all_tables(vec![table1, table2]).await.unwrap();

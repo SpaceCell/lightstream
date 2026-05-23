@@ -137,7 +137,7 @@ fn roundtrip_via_reader_writer_ndjson() {
         dec_opts,
         10,
     );
-    let out = reader.into_table().unwrap();
+    let out = reader.load_table().unwrap();
     assert_eq!(out.n_rows, 3);
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Writes ~100 MiB worth of batches into a tmp directory as
 //! `<base>-NNNNNNNNNN.<ext>` chunk files, reads them back via the serial
-//! Iterator path and the parallel `par_read_all` path, then deletes the
+//! Iterator path and the parallel `par_load_batched` path, then deletes the
 //! directory. Covers each enabled chunked format - Arrow IPC always,
 //! CSV always, Parquet under the `parquet` feature.
 //!
@@ -261,7 +261,7 @@ fn bench_chunked_arrow(c: &mut Criterion) {
             || evict_pages(&read_dir),
             |_| {
                 let r = ChunkedArrowReader::open(&read_dir, BASE, ()).unwrap();
-                let st = r.read_all().unwrap();
+                let st = r.load_batched().unwrap();
                 assert_eq!(st.batches.len(), N_CHUNKS);
                 assert_eq!(st.n_rows, N_CHUNKS * BENCH_ROWS);
                 std::hint::black_box(st);
@@ -270,11 +270,11 @@ fn bench_chunked_arrow(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("par_read_all", |b| {
+    group.bench_function("par_load_batched", |b| {
         b.iter_batched(
             || evict_pages(&read_dir),
             |_| {
-                let st = ChunkedArrowReader::par_read_all(&read_dir, BASE, (), None).unwrap();
+                let st = ChunkedArrowReader::par_load_batched(&read_dir, BASE, (), None).unwrap();
                 assert_eq!(st.batches.len(), N_CHUNKS);
                 assert_eq!(st.n_rows, N_CHUNKS * BENCH_ROWS);
                 std::hint::black_box(st);
@@ -293,7 +293,6 @@ fn bench_chunked_arrow(c: &mut Criterion) {
 
 #[cfg(feature = "parquet")]
 fn bench_chunked_parquet(c: &mut Criterion) {
-    use lightstream::compression::Compression;
     use lightstream::models::readers::chunked_parquet::ChunkedParquetReader;
     use lightstream::models::writers::chunked_parquet::ChunkedParquetWriter;
     use minarrow::Table;
@@ -308,7 +307,7 @@ fn bench_chunked_parquet(c: &mut Criterion) {
     // Pre-write the dataset once to learn the real physical byte count.
     let read_dir = fresh_dir("parquet_read");
     {
-        let mut w = ChunkedParquetWriter::new(&read_dir, BASE, Compression::None).unwrap();
+        let mut w = ChunkedParquetWriter::new(&read_dir, BASE, None).unwrap();
         for t in &tables {
             w.write_chunk(t).unwrap();
         }
@@ -324,13 +323,13 @@ fn bench_chunked_parquet(c: &mut Criterion) {
     // dir. Denominator = output file bytes. Cleanup of the chunk dir
     // is NOT in the timed region.
     let write_serial_logical = |dir: PathBuf| {
-        let mut w = ChunkedParquetWriter::new(&dir, BASE, Compression::None).unwrap();
+        let mut w = ChunkedParquetWriter::new(&dir, BASE, None).unwrap();
         for t in &tables {
             w.write_chunk(t).unwrap();
         }
     };
     let write_serial_physical = |dir: PathBuf| {
-        let mut w = ChunkedParquetWriter::new(&dir, BASE, Compression::None).unwrap();
+        let mut w = ChunkedParquetWriter::new(&dir, BASE, None).unwrap();
         let mut paths: Vec<PathBuf> = Vec::with_capacity(N_CHUNKS);
         for t in &tables {
             paths.push(w.write_chunk(t).unwrap());
@@ -360,12 +359,12 @@ fn bench_chunked_parquet(c: &mut Criterion) {
     });
 
     let par_write_logical = |dir: PathBuf| {
-        let w = ChunkedParquetWriter::new(&dir, BASE, Compression::None).unwrap();
+        let w = ChunkedParquetWriter::new(&dir, BASE, None).unwrap();
         let paths = w.par_write_all(&table_refs, None).unwrap();
         assert_eq!(paths.len(), N_CHUNKS);
     };
     let par_write_physical = |dir: PathBuf| {
-        let w = ChunkedParquetWriter::new(&dir, BASE, Compression::None).unwrap();
+        let w = ChunkedParquetWriter::new(&dir, BASE, None).unwrap();
         let paths = w.par_write_all(&table_refs, None).unwrap();
         assert_eq!(paths.len(), N_CHUNKS);
         for p in &paths {
@@ -398,7 +397,7 @@ fn bench_chunked_parquet(c: &mut Criterion) {
             || evict_pages(&read_dir),
             |_| {
                 let r = ChunkedParquetReader::open(&read_dir, BASE, ()).unwrap();
-                let st = r.read_all().unwrap();
+                let st = r.load_batched().unwrap();
                 assert_eq!(st.batches.len(), N_CHUNKS);
                 assert_eq!(st.n_rows, N_CHUNKS * BENCH_ROWS);
                 std::hint::black_box(st);
@@ -407,11 +406,11 @@ fn bench_chunked_parquet(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("par_read_all", |b| {
+    group.bench_function("par_load_batched", |b| {
         b.iter_batched(
             || evict_pages(&read_dir),
             |_| {
-                let st = ChunkedParquetReader::par_read_all(&read_dir, BASE, (), None).unwrap();
+                let st = ChunkedParquetReader::par_load_batched(&read_dir, BASE, (), None).unwrap();
                 assert_eq!(st.batches.len(), N_CHUNKS);
                 assert_eq!(st.n_rows, N_CHUNKS * BENCH_ROWS);
                 std::hint::black_box(st);
@@ -541,7 +540,7 @@ fn bench_chunked_csv(c: &mut Criterion) {
             || evict_pages(&read_dir),
             |_| {
                 let r = ChunkedCsvReader::open(&read_dir, BASE, read_opts()).unwrap();
-                let st = r.read_all().unwrap();
+                let st = r.load_batched().unwrap();
                 assert_eq!(st.batches.len(), N_CHUNKS);
                 assert_eq!(st.n_rows, N_CHUNKS * BENCH_ROWS);
                 std::hint::black_box(st);
@@ -550,12 +549,12 @@ fn bench_chunked_csv(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("par_read_all", |b| {
+    group.bench_function("par_load_batched", |b| {
         b.iter_batched(
             || evict_pages(&read_dir),
             |_| {
                 let st =
-                    ChunkedCsvReader::par_read_all(&read_dir, BASE, read_opts(), None).unwrap();
+                    ChunkedCsvReader::par_load_batched(&read_dir, BASE, read_opts(), None).unwrap();
                 assert_eq!(st.batches.len(), N_CHUNKS);
                 assert_eq!(st.n_rows, N_CHUNKS * BENCH_ROWS);
                 std::hint::black_box(st);

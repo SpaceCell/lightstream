@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 #[cfg(any(feature = "tcp", feature = "uds"))]
-use lightstream::compression::Compression;
-#[cfg(any(feature = "tcp", feature = "uds"))]
 use lightstream::enums::IPCMessageProtocol;
 #[cfg(any(feature = "tcp", feature = "uds"))]
 use lightstream::models::codecs::ipc::ArrowIpcCodec;
@@ -59,7 +57,7 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         let mut codec = ArrowIpcCodec::<Vec64<u8>>::new(
                             write_schema,
                             IPCMessageProtocol::Stream,
-                            Compression::None,
+                            None,
                             None,
                         );
                         codec.register_dictionary(
@@ -215,7 +213,7 @@ fn bench_stream_throughput(c: &mut Criterion) {
                         let mut codec = ArrowIpcCodec::<Vec64<u8>>::new(
                             write_schema,
                             IPCMessageProtocol::Stream,
-                            Compression::None,
+                            None,
                             None,
                         );
                         codec.register_dictionary(

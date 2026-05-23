@@ -94,6 +94,17 @@ impl<const ALIGN: usize> MemMap<{ ALIGN }> {
             return Err(Error::last_os_error());
         }
 
+        // Tell the kernel to use aggressive read-ahead for this mapping.
+        // Without this advice the OS treats mmap'd reads conservatively
+        // compared to explicit `read`/`pread` syscalls, which can leave
+        // cold sequential mmap reads 2x slower than file-reader paths.
+        // `madvise` is advisory; failure is ignored.
+        // SAFETY: `ptr` and `map_len` describe the live mapping just
+        // returned by `mmap`; both arguments are valid for `madvise`.
+        unsafe {
+            libc::madvise(ptr, map_len, libc::MADV_SEQUENTIAL);
+        }
+
         // SAFETY: `ptr` is the base of a `map_len`-byte mapping and
         // `offset_in_page < page_size <= map_len`, so the resulting pointer
         // stays inside the same allocation.

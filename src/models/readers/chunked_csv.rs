@@ -6,14 +6,16 @@
 //! rows). The reader sorts files by their numeric index so consumers see
 //! batches in write order.
 //!
-//! Inherits [`ChunkedTableReader::par_read_all`] for sync parallel
+//! Inherits [`ChunkedTableReader::par_load_batched`] for sync parallel
 //! decode across chunk files.
 
 use std::fs::{self, File};
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 
-use minarrow::{Concatenate, Table};
+use std::sync::Arc;
+
+use minarrow::{ColumnSelection, Concatenate, SuperTable, Table};
 
 use crate::models::decoders::csv::CsvDecodeOptions;
 use crate::models::readers::csv_reader::CsvReader;
@@ -41,7 +43,8 @@ impl Default for ChunkedCsvReadOptions {
 /// the next file lazily; the previous file's reader is dropped before the
 /// next is opened, so file handles do not accumulate.
 pub struct ChunkedCsvReader {
-    paths: std::vec::IntoIter<PathBuf>,
+    paths: Vec<PathBuf>,
+    cursor: usize,
     options: ChunkedCsvReadOptions,
 }
 
@@ -56,9 +59,14 @@ impl ChunkedTableReader for ChunkedCsvReader {
     ) -> io::Result<Self> {
         let paths = Self::list_paths(dir, base)?;
         Ok(Self {
-            paths: paths.into_iter(),
+            paths,
+            cursor: 0,
             options,
         })
+    }
+
+    fn paths(&self) -> &[PathBuf] {
+        &self.paths
     }
 
     fn list_paths<P: AsRef<Path>>(dir: P, base: &str) -> io::Result<Vec<PathBuf>> {
@@ -83,10 +91,14 @@ impl ChunkedTableReader for ChunkedCsvReader {
         Ok(indexed.into_iter().map(|(_, p)| p).collect())
     }
 
-    fn read_chunk(path: &Path, options: &ChunkedCsvReadOptions) -> io::Result<Table> {
+    fn read_chunk(&self, path: &Path) -> io::Result<Table> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let mut csv = CsvReader::from_reader(reader, options.decode.clone(), options.batch_size);
+        let mut csv = CsvReader::from_reader(
+            reader,
+            self.options.decode.clone(),
+            self.options.batch_size,
+        );
         // A chunk file is one complete CSV; pull its single batch (or
         // accumulate batches if the chunk is large enough that the reader
         // splits internally) into one Table.
@@ -106,14 +118,43 @@ impl ChunkedTableReader for ChunkedCsvReader {
         }
         Ok(accumulated.unwrap_or_default())
     }
+
+    /// CSV is row-oriented on disk; the decoder must read every row's
+    /// bytes to find delimiters regardless of which columns are kept.
+    /// Projection here is applied via minarrow's `ColumnSelection`
+    /// after the chunk has been decoded - it saves Table-level storage
+    /// for non-selected columns but does not save disk I/O. For
+    /// column-oriented disk reads use chunked Parquet or chunked
+    /// Arrow IPC where the format supports per-column access.
+    fn read_chunk_cols(&self, path: &Path, columns: &[&str]) -> io::Result<Table> {
+        let table = self.read_chunk(path)?;
+        Ok(table.c(columns).to_table())
+    }
+
+    fn load_batched_cols(self, columns: &[&str]) -> io::Result<SuperTable> {
+        let mut batches: Vec<Arc<Table>> = Vec::new();
+        let mut name: Option<String> = None;
+        for path in &self.paths[self.cursor..] {
+            let table = self.read_chunk_cols(path, columns)?;
+            if name.is_none() {
+                name = Some(table.name.clone());
+            }
+            batches.push(Arc::new(table));
+        }
+        Ok(SuperTable::from_batches(
+            batches,
+            name.or(Some("chunked".into())),
+        ))
+    }
 }
 
 impl Iterator for ChunkedCsvReader {
     type Item = io::Result<Table>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let path = self.paths.next()?;
-        Some(Self::read_chunk(&path, &self.options))
+        let path = self.paths.get(self.cursor)?.clone();
+        self.cursor += 1;
+        Some(self.read_chunk(&path))
     }
 }
 
@@ -150,7 +191,7 @@ mod tests {
             },
         )
         .unwrap();
-        let combined = reader.read_all().unwrap();
+        let combined = reader.load_batched().unwrap();
         assert_eq!(combined.n_rows, 9);
         assert_eq!(combined.batches.len(), 3);
 
@@ -158,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn par_read_all_returns_batches_in_write_order() {
+    fn par_load_batched_returns_batches_in_write_order() {
         let dir = std::env::temp_dir().join("lightstream_chunked_csv_par_reader");
         let _ = fs::remove_dir_all(&dir);
 
@@ -171,7 +212,7 @@ mod tests {
             .unwrap();
         }
 
-        let st = ChunkedCsvReader::par_read_all(
+        let st = ChunkedCsvReader::par_load_batched(
             &dir,
             "part",
             ChunkedCsvReadOptions {

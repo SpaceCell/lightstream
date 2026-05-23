@@ -1,15 +1,223 @@
 //! Shared helpers for throughput benchmarks.
+//!
+//! The matrix described by [`BenchShape`] x [`BenchScale`] is consumed
+//! by the network and file throughput benches and the head-to-head
+//! comparison against Arrow Flight. The shape exercises a specific
+//! decoder path - numeric only, wide schemas, string-heavy mixes, or
+//! the canonical mixed table - and the scale selects row count.
+//!
+//! Bench presets are configured via the `LIGHTSTREAM_BENCH_MATRIX`
+//! environment variable:
+//!
+//! - `quick`   - one cell, fastest run, suitable for local smoke checks.
+//! - `standard` (default) - six cells covering each shape at Small scale
+//!   plus two mid-scale cells.
+//! - `full`    - sixteen cells across all shapes and scales including
+//!   the Large scale that produces multi-GiB per-iteration payloads.
 
+#![allow(dead_code)]
+
+use std::env;
 use std::sync::Arc;
 
 use minarrow::{
-    Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, Table, TextArray,
-    Vec64, arr_f64, arr_i32, arr_str32, ffi::arrow_dtype::CategoricalIndexType,
+    Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
+    IntegerArray, NumericArray, Table, TextArray, Vec64, arr_f64, arr_i32, arr_str32,
+    ffi::arrow_dtype::CategoricalIndexType,
 };
+
+// ---------------------------------------------------------------------------
+// Shape and scale
+// ---------------------------------------------------------------------------
+
+/// Workload payload shape. Each shape stresses a different decoder path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchShape {
+    /// Four numeric columns - `i32`, `i64`, `f32`, `f64`. Tests the
+    /// fixed-width buffer copy and SIMD-friendly numeric path.
+    NarrowNumeric,
+    /// One hundred columns split 25 each across `i32`, `i64`, `f32`,
+    /// `f64`. Tests schema-handling and per-buffer overhead.
+    Wide,
+    /// Four columns - `i32` id, long `utf8`, short `utf8`,
+    /// `categorical32` with a hundred unique values. Tests offset
+    /// buffers, variable-length payload, and dictionary roundtripping.
+    StringHeavy,
+    /// Four columns - `i32`, `f64`, short `utf8`, `categorical32` with
+    /// three unique values. Canonical mixed shape matching the
+    /// pre-matrix bench layout.
+    Mixed,
+}
+
+impl BenchShape {
+    pub fn label(self) -> &'static str {
+        match self {
+            BenchShape::NarrowNumeric => "narrow_numeric",
+            BenchShape::Wide => "wide",
+            BenchShape::StringHeavy => "string_heavy",
+            BenchShape::Mixed => "mixed",
+        }
+    }
+
+    /// Dictionary registrations the writer needs to perform for this shape,
+    /// keyed by column index. Returns an empty vector for shapes without
+    /// categorical columns.
+    pub fn dictionary_registrations(self) -> Vec<(i64, Vec<String>)> {
+        match self {
+            BenchShape::Mixed => vec![(
+                3,
+                vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+            )],
+            BenchShape::StringHeavy => vec![(
+                3,
+                (0..STRING_HEAVY_DICT_CARDINALITY)
+                    .map(|i| format!("cat_{:03}", i))
+                    .collect(),
+            )],
+            BenchShape::NarrowNumeric | BenchShape::Wide => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchScale {
+    Tiny,
+    Small,
+    Medium,
+    Large,
+}
+
+impl BenchScale {
+    pub fn rows(self) -> usize {
+        match self {
+            BenchScale::Tiny => 1_000,
+            BenchScale::Small => 100_000,
+            BenchScale::Medium => 1_000_000,
+            BenchScale::Large => 100_000_000,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BenchScale::Tiny => "tiny_1k",
+            BenchScale::Small => "small_100k",
+            BenchScale::Medium => "medium_1M",
+            BenchScale::Large => "large_100M",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Matrix presets
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchMatrix {
+    Quick,
+    Standard,
+    Full,
+}
+
+impl BenchMatrix {
+    /// Resolve the matrix preset from `LIGHTSTREAM_BENCH_MATRIX`.
+    pub fn from_env() -> Self {
+        match env::var("LIGHTSTREAM_BENCH_MATRIX").ok().as_deref() {
+            Some("quick") => BenchMatrix::Quick,
+            Some("full") => BenchMatrix::Full,
+            _ => BenchMatrix::Standard,
+        }
+    }
+
+    pub fn cells(self) -> Vec<(BenchShape, BenchScale)> {
+        use BenchScale::*;
+        use BenchShape::*;
+        match self {
+            BenchMatrix::Quick => vec![(Mixed, Small)],
+            BenchMatrix::Standard => vec![
+                (Mixed, Small),
+                (NarrowNumeric, Small),
+                (StringHeavy, Small),
+                (Wide, Small),
+                (Mixed, Medium),
+                (NarrowNumeric, Medium),
+            ],
+            BenchMatrix::Full => vec![
+                (NarrowNumeric, Tiny),
+                (NarrowNumeric, Small),
+                (NarrowNumeric, Medium),
+                (NarrowNumeric, Large),
+                (Wide, Tiny),
+                (Wide, Small),
+                (Wide, Medium),
+                (Wide, Large),
+                (StringHeavy, Tiny),
+                (StringHeavy, Small),
+                (StringHeavy, Medium),
+                (StringHeavy, Large),
+                (Mixed, Tiny),
+                (Mixed, Small),
+                (Mixed, Medium),
+                (Mixed, Large),
+            ],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compat surface
+// ---------------------------------------------------------------------------
 
 pub const BENCH_ROWS: usize = 100_000;
 
+/// Clone the schema fields off a bench table so writers can be constructed
+/// without re-deriving the type structure at each call site.
+pub fn bench_schema(table: &Table) -> Vec<Field> {
+    table.schema().iter().map(|f| (**f).clone()).collect()
+}
+
+/// Single-shape constructor preserved so the existing single-shape benches
+/// continue to build against the older API.
 pub fn make_bench_table(n_rows: usize) -> Table {
+    make_bench_table_shape(BenchShape::Mixed, n_rows)
+}
+
+/// Single-shape payload accounting preserved for the same reason.
+pub fn logical_payload_bytes(n_rows: usize) -> u64 {
+    logical_payload_bytes_shape(BenchShape::Mixed, n_rows, 1)
+}
+
+// ---------------------------------------------------------------------------
+// Shape-aware table construction
+// ---------------------------------------------------------------------------
+
+/// Build a bench table of the requested shape and row count.
+pub fn make_bench_table_shape(shape: BenchShape, n_rows: usize) -> Table {
+    match shape {
+        BenchShape::Mixed => mixed_table(n_rows),
+        BenchShape::NarrowNumeric => narrow_numeric_table(n_rows),
+        BenchShape::StringHeavy => string_heavy_table(n_rows),
+        BenchShape::Wide => wide_table(n_rows),
+    }
+}
+
+/// Compute the logical payload size of `n_batches` of `shape` x `n_rows`.
+/// Used as the throughput denominator so reported bytes/sec reflects the
+/// raw source columns rather than the encoded bytes on the wire.
+pub fn logical_payload_bytes_shape(shape: BenchShape, n_rows: usize, n_batches: usize) -> u64 {
+    let per_batch = match shape {
+        BenchShape::Mixed => mixed_bytes_per_batch(n_rows),
+        BenchShape::NarrowNumeric => narrow_numeric_bytes_per_batch(n_rows),
+        BenchShape::StringHeavy => string_heavy_bytes_per_batch(n_rows),
+        BenchShape::Wide => wide_bytes_per_batch(n_rows),
+    };
+    (per_batch as u64) * (n_batches as u64)
+}
+
+// ---------------------------------------------------------------------------
+// Mixed (canonical) shape - i32 + f64 + utf8 + categorical
+// ---------------------------------------------------------------------------
+
+fn mixed_table(n_rows: usize) -> Table {
     let ids: Vec64<i32> = (0..n_rows as i32).collect();
     let values: Vec64<f64> = (0..n_rows).map(|i| i as f64 * 0.5).collect();
     let labels: Vec64<String> = (0..n_rows).map(|i| format!("row_{}", i)).collect();
@@ -20,47 +228,9 @@ pub fn make_bench_table(n_rows: usize) -> Table {
     let label_col = FieldArray::from_arr("labels", arr_str32!(label_refs));
 
     #[cfg(not(feature = "default_categorical_8"))]
-    let dict_col = {
-        let indices: Vec64<u32> = (0..n_rows).map(|i| (i % 3) as u32).collect();
-        FieldArray::new(
-            Field {
-                name: "category".into(),
-                dtype: ArrowType::Dictionary(CategoricalIndexType::UInt32),
-                nullable: true,
-                metadata: Default::default(),
-            },
-            Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-                data: Buffer::from(indices),
-                unique_values: Vec64::from(vec![
-                    "red".to_string(),
-                    "green".to_string(),
-                    "blue".to_string(),
-                ]),
-                null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-            }))),
-        )
-    };
+    let dict_col = mixed_dict_col_u32(n_rows);
     #[cfg(feature = "default_categorical_8")]
-    let dict_col = {
-        let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
-        FieldArray::new(
-            Field {
-                name: "category".into(),
-                dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
-                nullable: true,
-                metadata: Default::default(),
-            },
-            Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-                data: Buffer::from(indices),
-                unique_values: Vec64::from(vec![
-                    "red".to_string(),
-                    "green".to_string(),
-                    "blue".to_string(),
-                ]),
-                null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-            }))),
-        )
-    };
+    let dict_col = mixed_dict_col_u8(n_rows);
 
     Table::new(
         "bench_table".to_string(),
@@ -68,12 +238,317 @@ pub fn make_bench_table(n_rows: usize) -> Table {
     )
 }
 
-/// Logical payload size of one batch for throughput reporting.
-pub fn logical_payload_bytes(n_rows: usize) -> u64 {
+#[cfg(not(feature = "default_categorical_8"))]
+fn mixed_dict_col_u32(n_rows: usize) -> FieldArray {
+    let indices: Vec64<u32> = (0..n_rows).map(|i| (i % 3) as u32).collect();
+    FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt32),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
+            data: Buffer::from(indices),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(n_rows, true)),
+        }))),
+    )
+}
+
+#[cfg(feature = "default_categorical_8")]
+fn mixed_dict_col_u8(n_rows: usize) -> FieldArray {
+    let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
+    FieldArray::new(
+        Field {
+            name: "category".into(),
+            dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            nullable: true,
+            metadata: Default::default(),
+        },
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+            data: Buffer::from(indices),
+            unique_values: Vec64::from(vec![
+                "red".to_string(),
+                "green".to_string(),
+                "blue".to_string(),
+            ]),
+            null_mask: Some(Bitmask::new_set_all(n_rows, true)),
+        }))),
+    )
+}
+
+fn mixed_bytes_per_batch(n_rows: usize) -> usize {
     let ids = n_rows * size_of::<i32>();
     let values = n_rows * size_of::<f64>();
     let label_offsets = (n_rows + 1) * size_of::<u32>();
     let label_data: usize = (0..n_rows).map(|i| format!("row_{}", i).len()).sum();
-    let category_indices = n_rows * size_of::<u32>();
-    (ids + values + label_offsets + label_data + category_indices) as u64
+    let category_indices = n_rows
+        * if cfg!(feature = "default_categorical_8") {
+            size_of::<u8>()
+        } else {
+            size_of::<u32>()
+        };
+    ids + values + label_offsets + label_data + category_indices
+}
+
+// ---------------------------------------------------------------------------
+// Narrow numeric - i32 + i64 + f32 + f64
+// ---------------------------------------------------------------------------
+
+fn narrow_numeric_table(n_rows: usize) -> Table {
+    let ids: Vec64<i32> = (0..n_rows as i32).collect();
+    let counters: Vec64<i64> = (0..n_rows).map(|i| (i as i64) * 7).collect();
+    let prices: Vec64<f32> = (0..n_rows).map(|i| i as f32 * 0.25).collect();
+    let values: Vec64<f64> = (0..n_rows).map(|i| i as f64 * 0.5).collect();
+
+    let id_col = FieldArray::new(
+        Field {
+            name: "ids".into(),
+            dtype: ArrowType::Int32,
+            nullable: false,
+            metadata: Default::default(),
+        },
+        Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
+            data: Buffer::from(ids),
+            null_mask: None,
+        }))),
+    );
+    let counter_col = FieldArray::new(
+        Field {
+            name: "counters".into(),
+            dtype: ArrowType::Int64,
+            nullable: false,
+            metadata: Default::default(),
+        },
+        Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+            data: Buffer::from(counters),
+            null_mask: None,
+        }))),
+    );
+    let price_col = FieldArray::new(
+        Field {
+            name: "prices".into(),
+            dtype: ArrowType::Float32,
+            nullable: false,
+            metadata: Default::default(),
+        },
+        Array::NumericArray(NumericArray::Float32(Arc::new(FloatArray {
+            data: Buffer::from(prices),
+            null_mask: None,
+        }))),
+    );
+    let value_col = FieldArray::new(
+        Field {
+            name: "values".into(),
+            dtype: ArrowType::Float64,
+            nullable: false,
+            metadata: Default::default(),
+        },
+        Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
+            data: Buffer::from(values),
+            null_mask: None,
+        }))),
+    );
+
+    Table::new(
+        "bench_narrow_numeric".to_string(),
+        Some(vec![id_col, counter_col, price_col, value_col]),
+    )
+}
+
+fn narrow_numeric_bytes_per_batch(n_rows: usize) -> usize {
+    n_rows * (size_of::<i32>() + size_of::<i64>() + size_of::<f32>() + size_of::<f64>())
+}
+
+// ---------------------------------------------------------------------------
+// String-heavy - i32 + long utf8 + short utf8 + dictionary100
+// ---------------------------------------------------------------------------
+
+const STRING_HEAVY_DICT_CARDINALITY: usize = 100;
+
+fn string_heavy_table(n_rows: usize) -> Table {
+    let ids: Vec64<i32> = (0..n_rows as i32).collect();
+    let id_col = FieldArray::from_arr("ids", arr_i32!(ids));
+
+    let long_strings: Vec64<String> = (0..n_rows)
+        .map(|i| {
+            format!(
+                "row_{:08}_payload_{:08x}_lorem_ipsum_dolor_sit",
+                i,
+                i.wrapping_mul(2_654_435_761)
+            )
+        })
+        .collect();
+    let long_refs: Vec64<&str> = long_strings.iter().map(String::as_str).collect();
+    let long_col = FieldArray::from_arr("long_text", arr_str32!(long_refs));
+
+    let short_strings: Vec64<String> = (0..n_rows)
+        .map(|i| format!("s_{:04x}", (i & 0xFFFF) as u16))
+        .collect();
+    let short_refs: Vec64<&str> = short_strings.iter().map(String::as_str).collect();
+    let short_col = FieldArray::from_arr("short_text", arr_str32!(short_refs));
+
+    let unique: Vec64<String> = (0..STRING_HEAVY_DICT_CARDINALITY)
+        .map(|i| format!("cat_{:03}", i))
+        .collect();
+
+    #[cfg(not(feature = "default_categorical_8"))]
+    let dict_col = {
+        let indices: Vec64<u32> = (0..n_rows)
+            .map(|i| (i % STRING_HEAVY_DICT_CARDINALITY) as u32)
+            .collect();
+        FieldArray::new(
+            Field {
+                name: "category".into(),
+                dtype: ArrowType::Dictionary(CategoricalIndexType::UInt32),
+                nullable: false,
+                metadata: Default::default(),
+            },
+            Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
+                data: Buffer::from(indices),
+                unique_values: unique,
+                null_mask: None,
+            }))),
+        )
+    };
+    #[cfg(feature = "default_categorical_8")]
+    let dict_col = {
+        // The Categorical8 variant can only address 256 entries; 100 fits.
+        let indices: Vec64<u8> = (0..n_rows)
+            .map(|i| (i % STRING_HEAVY_DICT_CARDINALITY) as u8)
+            .collect();
+        FieldArray::new(
+            Field {
+                name: "category".into(),
+                dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                nullable: false,
+                metadata: Default::default(),
+            },
+            Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+                data: Buffer::from(indices),
+                unique_values: unique,
+                null_mask: None,
+            }))),
+        )
+    };
+
+    Table::new(
+        "bench_string_heavy".to_string(),
+        Some(vec![id_col, long_col, short_col, dict_col]),
+    )
+}
+
+fn string_heavy_bytes_per_batch(n_rows: usize) -> usize {
+    let ids = n_rows * size_of::<i32>();
+    let long_offsets = (n_rows + 1) * size_of::<u32>();
+    let long_data: usize = (0..n_rows)
+        .map(|i| {
+            format!(
+                "row_{:08}_payload_{:08x}_lorem_ipsum_dolor_sit",
+                i,
+                i.wrapping_mul(2_654_435_761)
+            )
+            .len()
+        })
+        .sum();
+    let short_offsets = (n_rows + 1) * size_of::<u32>();
+    let short_data: usize = (0..n_rows)
+        .map(|i| format!("s_{:04x}", (i & 0xFFFF) as u16).len())
+        .sum();
+    let category_indices = n_rows
+        * if cfg!(feature = "default_categorical_8") {
+            size_of::<u8>()
+        } else {
+            size_of::<u32>()
+        };
+    ids + long_offsets + long_data + short_offsets + short_data + category_indices
+}
+
+// ---------------------------------------------------------------------------
+// Wide - 25 each of i32 / i64 / f32 / f64 = 100 cols
+// ---------------------------------------------------------------------------
+
+const WIDE_GROUP_SIZE: usize = 25;
+const WIDE_NUM_COLS: usize = WIDE_GROUP_SIZE * 4;
+
+fn wide_table(n_rows: usize) -> Table {
+    let mut cols: Vec<FieldArray> = Vec::with_capacity(WIDE_NUM_COLS);
+
+    for k in 0..WIDE_GROUP_SIZE {
+        let data: Vec64<i32> = (0..n_rows)
+            .map(|i| (i as i32).wrapping_add(k as i32))
+            .collect();
+        cols.push(FieldArray::new(
+            Field {
+                name: format!("i32_{:03}", k).into(),
+                dtype: ArrowType::Int32,
+                nullable: false,
+                metadata: Default::default(),
+            },
+            Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
+                data: Buffer::from(data),
+                null_mask: None,
+            }))),
+        ));
+    }
+    for k in 0..WIDE_GROUP_SIZE {
+        let data: Vec64<i64> = (0..n_rows)
+            .map(|i| (i as i64).wrapping_mul(k as i64 + 1))
+            .collect();
+        cols.push(FieldArray::new(
+            Field {
+                name: format!("i64_{:03}", k).into(),
+                dtype: ArrowType::Int64,
+                nullable: false,
+                metadata: Default::default(),
+            },
+            Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+                data: Buffer::from(data),
+                null_mask: None,
+            }))),
+        ));
+    }
+    for k in 0..WIDE_GROUP_SIZE {
+        let data: Vec64<f32> = (0..n_rows).map(|i| i as f32 + k as f32 * 0.125).collect();
+        cols.push(FieldArray::new(
+            Field {
+                name: format!("f32_{:03}", k).into(),
+                dtype: ArrowType::Float32,
+                nullable: false,
+                metadata: Default::default(),
+            },
+            Array::NumericArray(NumericArray::Float32(Arc::new(FloatArray {
+                data: Buffer::from(data),
+                null_mask: None,
+            }))),
+        ));
+    }
+    for k in 0..WIDE_GROUP_SIZE {
+        let data: Vec64<f64> = (0..n_rows).map(|i| i as f64 + k as f64 * 0.5).collect();
+        cols.push(FieldArray::new(
+            Field {
+                name: format!("f64_{:03}", k).into(),
+                dtype: ArrowType::Float64,
+                nullable: false,
+                metadata: Default::default(),
+            },
+            Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
+                data: Buffer::from(data),
+                null_mask: None,
+            }))),
+        ));
+    }
+
+    Table::new("bench_wide".to_string(), Some(cols))
+}
+
+fn wide_bytes_per_batch(n_rows: usize) -> usize {
+    n_rows
+        * WIDE_GROUP_SIZE
+        * (size_of::<i32>() + size_of::<i64>() + size_of::<f32>() + size_of::<f64>())
 }

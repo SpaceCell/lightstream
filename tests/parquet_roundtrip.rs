@@ -4,7 +4,7 @@ mod parquet_writer_integration_tests {
     use lightstream::{
         compression::Compression,
         models::{
-            readers::parquet_reader::read_parquet_table,
+            readers::parquet_reader::load_parquet_table,
             writers::parquet_writer::{PARQUET_PAGE_CHUNK_SIZE, write_parquet_table},
         },
     };
@@ -14,11 +14,11 @@ mod parquet_writer_integration_tests {
     };
     use std::io::{Cursor, Seek, SeekFrom};
 
-    fn roundtrip_table(table: &Table, compression: Compression) -> Table {
+    fn roundtrip_table(table: &Table, compression: Option<Compression>) -> Table {
         let mut buf = Cursor::new(Vec::new());
         write_parquet_table(table, &mut buf, compression).expect("writer must not fail");
         buf.seek(SeekFrom::Start(0)).unwrap();
-        let out = read_parquet_table(&mut buf).expect("reader must not fail");
+        let out = load_parquet_table(&mut buf).expect("reader must not fail");
         assert_eq!(out.n_rows, table.n_rows, "row count must match");
         out
     }
@@ -33,7 +33,7 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::None);
+        let out = roundtrip_table(&table, None);
         let col = &out.cols[0];
         assert_eq!(col.len(), 5);
         if let Array::NumericArray(NumericArray::Int32(a)) = &col.array {
@@ -53,7 +53,7 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::None);
+        let out = roundtrip_table(&table, None);
         let col = &out.cols[0];
         assert_eq!(col.len(), data.len());
         if let Array::BooleanArray(a) = &col.array {
@@ -78,7 +78,7 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::None);
+        let out = roundtrip_table(&table, None);
         let col = &out.cols[0];
         assert_eq!(col.len(), 4);
 
@@ -183,7 +183,7 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::None);
+        let out = roundtrip_table(&table, None);
         let col = &out.cols[0];
         assert_eq!(col.len(), 6);
 
@@ -209,9 +209,9 @@ mod parquet_writer_integration_tests {
     fn write_empty_table() {
         let table = Table::new("tbl".to_string(), Some(vec![]));
         let mut buf = Cursor::new(Vec::new());
-        assert!(write_parquet_table(&table, &mut buf, Compression::None).is_ok());
+        assert!(write_parquet_table(&table, &mut buf, None).is_ok());
         buf.seek(SeekFrom::Start(0)).unwrap();
-        let readback = read_parquet_table(&mut buf).expect("Empty table must still be readable");
+        let readback = load_parquet_table(&mut buf).expect("Empty table must still be readable");
         assert_eq!(readback.n_rows, 0);
         assert!(readback.cols.is_empty());
     }
@@ -231,7 +231,7 @@ mod parquet_writer_integration_tests {
             )]),
         );
 
-        let out = roundtrip_table(&table, Compression::None);
+        let out = roundtrip_table(&table, None);
         let col = &out.cols[0];
         assert_eq!(col.len(), 4);
         if let Array::NumericArray(NumericArray::Int64(a)) = &col.array {
@@ -257,7 +257,7 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::None);
+        let out = roundtrip_table(&table, None);
         let col = &out.cols[0];
         if let Array::NumericArray(NumericArray::Int32(a)) = &col.array {
             assert_eq!(a.data.as_slice(), &values);

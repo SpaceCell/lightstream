@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(w.batches_written(), 10);
 
         let st =
-            ChunkedCsvReader::par_read_all(&dir, "part", ChunkedCsvReadOptions::default(), None)
+            ChunkedCsvReader::par_load_batched(&dir, "part", ChunkedCsvReadOptions::default(), None)
                 .unwrap();
         assert_eq!(st.batches.len(), 10);
 

@@ -58,22 +58,22 @@ async fn test_compression_api_compilation() {
         let schema: Vec<Field> = table.cols.iter().map(|col| (*col.field).clone()).collect();
 
         // Test each compression option compiles
-        let _writer_none = TableWriter::new_with_compression(
+        let _writer_none = TableWriter::new(
             file,
             schema.clone(),
             IPCMessageProtocol::File,
-            Compression::None,
+            None,
         )
         .unwrap();
 
         #[cfg(feature = "snappy")]
         {
             let file = File::create(file_path).await.unwrap();
-            let _writer_snappy = TableWriter::new_with_compression(
+            let _writer_snappy = TableWriter::new(
                 file,
                 schema.clone(),
                 IPCMessageProtocol::File,
-                Compression::Snappy,
+                Some(Compression::Snappy),
             )
             .unwrap();
         }
@@ -81,11 +81,11 @@ async fn test_compression_api_compilation() {
         #[cfg(feature = "zstd")]
         {
             let file = File::create(file_path).await.unwrap();
-            let _writer_zstd = TableWriter::new_with_compression(
+            let _writer_zstd = TableWriter::new(
                 file,
                 schema,
                 IPCMessageProtocol::File,
-                Compression::Zstd,
+                Some(Compression::Zstd),
             )
             .unwrap();
         }

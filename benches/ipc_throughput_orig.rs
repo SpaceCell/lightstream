@@ -407,10 +407,10 @@ fn bench_ipc_throughput(c: &mut Criterion) {
 
                 let writer = tokio::spawn(async move {
                     let mut writer =
-                        lightstream::models::writers::tcp::TcpTableWriter::connect_with_compression(
+                        lightstream::models::writers::tcp::TcpTableWriter::connect(
                             addr,
                             write_schema,
-                            Compression::Zstd,
+                            Some(Compression::Zstd),
                         )
                         .await
                         .unwrap();
@@ -463,10 +463,10 @@ fn bench_ipc_throughput(c: &mut Criterion) {
 
                 let writer = tokio::spawn(async move {
                     let mut writer =
-                        lightstream::models::writers::uds::UdsTableWriter::connect_with_compression(
+                        lightstream::models::writers::uds::UdsTableWriter::connect(
                             &path,
                             write_schema,
-                            Compression::Zstd,
+                            Some(Compression::Zstd),
                         )
                         .await
                         .unwrap();

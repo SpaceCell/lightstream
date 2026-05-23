@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(w.batches_written(), 3);
 
         let reader = ChunkedParquetReader::open(&dir, "part", ()).unwrap();
-        let st = reader.read_all().unwrap();
+        let st = reader.load_batched().unwrap();
         assert_eq!(st.batches.len(), 3);
         assert_eq!(st.n_rows, 9);
         assert_eq!(st.batches[0].n_rows, 3);
@@ -148,7 +148,7 @@ mod tests {
         }
         assert_eq!(w.batches_written(), 6);
 
-        let st = ChunkedParquetReader::par_read_all(&dir, "part", (), None).unwrap();
+        let st = ChunkedParquetReader::par_load_batched(&dir, "part", (), None).unwrap();
         assert_eq!(st.batches.len(), 6);
 
         fs::remove_dir_all(&dir).ok();

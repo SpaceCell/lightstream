@@ -275,11 +275,11 @@ fn bench_file_throughput(c: &mut Criterion) {
             schema: Vec<Field>,
         ) -> std::io::Result<()> {
             let file = tokio::fs::File::create(path).await?;
-            let mut writer = TableWriter::new_with_compression(
+            let mut writer = TableWriter::new(
                 file,
                 schema,
                 IPCMessageProtocol::File,
-                Compression::Zstd,
+                Some(Compression::Zstd),
             )?;
             // Column 3 is the categorical - register its dictionary
             writer.register_dictionary(

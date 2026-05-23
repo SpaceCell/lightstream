@@ -1,6 +1,6 @@
 //! Column projection tests for Arrow IPC and Parquet file readers.
 //!
-//! Verifies that `read_columns` / `read_parquet_columns` materialise only
+//! Verifies that `read_batch_cols` / `load_parquet_table_cols` materialise only
 //! the requested columns while preserving correct values, row counts, and
 //! schema ordering.
 
@@ -72,12 +72,12 @@ async fn write_to_file(table: &Table) -> NamedTempFile {
 // ── FileTableReader ──────────────────────────────────────────────
 
 #[tokio::test]
-async fn file_read_columns_single_numeric() {
+async fn file_read_batch_cols_single_numeric() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = FileTableReader::open(temp.path()).unwrap();
 
-    let projected = rdr.read_columns(0, &["id"]).unwrap();
+    let projected = rdr.read_batch_cols(0, &["id"]).unwrap();
     assert_eq!(projected.n_rows, 3);
     assert_eq!(projected.cols.len(), 1);
     assert_eq!(projected.cols[0].field.name, "id");
@@ -91,13 +91,13 @@ async fn file_read_columns_single_numeric() {
 }
 
 #[tokio::test]
-async fn file_read_columns_multiple_in_schema_order() {
+async fn file_read_batch_cols_multiple_in_schema_order() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = FileTableReader::open(temp.path()).unwrap();
 
     // Request in reverse order - result should still be schema order
-    let projected = rdr.read_columns(0, &["active", "id"]).unwrap();
+    let projected = rdr.read_batch_cols(0, &["active", "id"]).unwrap();
     assert_eq!(projected.n_rows, 3);
     assert_eq!(projected.cols.len(), 2);
     assert_eq!(projected.cols[0].field.name, "id");
@@ -105,12 +105,12 @@ async fn file_read_columns_multiple_in_schema_order() {
 }
 
 #[tokio::test]
-async fn file_read_columns_with_string() {
+async fn file_read_batch_cols_with_string() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = FileTableReader::open(temp.path()).unwrap();
 
-    let projected = rdr.read_columns(0, &["name"]).unwrap();
+    let projected = rdr.read_batch_cols(0, &["name"]).unwrap();
     assert_eq!(projected.cols.len(), 1);
     match &projected.cols[0].array {
         Array::TextArray(TextArray::String32(arr)) => {
@@ -122,23 +122,23 @@ async fn file_read_columns_with_string() {
 }
 
 #[tokio::test]
-async fn file_read_columns_unknown_name_errors() {
+async fn file_read_batch_cols_unknown_name_errors() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = FileTableReader::open(temp.path()).unwrap();
 
-    let err = rdr.read_columns(0, &["nonexistent"]).unwrap_err();
+    let err = rdr.read_batch_cols(0, &["nonexistent"]).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[tokio::test]
-async fn file_read_columns_all_equals_read_batch() {
+async fn file_read_batch_cols_all_equals_read_batch() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = FileTableReader::open(temp.path()).unwrap();
 
     let all_names: Vec<&str> = rdr.schema().iter().map(|f| f.name.as_str()).collect();
-    let projected = rdr.read_columns(0, &all_names).unwrap();
+    let projected = rdr.read_batch_cols(0, &all_names).unwrap();
     let full = rdr.read_batch(0).unwrap();
 
     assert_eq!(projected.n_rows, full.n_rows);
@@ -152,12 +152,12 @@ async fn file_read_columns_all_equals_read_batch() {
 
 #[tokio::test]
 #[cfg(feature = "mmap")]
-async fn mmap_read_columns_single_numeric() {
+async fn mmap_read_batch_cols_single_numeric() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = MmapTableReader::open(temp.path()).unwrap();
 
-    let projected = rdr.read_columns(0, &["score"]).unwrap();
+    let projected = rdr.read_batch_cols(0, &["score"]).unwrap();
     assert_eq!(projected.n_rows, 3);
     assert_eq!(projected.cols.len(), 1);
     assert_eq!(projected.cols[0].field.name, "score");
@@ -172,12 +172,12 @@ async fn mmap_read_columns_single_numeric() {
 
 #[tokio::test]
 #[cfg(feature = "mmap")]
-async fn mmap_read_columns_multiple_in_schema_order() {
+async fn mmap_read_batch_cols_multiple_in_schema_order() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = MmapTableReader::open(temp.path()).unwrap();
 
-    let projected = rdr.read_columns(0, &["name", "id"]).unwrap();
+    let projected = rdr.read_batch_cols(0, &["name", "id"]).unwrap();
     assert_eq!(projected.cols.len(), 2);
     assert_eq!(projected.cols[0].field.name, "id");
     assert_eq!(projected.cols[1].field.name, "name");
@@ -185,12 +185,12 @@ async fn mmap_read_columns_multiple_in_schema_order() {
 
 #[tokio::test]
 #[cfg(feature = "mmap")]
-async fn mmap_read_columns_with_string() {
+async fn mmap_read_batch_cols_with_string() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = MmapTableReader::open(temp.path()).unwrap();
 
-    let projected = rdr.read_columns(0, &["name"]).unwrap();
+    let projected = rdr.read_batch_cols(0, &["name"]).unwrap();
     assert_eq!(projected.cols.len(), 1);
     match &projected.cols[0].array {
         Array::TextArray(TextArray::String32(arr)) => {
@@ -203,24 +203,24 @@ async fn mmap_read_columns_with_string() {
 
 #[tokio::test]
 #[cfg(feature = "mmap")]
-async fn mmap_read_columns_unknown_name_errors() {
+async fn mmap_read_batch_cols_unknown_name_errors() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = MmapTableReader::open(temp.path()).unwrap();
 
-    let err = rdr.read_columns(0, &["nonexistent"]).unwrap_err();
+    let err = rdr.read_batch_cols(0, &["nonexistent"]).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[tokio::test]
 #[cfg(feature = "mmap")]
-async fn mmap_read_columns_all_equals_read_batch() {
+async fn mmap_read_batch_cols_all_equals_read_batch() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
     let rdr = MmapTableReader::open(temp.path()).unwrap();
 
     let all_names: Vec<&str> = rdr.schema().iter().map(|f| f.name.as_str()).collect();
-    let projected = rdr.read_columns(0, &all_names).unwrap();
+    let projected = rdr.read_batch_cols(0, &all_names).unwrap();
     let full = rdr.read_batch(0).unwrap();
 
     assert_eq!(projected.n_rows, full.n_rows);
@@ -235,7 +235,7 @@ async fn mmap_read_columns_all_equals_read_batch() {
 #[cfg(feature = "parquet")]
 mod parquet {
     use lightstream::compression::Compression;
-    use lightstream::models::readers::parquet_reader::{read_parquet_columns, read_parquet_table};
+    use lightstream::models::readers::parquet_reader::{load_parquet_table_cols, load_parquet_table};
     use lightstream::models::writers::parquet_writer::write_parquet_table;
     use minarrow::{
         Array, ArrowType, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray,
@@ -274,17 +274,17 @@ mod parquet {
 
     fn write_and_rewind(table: &Table) -> Cursor<Vec<u8>> {
         let mut buf = Cursor::new(Vec::new());
-        write_parquet_table(table, &mut buf, Compression::None).unwrap();
+        write_parquet_table(table, &mut buf, None).unwrap();
         buf.seek(SeekFrom::Start(0)).unwrap();
         buf
     }
 
     #[test]
-    fn parquet_read_columns_single_numeric() {
+    fn parquet_read_batch_cols_single_numeric() {
         let table = make_parquet_table();
         let mut buf = write_and_rewind(&table);
 
-        let projected = read_parquet_columns(&mut buf, &["id"]).unwrap();
+        let projected = load_parquet_table_cols(&mut buf, &["id"]).unwrap();
         assert_eq!(projected.n_rows, 3);
         assert_eq!(projected.cols.len(), 1);
         assert_eq!(projected.cols[0].field.name, "id");
@@ -297,23 +297,23 @@ mod parquet {
     }
 
     #[test]
-    fn parquet_read_columns_multiple_in_schema_order() {
+    fn parquet_read_batch_cols_multiple_in_schema_order() {
         let table = make_parquet_table();
         let mut buf = write_and_rewind(&table);
 
         // Request in reverse order - result should still be schema order
-        let projected = read_parquet_columns(&mut buf, &["name", "id"]).unwrap();
+        let projected = load_parquet_table_cols(&mut buf, &["name", "id"]).unwrap();
         assert_eq!(projected.cols.len(), 2);
         assert_eq!(projected.cols[0].field.name, "id");
         assert_eq!(projected.cols[1].field.name, "name");
     }
 
     #[test]
-    fn parquet_read_columns_with_string() {
+    fn parquet_read_batch_cols_with_string() {
         let table = make_parquet_table();
         let mut buf = write_and_rewind(&table);
 
-        let projected = read_parquet_columns(&mut buf, &["name"]).unwrap();
+        let projected = load_parquet_table_cols(&mut buf, &["name"]).unwrap();
         assert_eq!(projected.cols.len(), 1);
         match &projected.cols[0].array {
             Array::TextArray(TextArray::String32(arr)) => {
@@ -330,22 +330,22 @@ mod parquet {
     }
 
     #[test]
-    fn parquet_read_columns_unknown_name_errors() {
+    fn parquet_read_batch_cols_unknown_name_errors() {
         let table = make_parquet_table();
         let mut buf = write_and_rewind(&table);
 
-        let err = read_parquet_columns(&mut buf, &["nonexistent"]);
+        let err = load_parquet_table_cols(&mut buf, &["nonexistent"]);
         assert!(err.is_err());
     }
 
     #[test]
-    fn parquet_read_columns_all_equals_full_read() {
+    fn parquet_read_batch_cols_all_equals_full_read() {
         let table = make_parquet_table();
         let mut buf = write_and_rewind(&table);
-        let full = read_parquet_table(&mut buf).unwrap();
+        let full = load_parquet_table(&mut buf).unwrap();
 
         buf.seek(SeekFrom::Start(0)).unwrap();
-        let projected = read_parquet_columns(&mut buf, &["id", "score", "name"]).unwrap();
+        let projected = load_parquet_table_cols(&mut buf, &["id", "score", "name"]).unwrap();
 
         assert_eq!(projected.n_rows, full.n_rows);
         assert_eq!(projected.cols.len(), full.cols.len());

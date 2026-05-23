@@ -29,8 +29,9 @@ futures-util = { version = "0.3", features = ["sink"] }
 flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
-minarrow = { version = "0.11.0", features = ["chunked", "views", "large_string", "arena", "vmap64", "size"] }
-vec64 = { version = "0.4.3", features = ["mmap"] }
+log = "0.4"
+minarrow = { version = "0.11.0", features = ["chunked", "views", "select", "large_string", "size"], default-features = false }
+vec64 = { version = "0.4.3" }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 zstd = { version = "0.13", optional = true }
@@ -62,12 +63,20 @@ h2 = { version = "0.4", optional = true }
 http = { version = "1", optional = true }
 bytes = { version = "1", optional = true }
 arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
+# Apache Arrow Flight + tonic - only pulled in by the `bench_arrow_flight`
+# bench feature. Outside that feature these are not in the dependency
+# graph at all.
+arrow-flight = { version = "58", optional = true }
+tonic = { version = "0.14", optional = true, features = ["transport"] }
+tokio-stream = { version = "0.1", optional = true, features = ["net"] }
+futures = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
 polars = { version = "0.53", optional = true, default-features = false, features = ["ipc"] }
 # CSV fast-path float parser. Versions match what other deps already pull
 # in transitively, so the dependency tree stays the same size. Integer
 # parsing on the decode path goes through the vendored
 # `decoders::int_ascii` module instead of the `atoi` crate.
 fast-float2 = { version = "0.2", optional = true }
+env_logger = { version = "0.11", optional = true }
 
 [dev-dependencies]
 tempfile = "3.26.0"
@@ -83,15 +92,15 @@ name = "file_throughput"
 harness = false
 
 [[bench]]
-name = "ipc_throughput"
+name = "ipc_throughput_orig"
 harness = false
 
 [[bench]]
-name = "stream_throughput"
+name = "stream_throughput_orig"
 harness = false
 
 [[bench]]
-name = "lightstream_throughput"
+name = "lightstream_throughput_orig"
 harness = false
 required-features = ["protocol", "tcp", "uds"]
 
@@ -103,6 +112,20 @@ required-features = ["json"]
 [[bench]]
 name = "chunked_throughput"
 harness = false
+
+[[bench]]
+name = "transport_throughput"
+harness = false
+
+[[bench]]
+name = "arrow_flight_compare"
+harness = false
+required-features = ["bench_arrow_flight", "tcp"]
+
+[[bench]]
+name = "mmap_streaming"
+harness = false
+required-features = ["mmap"]
 
 [features]
 default_categorical_8 = ["minarrow/default_categorical_8"]
@@ -170,10 +193,33 @@ json = ["dep:simd-json", "dep:memchr", "dep:ryu"]
 
 # Enable arrow-rs comparison in benchmarks
 bench_arrow = ["arrow"]
+# Enable the Arrow Flight head-to-head benchmark. Pulls in arrow,
+# arrow-flight, and tonic; otherwise those dependencies stay out of
+# the build graph.
+bench_arrow_flight = [
+    "arrow",
+    "dep:arrow-flight",
+    "dep:tonic",
+    "dep:tokio-stream",
+    "dep:futures",
+    "dep:bytes",
+]
 # Enable polars comparison in benchmarks
 bench_polars = ["polars"]
+# Optional `env_logger` initialiser available for use inside benches.
+bench_logging = ["dep:env_logger"]
 
-default = ["default_categorical_8"]
+# Page-aware allocator path for large `Vec64` buffers. **Linux only.**
+# Tuned for long-lived analytical buffers; workloads dominated by
+# short-lived per-batch allocations may prefer this off. Off by
+# default. Keeps `vec64` and `minarrow` in sync via the matching
+# propagator feature.
+vmap64 = ["vec64/mmap", "minarrow/vmap64"]
+
+# Long-lived shared backing for reader/writer block buffers.
+arena = ["minarrow/arena"]
+
+default = ["default_categorical_8", "arena"]
 
 [[example]]
 name = "lightstream"
@@ -187,6 +233,16 @@ required-features = ["protocol", "tcp", "msgpack"]
 [[example]]
 name = "tcp_arrow"
 path = "examples/tcp/arrow.rs"
+required-features = ["tcp"]
+
+[[example]]
+name = "bench_sender"
+path = "bench/aws/sender.rs"
+required-features = ["tcp"]
+
+[[example]]
+name = "bench_receiver"
+path = "bench/aws/receiver.rs"
 required-features = ["tcp"]
 
 [[example]]

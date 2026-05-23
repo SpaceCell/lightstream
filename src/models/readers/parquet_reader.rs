@@ -53,7 +53,7 @@ use minarrow::{DatetimeArray, TemporalArray};
 // decode loop in `decode_hybrid`, per-page Read-based allocations in
 // `read_data_page_v1`/`read_data_page_v2`, and the page-header
 // thrift decode.
-pub fn read_parquet_table<R: Read + Seek>(r: R) -> Result<Table, IoError> {
+pub fn load_parquet_table<R: Read + Seek>(r: R) -> Result<Table, IoError> {
     read_parquet_impl(r, None)
 }
 
@@ -86,7 +86,10 @@ fn default_categorical_index_type() -> CategoricalIndexType {
 ///
 /// Because Parquet stores each column at a separate file offset, skipped
 /// columns are never read from disk at all.
-pub fn read_parquet_columns<R: Read + Seek>(r: R, columns: &[&str]) -> Result<Table, IoError> {
+pub fn load_parquet_table_cols<R: Read + Seek>(
+    r: R,
+    columns: &[&str],
+) -> Result<Table, IoError> {
     let projection: std::collections::HashSet<String> =
         columns.iter().map(|s| s.to_string()).collect();
     read_parquet_impl(r, Some(projection))

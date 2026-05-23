@@ -8,10 +8,11 @@
 //! See `CsvDecodeOptions` for configuration.
 
 use crate::models::decoders::csv::{CsvDecodeOptions, decode_csv};
-use minarrow::{Field, Table};
+use minarrow::{Field, SuperTable, Table};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Reads CSV files into Minarrow Tables.
 /// - Use `from_path`, `from_reader`, or `from_slice`.
@@ -190,10 +191,27 @@ impl<R: BufRead> CsvReader<R> {
         Ok(Some(table))
     }
 
-    /// Consume the entire input and return a single Table - all rows
-    pub fn into_table(mut self) -> io::Result<Table> {
+    /// Consume the entire input and return a single Table containing
+    /// every row decoded in one pass through `decode_csv`.
+    pub fn load_table(mut self) -> io::Result<Table> {
         // Always respect has_header on first call
         decode_csv(&mut self.reader, &self.options)
+    }
+
+    /// Consume the entire input and return a `SuperTable` whose batches
+    /// reflect the reader's `batch_size`. Successive `next_batch` calls
+    /// are drained internally; consumers wanting one consolidated Table
+    /// use [`Self::load_table`] instead.
+    pub fn load_batched(mut self) -> io::Result<SuperTable> {
+        let mut batches: Vec<Arc<Table>> = Vec::new();
+        let mut name: Option<String> = None;
+        while let Some(batch) = self.next_batch()? {
+            if name.is_none() {
+                name = Some(batch.name.clone());
+            }
+            batches.push(Arc::new(batch));
+        }
+        Ok(SuperTable::from_batches(batches, name.or(Some("csv".into()))))
     }
 }
 
@@ -239,7 +257,7 @@ mod tests {
         let csv = b"i,s,b\n1,hello,true\n2,,false\n3,world,1\n4,rust,0\n";
         let opts = CsvDecodeOptions::default();
         let reader = CsvReader::<BufReader<&[u8]>>::from_slice(csv, opts, 2);
-        let table = reader.into_table().unwrap();
+        let table = reader.load_table().unwrap();
         assert_eq!(table.n_rows, 4);
         assert_eq!(table.cols.len(), 3);
     }

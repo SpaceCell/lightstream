@@ -27,7 +27,7 @@ use crate::models::encoders::json::JsonFormat;
 /// Reads JSON data into Minarrow Tables.
 ///
 /// Use `from_path`, `from_reader`, or `from_slice`. For NDJSON, iterate with
-/// `next_batch`. For array-of-objects, call `into_table` to materialise the
+/// `next_batch`. For array-of-objects, call `load_table` to materialise the
 /// whole payload at once.
 ///
 /// The reader holds reusable simd-json `Buffers` and line/chunk vectors
@@ -136,7 +136,7 @@ impl<R: BufRead> JsonReader<R> {
     /// For NDJSON this drains successive chunks into a single set of
     /// builders so the result is one Table covering every row. For
     /// array-of-objects it parses the whole input in one go.
-    pub fn into_table(mut self) -> io::Result<Table> {
+    pub fn load_table(mut self) -> io::Result<Table> {
         match self.format {
             JsonFormat::Array { .. } => decode_json(&mut self.reader, &self.options),
             JsonFormat::Ndjson => self.drain_ndjson_into_single_table(),
@@ -149,7 +149,7 @@ impl<R: BufRead> JsonReader<R> {
     /// For NDJSON, every chunk-flush produces one batch; the SuperTable
     /// holds them in order. For array-of-objects, the whole payload is
     /// a single batch wrapped in a one-batch SuperTable.
-    pub fn into_supertable(mut self) -> io::Result<SuperTable> {
+    pub fn load_batched(mut self) -> io::Result<SuperTable> {
         let name = match self.format {
             JsonFormat::Ndjson => "ndjson",
             JsonFormat::Array { .. } => "json",
@@ -172,7 +172,7 @@ impl<R: BufRead> JsonReader<R> {
         }
     }
 
-    /// NDJSON path of `into_table`: keeps one set of builders alive
+    /// NDJSON path of `load_table`: keeps one set of builders alive
     /// across every chunk flush so all decoded rows land in one Table.
     fn drain_ndjson_into_single_table(&mut self) -> io::Result<Table> {
         let schema = self
@@ -271,7 +271,7 @@ mod tests {
             },
             10,
         );
-        let tbl = reader.into_table().unwrap();
+        let tbl = reader.load_table().unwrap();
         assert_eq!(tbl.n_rows, 3);
         assert_eq!(tbl.cols.len(), 2);
     }
@@ -311,7 +311,7 @@ mod tests {
             },
             10,
         );
-        let tbl = reader.into_table().unwrap();
+        let tbl = reader.load_table().unwrap();
         assert_eq!(tbl.n_rows, 3);
         match &tbl.cols[0].array {
             Array::NumericArray(NumericArray::Int32(arr)) => {

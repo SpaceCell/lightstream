@@ -8,6 +8,7 @@
 //! Consistent with the Arrow IPC file specification; expects opening/closing magic,
 //! footer length, and block tables.
 //!
+#[cfg(any(not(feature = "arena"), feature = "zstd", feature = "snappy"))]
 use minarrow::Vec64;
 use minarrow::structs::shared_buffer::SharedBuffer;
 /// # Which reader?
@@ -58,6 +59,8 @@ use minarrow::{Field, SuperTable, Table};
 use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
 use crate::constants::ARROW_MAGIC_NUMBER;
+#[cfg(feature = "arena")]
+use crate::models::streams::stream_arena::StreamArena;
 use crate::models::decoders::ipc::parser::{
     convert_fb_field_to_arrow, decode_record_batch, handle_dictionary_batch,
 };
@@ -98,6 +101,14 @@ pub struct FileTableReader {
     record_blocks: Vec<IPCFileBlock>,
     /// Loaded dictionaries keyed by dictionary id
     dictionaries: std::collections::HashMap<i64, Vec<String>>,
+    /// Single long-lived backing for every block read. Each `read_batch`
+    /// reserves a region in the arena and hands the resulting
+    /// `SharedBuffer` window to the decoder. While outstanding windows
+    /// exist the arena cannot reset; once they drop, `recycle_or_reset`
+    /// returns the write position to zero without freeing the backing.
+    /// Mutex serialises arena writes; reads are independent.
+    #[cfg(feature = "arena")]
+    block_arena: Arc<std::sync::Mutex<StreamArena>>,
 }
 
 impl FileTableReader {
@@ -177,6 +188,8 @@ impl FileTableReader {
             dict_blocks,
             record_blocks,
             dictionaries: std::collections::HashMap::new(),
+            #[cfg(feature = "arena")]
+            block_arena: Arc::new(std::sync::Mutex::new(StreamArena::new())),
         };
 
         rdr.load_all_dictionaries()?;
@@ -209,7 +222,7 @@ impl FileTableReader {
     /// Column names must match schema field names. Returns an error if any
     /// name is not found. The returned Table contains only the projected
     /// columns, in schema order.
-    pub fn read_columns(&self, idx: usize, columns: &[&str]) -> io::Result<Table> {
+    pub fn read_batch_cols(&self, idx: usize, columns: &[&str]) -> io::Result<Table> {
         let blk = self
             .record_blocks
             .get(idx)
@@ -218,16 +231,15 @@ impl FileTableReader {
         self.parse_batch_block(blk, Some(&projection))
     }
 
-    /// Alias of [`read_batch`]
-    #[inline]
-    pub fn into_table(&self, idx: usize) -> io::Result<Table> {
-        self.read_batch(idx)
-    }
-
-    /// Read all record batches and assemble them into a `SuperTable`
+    /// Read every record batch into a `SuperTable` whose batches retain
+    /// the file's chunking. Each `Arc<Table>` references the file
+    /// reader's owned per-batch buffers; total resident memory is the
+    /// sum of every batch's columns.
     ///
-    /// If `name_override` is provided, that name is used for the resulting table
-    pub fn into_supertable(&self, name_override: Option<String>) -> io::Result<SuperTable> {
+    /// For files larger than RAM consider [`MmapTableReader::load_batched`]
+    /// which holds Arc references into the mmap region instead of
+    /// owning the underlying bytes.
+    pub fn load_batched(&self, name_override: Option<String>) -> io::Result<SuperTable> {
         let mut batches = Vec::with_capacity(self.record_blocks.len());
         for blk in &self.record_blocks {
             batches.push(Arc::new(self.parse_batch_block(blk, None)?));
@@ -235,24 +247,89 @@ impl FileTableReader {
         Ok(SuperTable::from_batches(batches, name_override))
     }
 
-    /// Read a block from disk into 64-byte aligned memory.
+    /// As [`Self::load_batched`] but materialising only the named
+    /// columns from every batch. The resulting `SuperTable` carries
+    /// chunks whose `cols` contain just the projection.
+    pub fn load_batched_cols(
+        &self,
+        columns: &[&str],
+        name_override: Option<String>,
+    ) -> io::Result<SuperTable> {
+        let projection = self.resolve_column_indices(columns)?;
+        let mut batches = Vec::with_capacity(self.record_blocks.len());
+        for blk in &self.record_blocks {
+            batches.push(Arc::new(self.parse_batch_block(blk, Some(&projection))?));
+        }
+        Ok(SuperTable::from_batches(batches, name_override))
+    }
+
+    /// Read every record batch and consolidate into a single contiguous
+    /// `Table`. Equivalent to `load_batched(None).consolidate()`.
     ///
-    /// Uses positional I/O (`pread`/`seek_read`) on the reader's shared
-    /// `Arc<File>` so concurrent block reads do not need `&mut self` and
-    /// the file is opened only once per reader.
-    fn read_block(&self, blk: &IPCFileBlock) -> io::Result<Vec64<u8>> {
+    /// Consolidation copies every chunk into one contiguous buffer per
+    /// column, so this requires that the resulting Table fits in RAM.
+    /// For larger-than-memory files use [`Self::load_batched`] or the
+    /// per-batch `read_batch[_cols]` family instead.
+    pub fn load_table(&self) -> io::Result<Table> {
+        use minarrow::Consolidate;
+        Ok(self.load_batched(None)?.consolidate())
+    }
+
+    /// As [`Self::load_table`] but reading only the named columns. The
+    /// consolidated Table contains just the projection.
+    pub fn load_table_cols(&self, columns: &[&str]) -> io::Result<Table> {
+        use minarrow::Consolidate;
+        Ok(self.load_batched_cols(columns, None)?.consolidate())
+    }
+
+    /// Read a block from disk and return a `SharedBuffer` over its bytes.
+    ///
+    /// With the `arena` feature the block is read into the reader's
+    /// shared `StreamArena` and a window over the just-written region
+    /// is returned. Without the feature a fresh 64-byte aligned `Vec64`
+    /// is allocated per call. Both paths use positional I/O on the
+    /// reader's shared `Arc<File>` so concurrent block reads do not
+    /// need `&mut self` and the file is opened only once per reader.
+    #[cfg(feature = "arena")]
+    fn read_block(&self, blk: &IPCFileBlock) -> io::Result<SharedBuffer> {
+        let total = blk.meta_bytes + blk.body_bytes;
+        let mut arena = self.block_arena.lock().unwrap();
+        if arena.remaining() < total {
+            arena.recycle_or_reset();
+        }
+        let start = arena.write_pos();
+        // SAFETY: spare_mut returns [write_pos..capacity]; we slice it to
+        // exactly `total` and hand it to read_at, which fills every byte
+        // or returns Err. advance(total) below records the initialised
+        // region.
+        let spare = arena.spare_mut();
+        if spare.len() < total {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "arena capacity exhausted; recycle could not reclaim space",
+            ));
+        }
+        read_at(&self.file, &mut spare[..total], blk.offset as u64)?;
+        arena.advance(total);
+        let shared = arena.window(start, total);
+        arena.align();
+        Ok(shared)
+    }
+
+    #[cfg(not(feature = "arena"))]
+    fn read_block(&self, blk: &IPCFileBlock) -> io::Result<SharedBuffer> {
         let total = blk.meta_bytes + blk.body_bytes;
         let mut buf = Vec64::with_capacity(total);
         // SAFETY: `total` equals `buf.capacity()` and `read_at` is the
         // read_exact_at-style wrapper above: it either fills every byte
         // we just exposed via `set_len` or returns Err, in which case
         // `buf` is dropped without anyone observing the uninitialised
-        // tail. No bytes between [0..total] are read before read_at writes.
+        // tail.
         unsafe {
             buf.set_len(total);
         }
         read_at(&self.file, &mut buf, blk.offset as u64)?;
-        Ok(buf)
+        Ok(SharedBuffer::from_vec64(buf))
     }
 
     /// Parse the IPC frame header from a block buffer, returning the
@@ -283,15 +360,15 @@ impl FileTableReader {
     fn load_all_dictionaries(&mut self) -> io::Result<()> {
         let mut new_dicts = std::collections::HashMap::<i64, Vec<String>>::new();
         for blk in &self.dict_blocks {
-            let buf = self.read_block(blk)?;
-            let meta = Self::parse_frame_header(&buf)?;
+            let shared = self.read_block(blk)?;
+            let meta = Self::parse_frame_header(shared.as_slice())?;
             let fb_msg = flatbuffers::root::<fbm::Message>(meta).map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("bad dict msg: {e}"))
             })?;
             let dict_batch = fb_msg.header_as_dictionary_batch().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "expected DictionaryBatch")
             })?;
-            let body = &buf[blk.meta_bytes..blk.meta_bytes + blk.body_bytes];
+            let body = &shared.as_slice()[blk.meta_bytes..blk.meta_bytes + blk.body_bytes];
             handle_dictionary_batch(&dict_batch, body, &mut new_dicts, DecodeLimits::default())?;
         }
         self.dictionaries = new_dicts;
@@ -324,14 +401,10 @@ impl FileTableReader {
         blk: &IPCFileBlock,
         projection: Option<&HashSet<usize>>,
     ) -> io::Result<Table> {
-        let buf = self.read_block(blk)?;
+        let shared = self.read_block(blk)?;
         let body_offset = blk.meta_bytes;
         let body_len = blk.body_bytes;
         let fields: Vec<_> = self.schema.iter().map(|a| a.as_ref().clone()).collect();
-
-        // Wrap in SharedBuffer first, then parse metadata from the slice.
-        // This avoids a borrow-then-move conflict on buf.
-        let shared = SharedBuffer::from_vec64(buf);
         let meta = Self::parse_frame_header(shared.as_slice())?;
         let fb_msg = flatbuffers::root::<fbm::Message>(meta).map_err(|e| {
             io::Error::new(io::ErrorKind::InvalidData, format!("bad record msg: {e}"))
