@@ -11,8 +11,12 @@ use futures_util::StreamExt;
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
 use lightstream::models::readers::ipc::table_reader::TableReader;
 use lightstream::models::readers::quic::QuicTableReader;
+use lightstream::models::readers::quic_parallel::QuicParallelTableReader;
 use lightstream::models::streams::quic::QuicByteStream;
 use lightstream::models::writers::quic::QuicTableWriter;
+use lightstream::models::writers::quic_parallel::QuicParallelTableWriter;
+use lightstream::traits::parallel_transport_reader::ParallelTransportReader;
+use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 use lightstream::traits::transport_reader::IPCTransportReader;
 use lightstream::traits::transport_writer::IPCTransportWriter;
 use minarrow::{
@@ -332,6 +336,59 @@ async fn test_quic_stream_trait() {
 
     writer_handle.await.unwrap();
     assert_eq!(count, 2);
+}
+
+/// Parallel roundtrip: fan tables across several concurrent QUIC
+/// streams, merge them on the far side, and verify every table arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_quic_parallel_roundtrip() {
+    let table = make_test_table();
+    let schema = make_schema(&table);
+
+    let server_config = make_server_config();
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    const STREAMS: usize = 4;
+    const TABLES: usize = 12;
+
+    let write_table = table.clone();
+    let write_schema = schema.clone();
+    let writer_handle = tokio::spawn(async move {
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let conn = client_endpoint
+            .connect_with(make_client_config(), addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let dictionaries = vec![(
+            3i64,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        )];
+        let mut writer =
+            QuicParallelTableWriter::open(&conn, STREAMS, write_schema, dictionaries, None)
+                .await
+                .unwrap();
+        for _ in 0..TABLES {
+            writer.write_table(write_table.clone()).await.unwrap();
+        }
+        writer.finish().await.unwrap();
+        conn.closed().await;
+    });
+
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    assert_eq!(reader.stream_count(), STREAMS);
+    let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
+
+    writer_handle.await.unwrap();
+
+    assert_eq!(tables.len(), TABLES);
+    for t in &tables {
+        assert_eq!(t.n_rows, 4);
+        assert_eq!(t.cols.len(), 4);
+    }
 }
 
 /// Collect multiple QUIC batches into a SuperTable without re-allocation.

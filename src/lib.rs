@@ -80,6 +80,14 @@ pub mod traits {
     /// Transport-level table writer trait
     pub mod transport_writer;
 
+    /// Parallel transport reader trait - merges several concurrent
+    /// streams on one connection into a single table stream.
+    pub mod parallel_transport_reader;
+
+    /// Parallel transport writer trait - fans a table sequence across
+    /// several concurrent streams on one connection.
+    pub mod parallel_transport_writer;
+
     /// Chunked-file table reader trait shared by the per-format chunked
     /// readers (`ChunkedCsvReader`, `ChunkedParquetReader`, `ChunkedArrowReader`).
     pub mod chunked_table_reader;
@@ -243,6 +251,11 @@ pub mod models {
         #[cfg(feature = "quic")]
         pub mod quic;
 
+        /// Parallel QUIC table reader - merges several concurrent QUIC
+        /// streams on one connection.
+        #[cfg(feature = "quic")]
+        pub mod quic_parallel;
+
         /// WebTransport table reader
         #[cfg(feature = "webtransport")]
         pub mod webtransport;
@@ -314,6 +327,11 @@ pub mod models {
         /// QUIC table writer
         #[cfg(feature = "quic")]
         pub mod quic;
+
+        /// Parallel QUIC table writer - fans a table sequence across
+        /// several concurrent QUIC streams on one connection.
+        #[cfg(feature = "quic")]
+        pub mod quic_parallel;
 
         /// WebTransport table writer
         #[cfg(feature = "webtransport")]
