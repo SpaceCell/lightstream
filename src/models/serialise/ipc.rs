@@ -612,7 +612,7 @@ mod tests {
         let bytes = <Array as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&arr).unwrap();
         let back = <Array as Serialise<ArrowIpcCodec<Vec64<u8>>>>::decode(&bytes).unwrap();
         match (&arr, &back) {
-            (Array::BooleanArray(a), Array::BooleanArray(b)) => assert_eq!(a.len, b.len),
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => assert_eq!(a.len(), b.len()),
             _ => panic!("type changed across round-trip"),
         }
     }

@@ -454,7 +454,7 @@ mod tests {
         let fa = b.finish(field("flag", ArrowType::Boolean, false));
         match &fa.array {
             Array::BooleanArray(arr) => {
-                assert_eq!(arr.len, 8);
+                assert_eq!(arr.len(), 8);
                 let bits: Vec<bool> = (0..8).map(|i| arr.data.get(i)).collect();
                 assert_eq!(
                     bits,

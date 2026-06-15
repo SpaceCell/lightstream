@@ -990,7 +990,7 @@ mod tests {
         // Bool column
         match &table.cols[2].array {
             Array::BooleanArray(arr) => {
-                let actual: Vec<bool> = (0..arr.data.len).map(|i| arr.data.get(i)).collect();
+                let actual: Vec<bool> = (0..arr.data.len()).map(|i| arr.data.get(i)).collect();
                 assert_eq!(actual, vec![true, false, true, false]);
             }
             _ => panic!("wrong type"),

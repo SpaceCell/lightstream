@@ -175,10 +175,7 @@ mod tests {
                 bits[i / 8] |= 1 << (i % 8);
             }
         }
-        Bitmask {
-            bits: Buffer::from(Vec64::from_slice(&bits[..])),
-            len: valid.len(),
-        }
+        Bitmask::new(Buffer::from(Vec64::from_slice(&bits[..])), valid.len())
     }
 
     fn dict_strs() -> Vec<String> {

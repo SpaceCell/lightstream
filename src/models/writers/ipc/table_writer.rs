@@ -187,10 +187,7 @@ mod tests {
                 bits[i / 8] |= 1 << (i % 8);
             }
         }
-        Bitmask {
-            bits: Buffer::from(Vec64::from_slice(&bits[..])),
-            len: valid.len(),
-        }
+        Bitmask::new(Buffer::from(Vec64::from_slice(&bits[..])), valid.len())
     }
 
     #[cfg(not(feature = "default_categorical_8"))]

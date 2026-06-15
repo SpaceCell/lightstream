@@ -318,13 +318,10 @@ impl RecordBatchParser {
                         &field.name,
                         corrections,
                     )?;
+                    // Bitmask::from_bytes carries field_len, so new() sets
+                    // the array length to match.
                     let bool_data = Bitmask::from_bytes(slice, field_len);
-                    let bool_array = BooleanArray {
-                        data: bool_data,
-                        null_mask,
-                        len: field_len,
-                        _phantom: std::marker::PhantomData,
-                    };
+                    let bool_array = BooleanArray::new(bool_data, null_mask);
                     Array::BooleanArray(Arc::new(bool_array))
                 }
 
@@ -1187,13 +1184,10 @@ pub fn decode_record_batch(
                     &field.name,
                     corrections,
                 )?;
+                // Bitmask::from_bytes carries n_rows, so new() sets the
+                // array length to match.
                 let bits = Bitmask::from_bytes(shared.slice(off..off + len).as_slice(), n_rows);
-                Array::BooleanArray(Arc::new(minarrow::BooleanArray {
-                    data: bits,
-                    null_mask,
-                    len: n_rows,
-                    _phantom: PhantomData,
-                }))
+                Array::BooleanArray(Arc::new(minarrow::BooleanArray::new(bits, null_mask)))
             }
 
             ArrowType::String => {

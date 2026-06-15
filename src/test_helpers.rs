@@ -139,12 +139,10 @@ pub(crate) fn bool_col() -> FieldArray {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::BooleanArray(Arc::new(BooleanArray {
-            data: Bitmask::from_bytes(&[0b0000_1101], 4),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-            len: 4,
-            _phantom: std::marker::PhantomData,
-        })),
+        Array::BooleanArray(Arc::new(BooleanArray::new(
+            Bitmask::from_bytes(&[0b0000_1101], 4),
+            Some(Bitmask::new_set_all(4, true)),
+        ))),
     )
 }
 

@@ -115,11 +115,11 @@ mod pyarrow_roundtrip_tests {
                 }
                 (Array::BooleanArray(exp), Array::BooleanArray(act)) => {
                     assert_eq!(
-                        exp.len, act.len,
+                        exp.len(), act.len(),
                         "Boolean array length mismatch in column {}",
                         i
                     );
-                    for j in 0..exp.len {
+                    for j in 0..exp.len() {
                         assert_eq!(
                             exp.get(j),
                             act.get(j),
