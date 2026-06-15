@@ -1,0 +1,62 @@
+# Sender Deployment plus a ClusterIP Service the receiver dials by DNS.
+# Templated fields (${IMAGE}, ${PORT}, ${SHAPE}, ${ROWS}, ${BATCHES},
+# ${NAMESPACE}) are filled by run.sh via envsubst.
+#
+# The sender binds, accepts one connection, sends ${BATCHES} tables, then
+# exits, and the Deployment restarts it. run.sh applies the receiver once
+# the sender pod is running, so a single clean run completes before any
+# restart matters.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-sender
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: sender
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bench
+      role: sender
+  template:
+    metadata:
+      labels:
+        app: bench
+        role: sender
+    spec:
+      containers:
+        - name: sender
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          command: ["bench_sender"]
+          args:
+            - "--bind"
+            - "0.0.0.0:${PORT}"
+            - "--shape"
+            - "${SHAPE}"
+            - "--rows"
+            - "${ROWS}"
+            - "--batches"
+            - "${BATCHES}"
+          ports:
+            - containerPort: ${PORT}
+              name: bench
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-sender
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: sender
+spec:
+  selector:
+    app: bench
+    role: sender
+  ports:
+    - name: bench
+      port: ${PORT}
+      targetPort: ${PORT}

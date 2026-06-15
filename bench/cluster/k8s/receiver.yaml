@@ -1,0 +1,48 @@
+# Receiver Job. Connects to the sender Service, reads ${BATCHES} tables,
+# and prints a `RESULT ...` line that run.sh harvests. Templated fields
+# are filled by run.sh via envsubst.
+#
+# The required pod anti-affinity is the credibility crux: it forces the
+# receiver onto a different node from the sender via the hostname
+# topologyKey, so the measured throughput crosses a real NIC rather than
+# a shared kernel loopback.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bench-receiver
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: receiver
+spec:
+  backoffLimit: 2
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app: bench
+        role: receiver
+    spec:
+      restartPolicy: Never
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: bench
+                  role: sender
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: receiver
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          command: ["bench_receiver"]
+          args:
+            - "--connect"
+            - "bench-sender.${NAMESPACE}.svc.cluster.local:${PORT}"
+            - "--shape"
+            - "${SHAPE}"
+            - "--rows"
+            - "${ROWS}"
+            - "--batches"
+            - "${BATCHES}"

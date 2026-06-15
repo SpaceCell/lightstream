@@ -1,0 +1,8 @@
+# Bench namespace. Templated with ${NAMESPACE}.
+# run.sh fills it via envsubst before kubectl apply.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    app: bench
