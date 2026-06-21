@@ -13,7 +13,7 @@ let writer = TcpTableWriter::connect("data.feed:9000", schema, None).await?;
 let upload = HttpTableWriter::post("https://api/ingest", schema, None).await?;
 ```
 
-Streams reach ~3.7 GiB/s on TCP epoll, ~5.5 GiB/s on UDS io_uring, and ~170 GiB/s on warm Arrow mmap. Beats `arrow-rs` (~7 GiB/s file read) and `polars` (~1.3 GiB/s) on the same fixture without a re-serialisation hop.
+Streams reach ~4.7 GiB/s on TCP epoll, ~5.5 GiB/s on UDS io_uring, and ~170 GiB/s on warm Arrow mmap. Beats `arrow-rs` (~7 GiB/s file read) and `polars` (~1.3 GiB/s) on the same fixture without a re-serialisation hop.
 
 ## What it is
 
@@ -198,11 +198,11 @@ Single consumer-laptop runs, no warm-up tricks:
 
 | Workload | Throughput |
 |----------|-----------|
-| Lightstream TCP epoll | ~3.7 GiB/s |
-| Lightstream UDS epoll | ~4.3 GiB/s |
+| Lightstream TCP epoll | ~5 GiB/s |
+| Lightstream UDS epoll | ~5.1 GiB/s |
 | Lightstream UDS io_uring | ~5.5 GiB/s |
-| Lightstream TCP io_uring | ~3.8 GiB/s |
-| Lightstream WebSocket io_uring | ~3.8 GiB/s |
+| Lightstream TCP io_uring | ~5.5 GiB/s |
+| Lightstream WebSocket io_uring | ~4.7 GiB/s |
 | Arrow IPC file read (on-demand per-batch) | ~9 GiB/s |
 | Arrow IPC mmap warm (page cache) | ~170 GiB/s |
 | Arrow IPC mmap cold (SSD-bound) | ~6 GiB/s |

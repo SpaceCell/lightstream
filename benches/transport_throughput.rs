@@ -546,6 +546,10 @@ fn bench_quic(
                         writer.write_table((*write_table).clone()).await.unwrap();
                     }
                     writer.finish().await.unwrap();
+                    // Keep the connection open until the reader drains every
+                    // batch and closes from its side, so the stream delivers a
+                    // clean finish rather than a connection-lost error.
+                    conn.closed().await;
                 });
 
                 let incoming = endpoint.accept().await.unwrap();
@@ -567,6 +571,9 @@ fn bench_quic(
                 let elapsed = start.elapsed();
                 assert_eq!(count, n);
 
+                // Close from the reader side to release the writer's wait on
+                // the connection, then join the writer task.
+                conn.close(0u32.into(), b"done");
                 writer.await.unwrap();
                 elapsed
             }
@@ -632,6 +639,10 @@ fn bench_webtransport(
                         writer.write_table((*write_table).clone()).await.unwrap();
                     }
                     writer.finish().await.unwrap();
+                    // Keep the connection open until the reader drains every
+                    // batch and closes from its side, so the stream delivers a
+                    // clean finish rather than a connection-lost error.
+                    conn.closed().await;
                 });
 
                 let incoming = server.accept().await;
@@ -654,6 +665,9 @@ fn bench_webtransport(
                 let elapsed = start.elapsed();
                 assert_eq!(count, n);
 
+                // Close from the reader side to release the writer's wait on
+                // the connection, then join the writer task.
+                conn.close(wtransport::VarInt::from_u32(0), b"done");
                 writer.await.unwrap();
                 elapsed
             }
