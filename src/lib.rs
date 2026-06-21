@@ -119,6 +119,10 @@ pub mod models {
 
         /// TLV sink for simple type-length-value framing
         pub mod tlv_sink;
+
+        /// Live LBuffer-backed table sink for decoded records
+        #[cfg(all(feature = "lbuffer", feature = "json"))]
+        pub mod live_table_sink;
     }
 
     /// Encoders for Arrow IPC, TLV, CSV, and optionally Parquet
@@ -195,7 +199,14 @@ pub mod models {
         /// WebSocket binary frame header parsing and unmasking
         #[cfg(feature = "websocket")]
         pub mod websocket;
+
+        /// JSON frame and record cursors yielded by the JSON interface.
+        #[cfg(feature = "json")]
+        pub mod json;
     }
+
+    /// Interface adapters mapping vendor wire shapes onto declared schemas.
+    pub mod interfaces;
 
     /// Readers for files, mmap, and async streams
     pub mod readers {

@@ -1,8 +1,8 @@
 //! # Shared value -> ColumnBuilder dispatch
 //!
-//! Both backends translate parser output into [`JsonValueRef`] and call
-//! [`push_value_into`] to land the cell in the right typed builder. Type
-//! mismatches are routed through [`TypeMismatchPolicy`].
+//! The row decoder translates parser output into [`JsonValueRef`] and
+//! calls [`push_value_into`] to land each cell in the right typed
+//! builder. Type mismatches route through [`TypeMismatchPolicy`].
 
 use std::io;
 
@@ -12,7 +12,8 @@ use minarrow::traits::masked_array::MaskedArray;
 use minarrow::traits::type_unions::Integer;
 use minarrow::{BooleanArray, CategoricalArray, StringArray};
 
-use crate::models::decoders::json::backend::{JsonValueRef, MismatchAction, handle_type_mismatch};
+use crate::models::decoders::json::row_decoder::{MismatchAction, handle_type_mismatch};
+use crate::models::decoders::json::value::JsonValueRef;
 use crate::models::decoders::json::builder::{ColumnBuilder, TypeMismatchPolicy};
 
 /// Push a parser-borrowed value into the destination builder, applying the

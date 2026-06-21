@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use minarrow::{Field, SuperTable, Table};
 
-use crate::models::decoders::json::backend::JsonRowDecoder;
+use crate::models::decoders::json::row_decoder::JsonRowDecoder;
 use crate::models::decoders::json::builder::ColumnBuilder;
-use crate::models::decoders::json::simd_backend::SimdJsonBackend;
+use crate::models::decoders::json::simd::TapeDecoder;
 use crate::models::decoders::json::{
     JsonDecodeOptions, append_ndjson_line, decode_json, finish_table, make_builders, make_field_map,
 };
@@ -44,7 +44,7 @@ pub struct JsonReader<R: BufRead> {
     finished: bool,
     /// Reused across NDJSON batches; the simd-json `Buffers` inside grow
     /// once and are then reused for every subsequent batch.
-    backend: SimdJsonBackend,
+    decoder: TapeDecoder,
     /// Reused chunk buffer for the `[obj1,obj2,...]` array form that
     /// simd-json's tape parser consumes. Cleared between batches.
     chunk: Vec<u8>,
@@ -84,7 +84,7 @@ impl<R: BufRead> JsonReader<R> {
             format,
             batch_size,
             finished: false,
-            backend: SimdJsonBackend::new(),
+            decoder: TapeDecoder::new(),
             chunk: Vec::new(),
             line: Vec::with_capacity(4096),
         }
@@ -190,7 +190,7 @@ impl<R: BufRead> JsonReader<R> {
                 break;
             }
             self.chunk.push(b']');
-            self.backend.decode_rows(
+            self.decoder.decode_rows(
                 self.chunk.as_mut_slice(),
                 &mut builders,
                 &field_map,
@@ -219,7 +219,7 @@ impl<R: BufRead> JsonReader<R> {
 
         let mut builders = make_builders(&schema, line_count, self.options.string_bytes_per_row)?;
         let field_map = make_field_map(&schema);
-        self.backend.decode_rows(
+        self.decoder.decode_rows(
             self.chunk.as_mut_slice(),
             &mut builders,
             &field_map,

@@ -398,18 +398,27 @@ pub fn encode_flatbuf_dictionary<B: StreamBuffer>(
     debug_println!("Encoding flatbuffers dictionary.");
     fbb.reset();
 
-    // Build the string data and offsets
+    // Build the string data and offsets. The offset width is u32 by
+    // default and i64 under `large_string`, matching the width the decoder
+    // reads for the build.
+    #[cfg(not(feature = "large_string"))]
+    type DictOffset = u32;
+    #[cfg(feature = "large_string")]
+    type DictOffset = i64;
+
     let mut data_buf = Vec::<u8>::new();
-    let mut offs = Vec::<u32>::with_capacity(uniques.len() + 1);
+    let mut offs = Vec::<DictOffset>::with_capacity(uniques.len() + 1);
     offs.push(0);
 
     for s in uniques {
         data_buf.extend_from_slice(s.as_bytes());
-        offs.push(data_buf.len() as u32);
+        offs.push(data_buf.len() as DictOffset);
     }
 
+    let offset_size = std::mem::size_of::<DictOffset>();
+
     // Create the body buffer with proper alignment
-    let mut body = B::with_capacity(4 + offs.len() * 4 + data_buf.len());
+    let mut body = B::with_capacity(offset_size + offs.len() * offset_size + data_buf.len());
 
     // Important: Arrow expects buffers to be aligned, but the actual data layout is:
     // 1. Null buffer (empty for dictionary)
@@ -417,12 +426,13 @@ pub fn encode_flatbuf_dictionary<B: StreamBuffer>(
     // 3. Data buffer
 
     // The offsets need to be written as raw bytes.
-    // SAFETY: `offs` is a `Vec<u32>` so `offs.as_ptr()` points to
-    // `offs.len() * size_of::<u32>() = offs.len() * 4` valid bytes living
-    // for the encode call. u32 has no padding or invalid bit patterns, so
-    // a byte view is sound for the duration of the body construction.
+    // SAFETY: `offs` is a `Vec<DictOffset>` so `offs.as_ptr()` points to
+    // `offs.len() * size_of::<DictOffset>()` valid bytes living for the
+    // encode call. The integer offset type has no padding or invalid bit
+    // patterns, so a byte view is sound for the duration of the body
+    // construction.
     let offs_bytes =
-        unsafe { std::slice::from_raw_parts(offs.as_ptr() as *const u8, offs.len() * 4) };
+        unsafe { std::slice::from_raw_parts(offs.as_ptr() as *const u8, offs.len() * offset_size) };
 
     // Write body: offsets then data
     body.extend_from_slice(offs_bytes);

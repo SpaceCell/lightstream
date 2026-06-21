@@ -36,7 +36,7 @@ impl Default for TypeMismatchPolicy {
     }
 }
 
-/// Per-column accumulator that wraps a typed minarrow array. Backends call
+/// Per-column accumulator that wraps a typed minarrow array. The decoder calls
 /// the typed `push_*` methods or [`push_null`](Self::push_null) for missing
 /// or `null` cells, then [`finish`](Self::finish) to obtain a [`FieldArray`].
 pub enum ColumnBuilder {

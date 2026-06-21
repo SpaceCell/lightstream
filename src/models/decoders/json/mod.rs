@@ -4,7 +4,7 @@
 //! - **Array-of-objects**: `[{"col_a": 1, "col_b": "x"}, ...]`
 //! - **NDJSON** (newline-delimited): `{"col_a": 1, "col_b": "x"}\n...`
 //!
-//! Backed by `simd-json` via the [`simd_backend`] module. Cells dispatch
+//! Backed by `simd-json` via the [`simd`] module. Cells dispatch
 //! directly into pre-allocated [`builder::ColumnBuilder`] buffers - no
 //! intermediate `Value` tree or per-cell allocations except when copying
 //! string bytes into the column's data buffer.
@@ -16,10 +16,11 @@
 //! ## Type mismatch handling
 //! See [`builder::TypeMismatchPolicy`].
 
-pub mod backend;
+pub mod row_decoder;
+pub mod value;
 pub mod builder;
 pub mod push;
-pub mod simd_backend;
+pub mod simd;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead};
@@ -27,9 +28,9 @@ use std::sync::Arc;
 
 use minarrow::{Consolidate, Field, Table};
 
-use crate::models::decoders::json::backend::JsonRowDecoder;
+use crate::models::decoders::json::row_decoder::JsonRowDecoder;
 use crate::models::decoders::json::builder::{ColumnBuilder, TypeMismatchPolicy};
-use crate::models::decoders::json::simd_backend::SimdJsonBackend;
+use crate::models::decoders::json::simd::TapeDecoder;
 
 /// Options for JSON decoding.
 #[derive(Debug, Clone)]
@@ -136,20 +137,20 @@ pub fn decode_json_slice(input: &mut [u8], options: &JsonDecodeOptions) -> io::R
 }
 
 /// Parse a complete `[...]` JSON array document into one Table.
-/// Allocates its own simd-json backend, builders, and field map.
+/// Allocates its own simd-json decoder, builders, and field map.
 fn decode_array_buffer(
     input: &mut [u8],
     schema: &[Field],
     options: &JsonDecodeOptions,
 ) -> io::Result<Table> {
-    let mut backend = SimdJsonBackend::new();
+    let mut decoder = TapeDecoder::new();
     let mut builders = make_builders(
         schema,
         estimate_rows_array(input),
         options.string_bytes_per_row,
     )?;
     let field_map = make_field_map(schema);
-    backend.decode_rows(input, &mut builders, &field_map, options.on_type_mismatch)?;
+    decoder.decode_rows(input, &mut builders, &field_map, options.on_type_mismatch)?;
     Ok(finish_table(schema, builders))
 }
 
@@ -332,14 +333,14 @@ pub fn decode_ndjson_slice(input: &[u8], options: &JsonDecodeOptions) -> io::Res
 
 /// Parse a single newline-aligned byte range into one Table. Caller
 /// guarantees the range starts at a record boundary and ends after a
-/// newline (or at end-of-input). Allocates its own simd-json backend,
+/// newline (or at end-of-input). Allocates its own simd-json decoder,
 /// builders, and chunk buffer; safe to invoke from a worker thread.
 fn decode_ndjson_range(
     input: &[u8],
     schema: &[Field],
     options: &JsonDecodeOptions,
 ) -> io::Result<Table> {
-    let mut backend = SimdJsonBackend::new();
+    let mut decoder = TapeDecoder::new();
     let mut builders = make_builders(schema, 0, options.string_bytes_per_row)?;
     let field_map = make_field_map(schema);
 
@@ -356,7 +357,7 @@ fn decode_ndjson_range(
             flush_chunk(
                 &mut chunk,
                 &mut line_count,
-                &mut backend,
+                &mut decoder,
                 &mut builders,
                 &field_map,
                 options.on_type_mismatch,
@@ -366,7 +367,7 @@ fn decode_ndjson_range(
     flush_chunk(
         &mut chunk,
         &mut line_count,
-        &mut backend,
+        &mut decoder,
         &mut builders,
         &field_map,
         options.on_type_mismatch,
@@ -429,7 +430,7 @@ pub fn decode_ndjson<R: BufRead>(mut reader: R, options: &JsonDecodeOptions) -> 
         .as_ref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "schema is required"))?;
 
-    let mut backend = SimdJsonBackend::new();
+    let mut decoder = TapeDecoder::new();
     let mut builders = make_builders(schema, 0, options.string_bytes_per_row)?;
     let field_map = make_field_map(schema);
 
@@ -450,7 +451,7 @@ pub fn decode_ndjson<R: BufRead>(mut reader: R, options: &JsonDecodeOptions) -> 
             flush_chunk(
                 &mut chunk,
                 &mut line_count,
-                &mut backend,
+                &mut decoder,
                 &mut builders,
                 &field_map,
                 options.on_type_mismatch,
@@ -460,7 +461,7 @@ pub fn decode_ndjson<R: BufRead>(mut reader: R, options: &JsonDecodeOptions) -> 
     flush_chunk(
         &mut chunk,
         &mut line_count,
-        &mut backend,
+        &mut decoder,
         &mut builders,
         &field_map,
         options.on_type_mismatch,
@@ -481,7 +482,7 @@ pub fn decode_ndjson_batch<R: BufRead>(
         .as_ref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "schema is required"))?;
 
-    let mut backend = SimdJsonBackend::new();
+    let mut decoder = TapeDecoder::new();
     let mut chunk: Vec<u8> = Vec::with_capacity(options.max_chunk_bytes);
     let mut line_count: usize = 0;
     let mut line: Vec<u8> = Vec::with_capacity(4096);
@@ -503,7 +504,7 @@ pub fn decode_ndjson_batch<R: BufRead>(
     flush_chunk(
         &mut chunk,
         &mut line_count,
-        &mut backend,
+        &mut decoder,
         &mut builders,
         &field_map,
         options.on_type_mismatch,
@@ -536,12 +537,12 @@ pub(crate) fn append_ndjson_line(line: &[u8], chunk: &mut Vec<u8>, line_count: &
     true
 }
 
-/// Close the chunk array and feed it to the backend. Resets `chunk` and
+/// Close the chunk array and feed it to the decoder. Resets `chunk` and
 /// `line_count` for the next pass.
 fn flush_chunk(
     chunk: &mut Vec<u8>,
     line_count: &mut usize,
-    backend: &mut SimdJsonBackend,
+    decoder: &mut TapeDecoder,
     builders: &mut [ColumnBuilder],
     field_map: &HashMap<&str, usize>,
     policy: TypeMismatchPolicy,
@@ -551,7 +552,7 @@ fn flush_chunk(
         return Ok(());
     }
     chunk.push(b']');
-    backend.decode_rows(chunk.as_mut_slice(), builders, field_map, policy)?;
+    decoder.decode_rows(chunk.as_mut_slice(), builders, field_map, policy)?;
     chunk.clear();
     *line_count = 0;
     Ok(())

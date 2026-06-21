@@ -375,12 +375,7 @@ fn decode_column(
 
         // booleans
         ArrowType::Boolean if enc == ParquetEncoding::Plain => {
-            Array::BooleanArray(Arc::new(BooleanArray {
-                data: Bitmask::from_bytes(buf, len),
-                null_mask: mask,
-                len,
-                _phantom: Default::default(),
-            }))
+            Array::BooleanArray(Arc::new(BooleanArray::new(Bitmask::from_bytes(buf, len), mask)))
         }
 
         // strings

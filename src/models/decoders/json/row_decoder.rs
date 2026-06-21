@@ -1,26 +1,13 @@
-//! # JSON row-decoder trait
+//! # JSON row decoder
 //!
-//! Common surface that the serde-streaming and simd-json tape backends both
-//! implement. The driver feeds bytes to a backend, the backend yields one
-//! row at a time and dispatches each `(key, value)` pair into the
-//! appropriate [`ColumnBuilder`].
+//! The common surface a concrete row decoder implements. The driver feeds
+//! it bytes; it yields one row at a time and dispatches each
+//! `(key, value)` pair into the appropriate [`ColumnBuilder`].
 
 use std::collections::HashMap;
 use std::io;
 
 use crate::models::decoders::json::builder::{ColumnBuilder, TypeMismatchPolicy};
-
-/// Borrowed reference to a JSON scalar value. Strings borrow from the input
-/// buffer wherever the backend can supply them that way.
-#[derive(Debug)]
-pub enum JsonValueRef<'a> {
-    Null,
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    F64(f64),
-    Str(&'a str),
-}
 
 /// Driver-facing row-decoder trait.
 ///
@@ -43,9 +30,9 @@ pub trait JsonRowDecoder {
     ) -> io::Result<usize>;
 }
 
-/// Apply [`TypeMismatchPolicy`] when the backend hits a value that cannot be
+/// Apply [`TypeMismatchPolicy`] when the decoder hits a value that cannot be
 /// pushed into the destination builder. Returns Ok(true) if the cell was
-/// recorded (as null) and the backend should continue, or an error per the
+/// recorded (as null) and the decoder should continue, or an error per the
 /// policy. The caller must already have decided this is a mismatch.
 #[inline]
 pub fn handle_type_mismatch(

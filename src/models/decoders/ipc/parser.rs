@@ -44,7 +44,6 @@ use crate::debug_println;
 use crate::models::decoders::limits::DecodeLimits;
 use crate::{AFMessage, AFMessageHeader};
 use std::collections::{HashMap, HashSet};
-use std::marker::PhantomData;
 
 /// Compute `(n + 1) * elem` with overflow detection. Used to size offset
 /// buffers from an untrusted row count read out of the IPC RecordBatch
@@ -908,111 +907,59 @@ pub(crate) fn handle_dictionary_batch(
 
 /// Parse dictionary string values from offset and data buffers.
 ///
-/// Detects offset type from the buffer size: if divisible by 8 but not 4
-/// alone, or if u32 offsets produce out-of-range values, uses i64 offsets.
-/// This handles both Utf8 (u32) and LargeUtf8 (i64) dictionary values
-/// regardless of compile-time feature flags.
+/// Offsets are u32 by default and i64 under the `large_string` feature,
+/// matching the width the encoder writes for the build. Per the Arrow
+/// columnar format, N strings carry N+1 offsets, where the final offset is
+/// the total length of the data buffer.
 fn parse_dictionary_strings(
     offs_slice: &[u8],
     data_slice: &[u8],
     limits: DecodeLimits,
 ) -> io::Result<Vec64<String>> {
-    // Try u32 offsets first since they're the common case
-    let u32_size = std::mem::size_of::<u32>();
-    let i64_size = std::mem::size_of::<i64>();
-
-    let use_i64 = if offs_slice.len().is_multiple_of(u32_size) && offs_slice.len() / u32_size >= 2 {
-        // u32 is plausible - validate that the last offset is within data bounds
-        let count = offs_slice.len() / u32_size;
-        let last = u32::from_le_bytes(
-            offs_slice[(count - 1) * u32_size..count * u32_size]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        // If the last u32 offset exceeds data length, it's likely i64 offsets
-        last > data_slice.len()
+    let offset_size = if cfg!(feature = "large_string") {
+        std::mem::size_of::<i64>()
     } else {
-        true
+        std::mem::size_of::<u32>()
     };
-
-    if use_i64 {
-        let count = offs_slice.len() / i64_size;
-        if count < 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "dictionary batch offset count < 2",
-            ));
-        }
-        // Bound the per-batch entry count before allocating.
-        limits.check(
-            count - 1,
-            limits.max_dictionary_entries,
-            "dictionary entries (i64 offsets)",
-        )?;
-        let mut values = Vec64::with_capacity(count - 1);
-        for i in 0..(count - 1) {
-            let start = i64::from_le_bytes(
-                offs_slice[i * i64_size..(i + 1) * i64_size]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            let end = i64::from_le_bytes(
-                offs_slice[(i + 1) * i64_size..(i + 2) * i64_size]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            if end > data_slice.len() || start > end {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "dictionary batch string slice out of bounds",
-                ));
-            }
-            let s = std::str::from_utf8(&data_slice[start..end])
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            values.push(s.to_owned());
-        }
-        Ok(values)
-    } else {
-        let count = offs_slice.len() / u32_size;
-        // A valid offset buffer holds at least 2 entries (one offset per
-        // string + a trailing sentinel). Without this guard `count - 1`
-        // wraps to usize::MAX, blowing up Vec64::with_capacity.
-        if count < 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "dictionary batch offset count < 2",
-            ));
-        }
-        // Bound the per-batch entry count before allocating.
-        limits.check(
-            count - 1,
-            limits.max_dictionary_entries,
-            "dictionary entries (u32 offsets)",
-        )?;
-        let mut values = Vec64::with_capacity(count - 1);
-        for i in 0..(count - 1) {
-            let start = u32::from_le_bytes(
-                offs_slice[i * u32_size..(i + 1) * u32_size]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            let end = u32::from_le_bytes(
-                offs_slice[(i + 1) * u32_size..(i + 2) * u32_size]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            if end > data_slice.len() || start > end {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "dictionary batch string slice out of bounds",
-                ));
-            }
-            let s = std::str::from_utf8(&data_slice[start..end])
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            values.push(s.to_owned());
-        }
-        Ok(values)
+    let count = offs_slice.len() / offset_size;
+    // The Arrow columnar format stores N+1 offsets for N strings, so a valid
+    // buffer holds at least 2 - one string plus the final total-length
+    // offset. The guard also stops `count - 1` from underflowing to
+    // usize::MAX and blowing up Vec64::with_capacity.
+    if count < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dictionary batch offset count < 2",
+        ));
     }
+    // Bound the per-batch entry count before allocating.
+    limits.check(count - 1, limits.max_dictionary_entries, "dictionary entries")?;
+    let read_offset = |k: usize| -> usize {
+        let bytes = &offs_slice[k * offset_size..(k + 1) * offset_size];
+        #[cfg(feature = "large_string")]
+        {
+            i64::from_le_bytes(bytes.try_into().unwrap()) as usize
+        }
+        #[cfg(not(feature = "large_string"))]
+        {
+            u32::from_le_bytes(bytes.try_into().unwrap()) as usize
+        }
+    };
+    let mut values = Vec64::with_capacity(count - 1);
+    for i in 0..(count - 1) {
+        let start = read_offset(i);
+        let end = read_offset(i + 1);
+        if end > data_slice.len() || start > end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dictionary batch string slice out of bounds",
+            ));
+        }
+        let s = std::str::from_utf8(&data_slice[start..end])
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        values.push(s.to_owned());
+    }
+    Ok(values)
 }
 
 /// Arena-based RecordBatch decoder for streaming zero-copy ingestion.
@@ -2225,17 +2172,9 @@ mod tests {
         let data = b"redgreenblue";
 
         #[cfg(not(feature = "large_string"))]
-        let offsets = {
-            let vals: &[u32] = &[0, 3, 8, 12];
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            bytes
-        };
+        let offsets: Vec<u8> = [0u32, 3, 8, 12].iter().flat_map(|v| v.to_le_bytes()).collect();
         #[cfg(feature = "large_string")]
-        let offsets = {
-            let vals: &[i64] = &[0, 3, 8, 12];
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            bytes
-        };
+        let offsets: Vec<u8> = [0i64, 3, 8, 12].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["red", "green", "blue"]);
@@ -2246,19 +2185,9 @@ mod tests {
         let data = b"hello";
 
         #[cfg(not(feature = "large_string"))]
-        let offsets = {
-            let vals: &[u32] = &[0, 5];
-            vals.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>()
-        };
+        let offsets: Vec<u8> = [0u32, 5].iter().flat_map(|v| v.to_le_bytes()).collect();
         #[cfg(feature = "large_string")]
-        let offsets = {
-            let vals: &[i64] = &[0, 5];
-            vals.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>()
-        };
+        let offsets: Vec<u8> = [0i64, 5].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["hello"]);
@@ -2270,19 +2199,9 @@ mod tests {
         let data = b"";
 
         #[cfg(not(feature = "large_string"))]
-        let offsets = {
-            let vals: &[u32] = &[0, 0, 0];
-            vals.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>()
-        };
+        let offsets: Vec<u8> = [0u32, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
         #[cfg(feature = "large_string")]
-        let offsets = {
-            let vals: &[i64] = &[0, 0, 0];
-            vals.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>()
-        };
+        let offsets: Vec<u8> = [0i64, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["", ""]);
@@ -2293,19 +2212,9 @@ mod tests {
         let data = b"abc";
 
         #[cfg(not(feature = "large_string"))]
-        let offsets = {
-            let vals: &[u32] = &[0, 99];
-            vals.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>()
-        };
+        let offsets: Vec<u8> = [0u32, 99].iter().flat_map(|v| v.to_le_bytes()).collect();
         #[cfg(feature = "large_string")]
-        let offsets = {
-            let vals: &[i64] = &[0, 99];
-            vals.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>()
-        };
+        let offsets: Vec<u8> = [0i64, 99].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default());
         assert!(result.is_err());
