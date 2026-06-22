@@ -461,7 +461,7 @@ mod tests {
     use tracing::debug;
 
     use crate::{
-        models::readers::ipc::mmap_table_reader::MmapTableReader,
+        models::readers::ipc::mmap_table::MmapTableReader,
         test_helpers::{make_all_types_table, write_test_table_to_file},
     };
     use minarrow::{Array, NumericArray, Table, TextArray};

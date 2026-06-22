@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicU64;
 use minarrow::Table;
 
 use crate::models::encoders::csv::CsvEncodeOptions;
-use crate::models::writers::csv_writer::CsvWriter;
+use crate::models::writers::csv::CsvWriter;
 use crate::traits::chunked_table_writer::ChunkedTableWriter;
 
 /// Streaming CSV sink that writes one file per batch.
@@ -93,7 +93,7 @@ impl ChunkedTableWriter for ChunkedCsvWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::readers::chunked_csv::{ChunkedCsvReadOptions, ChunkedCsvReader};
+    use crate::models::readers::chunked::csv::{ChunkedCsvReadOptions, ChunkedCsvReader};
     use crate::traits::chunked_table_reader::ChunkedTableReader;
     use minarrow::{Table, fa_i32};
 

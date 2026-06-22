@@ -4,8 +4,8 @@ mod parquet_writer_integration_tests {
     use lightstream::{
         compression::Compression,
         models::{
-            readers::parquet_reader::load_parquet_table,
-            writers::parquet_writer::{PARQUET_PAGE_CHUNK_SIZE, write_parquet_table},
+            readers::parquet::load_parquet_table,
+            writers::parquet::{PARQUET_PAGE_CHUNK_SIZE, write_parquet_table},
         },
     };
     use minarrow::{
@@ -88,7 +88,6 @@ mod parquet_writer_integration_tests {
             let actual: Vec<String> = a
                 .clone()
                 .str32()
-                .unwrap()
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
@@ -115,14 +114,13 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::Snappy);
+        let out = roundtrip_table(&table, Some(Compression::Snappy));
         let col = &out.cols[0];
         assert_eq!(col.len(), 4);
         if let Array::TextArray(a) = &col.array {
             let actual: Vec<String> = a
                 .clone()
                 .str32()
-                .unwrap()
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
@@ -149,14 +147,13 @@ mod parquet_writer_integration_tests {
                 arr,
             )]),
         );
-        let out = roundtrip_table(&table, Compression::Snappy);
+        let out = roundtrip_table(&table, Some(Compression::Snappy));
         let col = &out.cols[0];
         assert_eq!(col.len(), 4);
         if let Array::TextArray(a) = &col.array {
             let actual: Vec<String> = a
                 .clone()
                 .str32()
-                .unwrap()
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
@@ -191,7 +188,6 @@ mod parquet_writer_integration_tests {
             let actual: Vec<String> = a
                 .clone()
                 .str32()
-                .unwrap()
                 .iter()
                 .map(|s| s.to_string())
                 .collect();

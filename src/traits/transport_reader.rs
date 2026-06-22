@@ -7,7 +7,7 @@
 //! set of read methods. This trait captures that contract so new transports get
 //! compile-time enforcement instead of copy-paste.
 //!
-//! [`TableReader`]: crate::models::readers::ipc::table_reader::TableReader
+//! [`TableReader`]: crate::models::readers::ipc::table::TableReader
 
 use std::future::Future;
 use std::io;

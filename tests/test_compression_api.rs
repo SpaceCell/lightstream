@@ -8,7 +8,7 @@ use tokio::fs::File;
 
 use lightstream::compression::Compression;
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::models::writers::ipc::table::TableWriter;
 
 use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::{Array, Buffer, Field, FieldArray, IntegerArray, NumericArray, Table, Vec64};

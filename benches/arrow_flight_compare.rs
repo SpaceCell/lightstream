@@ -45,7 +45,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 use lightstream::traits::transport_writer::IPCTransportWriter;
 
 // ---------------------------------------------------------------------------

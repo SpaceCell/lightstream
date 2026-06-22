@@ -11,7 +11,7 @@ use minarrow::Vec64;
 use tokio::net::TcpStream;
 
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 
 #[path = "../../benches/bench_helpers.rs"]
 mod bench_helpers;

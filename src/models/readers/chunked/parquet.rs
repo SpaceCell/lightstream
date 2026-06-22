@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use minarrow::Table;
 
 use crate::error::IoError;
-use crate::models::readers::parquet_reader::{load_parquet_table_cols, load_parquet_table};
+use crate::models::readers::parquet::{load_parquet_table_cols, load_parquet_table};
 use crate::traits::chunked_table_reader::ChunkedTableReader;
 
 use std::sync::Arc;
@@ -115,7 +115,7 @@ impl Iterator for ChunkedParquetReader {
 mod tests {
     use super::*;
     use crate::compression::Compression;
-    use crate::models::writers::chunked_parquet::ChunkedParquetWriter;
+    use crate::models::writers::chunked::parquet::ChunkedParquetWriter;
     use crate::traits::chunked_table_writer::ChunkedTableWriter;
     use minarrow::{Table, fa_i32};
 
@@ -159,8 +159,8 @@ mod tests {
         // length prefix was parsed as garbage - causing
         // `parse_dictionary_values` to ask for ~50 MB and fail with
         // `UnexpectedEof`. This test exercises the round-trip end-to-end.
-        use crate::models::readers::parquet_reader::load_parquet_table;
-        use crate::models::writers::parquet_writer::write_parquet_table;
+        use crate::models::readers::parquet::load_parquet_table;
+        use crate::models::writers::parquet::write_parquet_table;
         use minarrow::{
             Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, TextArray,
             Vec64, ffi::arrow_dtype::CategoricalIndexType,

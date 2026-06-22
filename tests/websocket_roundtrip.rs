@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 use lightstream::models::streams::websocket::{WsRead, WsWrite};
 use lightstream::models::writers::websocket::WebSocketTableWriter;
 use lightstream::traits::transport_writer::IPCTransportWriter;

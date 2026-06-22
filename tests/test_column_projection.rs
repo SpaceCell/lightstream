@@ -5,11 +5,11 @@
 //! schema ordering.
 
 #[cfg(feature = "mmap")]
-use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
+use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::models::readers::ipc::file_table::FileTableReader;
+use lightstream::models::writers::ipc::table::TableWriter;
 use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::{
     Array, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray, StringArray, Table,
@@ -235,8 +235,8 @@ async fn mmap_read_batch_cols_all_equals_read_batch() {
 #[cfg(feature = "parquet")]
 mod parquet {
     use lightstream::compression::Compression;
-    use lightstream::models::readers::parquet_reader::{load_parquet_table_cols, load_parquet_table};
-    use lightstream::models::writers::parquet_writer::write_parquet_table;
+    use lightstream::models::readers::parquet::{load_parquet_table_cols, load_parquet_table};
+    use lightstream::models::writers::parquet::write_parquet_table;
     use minarrow::{
         Array, ArrowType, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray,
         StringArray, Table, TextArray, Vec64,

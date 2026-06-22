@@ -11,7 +11,7 @@
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::codecs::ipc::ArrowIpcCodec;
-use crate::models::writers::ipc::table_stream_writer::TableStreamWriter;
+use crate::models::writers::ipc::table_stream::TableStreamWriter;
 use crate::traits::stream_buffer::StreamBuffer;
 use minarrow::{Field, Table, Vec64};
 use std::io;

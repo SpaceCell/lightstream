@@ -11,12 +11,15 @@
 use lightstream::{
     compression::Compression,
     models::{
-        readers::parquet_reader::load_parquet_table, writers::parquet_writer::write_parquet_table,
+        readers::parquet::load_parquet_table, writers::parquet::write_parquet_table,
     },
 };
 
 #[cfg(feature = "parquet")]
-use minarrow::{FieldArray, Table, Vec64, arr_bool, arr_f32, arr_f64, arr_i32, arr_i64, arr_str32};
+use minarrow::{
+    Array, FieldArray, NumericArray, Table, TextArray, Vec64, arr_bool, arr_f32, arr_f64, arr_i32,
+    arr_i64, arr_str32,
+};
 #[cfg(feature = "parquet")]
 use std::fs::File;
 #[cfg(feature = "parquet")]

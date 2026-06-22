@@ -202,9 +202,9 @@ fn concat_field_arrays(batches: Vec<FieldArray>) -> io::Result<FieldArray> {
 #[cfg(test)]
 mod tests {
     use crate::enums::IPCMessageProtocol;
-    use crate::models::readers::ipc::table_reader::StreamBuffer;
-    use crate::models::readers::ipc::table_reader::TableReader;
-    use crate::models::writers::ipc::table_stream_writer::TableStreamWriter;
+    use crate::models::readers::ipc::table::StreamBuffer;
+    use crate::models::readers::ipc::table::TableReader;
+    use crate::models::writers::ipc::table_stream::TableStreamWriter;
     use crate::test_helpers::{make_all_types_table, make_schema_all_types};
     use crate::utils;
     use futures_core::Stream;

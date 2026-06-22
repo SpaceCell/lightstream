@@ -36,7 +36,7 @@ use minarrow::{Field, SuperTable, Table, Vec64};
 use tokio::net::TcpStream;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
-use crate::models::readers::ipc::table_reader::TableReader;
+use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::http::{H2RecvRead, HttpByteStream};
 use crate::traits::transport_reader::IPCTransportReader;
 

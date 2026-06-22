@@ -40,7 +40,7 @@ use futures_core::Stream;
 use minarrow::{Field, SuperTable, Table, Vec64};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
-use crate::models::readers::ipc::table_reader::TableReader;
+use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::stdio::{StdinByteStream, from_stdin, from_stdin_default};
 use crate::traits::transport_reader::IPCTransportReader;
 

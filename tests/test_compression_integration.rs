@@ -10,7 +10,7 @@ use tokio::io::AsyncReadExt;
 
 use lightstream::compression::Compression;
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::models::writers::ipc::table::TableWriter;
 
 use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::{Array, Buffer, Field, FieldArray, IntegerArray, NumericArray, Table, Vec64};
@@ -109,39 +109,26 @@ async fn test_compression_none_integration() {
 #[cfg(feature = "snappy")]
 #[tokio::test]
 async fn test_snappy_compression_integration() {
+    // Arrow IPC BodyCompression permits only LZ4_FRAME and ZSTD, so the IPC
+    // writer must reject Snappy rather than emit a non-conformant file.
     let temp_file = NamedTempFile::new().unwrap();
     let file_path = temp_file.path();
 
     let (table, schema) = create_test_table();
 
-    // Write with Snappy compression
-    {
-        let file = File::create(file_path).await.unwrap();
-        let mut writer = TableWriter::new(
-            file,
-            schema.clone(),
-            IPCMessageProtocol::File,
-            Some(Compression::Snappy),
-        )
-        .unwrap();
-        writer.write_all_tables(vec![table.clone()]).await.unwrap();
-    }
-
-    // Verify file was written correctly
-    let mut file = File::open(file_path).await.unwrap();
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf).await.unwrap();
-
-    assert!(!buf.is_empty());
-    assert!(buf.starts_with(b"ARROW1\0\0"));
-    assert!(buf.ends_with(b"ARROW1"));
-
-    println!("✓ Snappy compressed file size: {} bytes", buf.len());
-    println!("✓ Snappy compression integration test passed");
-
-    // Additional validation: file should contain compression metadata
-    // The exact format depends on Arrow IPC spec implementation
-    // but we can verify the file is structurally valid Arrow format
+    let file = File::create(file_path).await.unwrap();
+    let mut writer = TableWriter::new(
+        file,
+        schema.clone(),
+        IPCMessageProtocol::File,
+        Some(Compression::Snappy),
+    )
+    .unwrap();
+    let err = writer
+        .write_all_tables(vec![table.clone()])
+        .await
+        .expect_err("Snappy is not a valid Arrow IPC body codec");
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
 }
 
 #[cfg(feature = "zstd")]
@@ -182,9 +169,9 @@ async fn test_zstd_compression_integration() {
 async fn test_compression_size_comparison() {
     let (table, schema) = create_test_table();
 
-    // Create three temporary files
+    // Snappy is not a valid Arrow IPC body codec (only LZ4_FRAME and ZSTD
+    // are), so the comparison covers uncompressed and Zstd.
     let temp_none = NamedTempFile::new().unwrap();
-    let _temp_snappy = NamedTempFile::new().unwrap();
     let _temp_zstd = NamedTempFile::new().unwrap();
 
     let mut sizes = Vec::new();
@@ -203,23 +190,6 @@ async fn test_compression_size_comparison() {
     }
     let none_size = std::fs::metadata(temp_none.path()).unwrap().len();
     sizes.push(("None", none_size));
-
-    // Write with Snappy (if available)
-    #[cfg(feature = "snappy")]
-    {
-        let file = File::create(_temp_snappy.path()).await.unwrap();
-        let mut writer = TableWriter::new(
-            file,
-            schema.clone(),
-            IPCMessageProtocol::File,
-            Some(Compression::Snappy),
-        )
-        .unwrap();
-        writer.write_all_tables(vec![table.clone()]).await.unwrap();
-
-        let snappy_size = std::fs::metadata(_temp_snappy.path()).unwrap().len();
-        sizes.push(("Snappy", snappy_size));
-    }
 
     // Write with Zstd (if available)
     #[cfg(feature = "zstd")]

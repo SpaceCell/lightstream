@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use lightstream::models::writers::ipc::table_writer::write_table_to_file;
+use lightstream::models::writers::ipc::table::write_table_to_file;
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use minarrow::{
     Array, Buffer, CategoricalArray, Field, FieldArray, Table, TextArray, Vec64, arr_bool, arr_i32,

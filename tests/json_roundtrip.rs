@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use lightstream::models::decoders::json::{JsonDecodeOptions, decode_json, decode_ndjson};
 use lightstream::models::encoders::json::{JsonEncodeOptions, JsonFormat, encode_table_json};
-use lightstream::models::readers::json_reader::JsonReader;
-use lightstream::models::writers::json_writer::JsonWriter;
+use lightstream::models::readers::json::JsonReader;
+use lightstream::models::writers::json::JsonWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray,
     StringArray, Table, TextArray, Vec64, vec64,

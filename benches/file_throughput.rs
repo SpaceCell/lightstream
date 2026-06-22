@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-use lightstream::models::writers::ipc::table_writer::write_tables_to_file;
+use lightstream::models::readers::ipc::file_table::FileTableReader;
+use lightstream::models::writers::ipc::table::write_tables_to_file;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, Table, TextArray,
     Vec64, arr_f64, arr_i32, arr_str32, ffi::arrow_dtype::CategoricalIndexType,
@@ -140,7 +140,7 @@ fn bench_file_throughput(c: &mut Criterion) {
     // Mmap reader benchmark - warm (page cache)
     #[cfg(feature = "mmap")]
     group.bench_function("read_mmap_warm", |b| {
-        use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
+        use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
         b.iter(|| {
             let reader = MmapTableReader::open(&read_path).unwrap();
             assert_eq!(reader.num_batches(), BENCH_BATCHES);
@@ -157,7 +157,7 @@ fn bench_file_throughput(c: &mut Criterion) {
     // Mmap reader benchmark - cold (evict page cache before each read)
     #[cfg(all(feature = "mmap", target_os = "linux"))]
     group.bench_function("read_mmap_cold", |b| {
-        use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
+        use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
         use std::os::unix::io::AsRawFd;
         b.iter(|| {
             // Evict file from page cache
@@ -266,7 +266,7 @@ fn bench_file_throughput(c: &mut Criterion) {
     {
         use lightstream::compression::Compression;
         use lightstream::enums::IPCMessageProtocol;
-        use lightstream::models::writers::ipc::table_writer::TableWriter;
+        use lightstream::models::writers::ipc::table::TableWriter;
 
         /// Write tables to a file with zstd compression.
         async fn write_compressed(

@@ -7,11 +7,11 @@ mod integration {
     use ::lightstream::enums::DecodeResult;
     use ::lightstream::enums::IPCMessageProtocol;
     use ::lightstream::models::decoders::ipc::ArrowIPCFrameDecoder;
-    use ::lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-    use ::lightstream::models::readers::ipc::table_reader::TableReader;
+    use ::lightstream::models::readers::ipc::file_table::FileTableReader;
+    use ::lightstream::models::readers::ipc::table::TableReader;
     use ::lightstream::models::streams::disk::DiskByteStream;
-    use ::lightstream::models::writers::ipc::table_stream_writer::write_tables_to_stream;
-    use ::lightstream::models::writers::ipc::table_writer::TableWriter;
+    use ::lightstream::models::writers::ipc::table_stream::write_tables_to_stream;
+    use ::lightstream::models::writers::ipc::table::TableWriter;
     use ::lightstream::traits::frame_decoder::FrameDecoder;
     use futures_util::stream::StreamExt;
     use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
@@ -432,8 +432,8 @@ mod integration {
 
     /// In-memory stream roundtrip test (proper stream protocol test)
     async fn roundtrip_ipc_stream_memory(n_rows: usize) {
-        use ::lightstream::models::readers::ipc::table_reader::TableReader;
-        use ::lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
+        use ::lightstream::models::readers::ipc::table::TableReader;
+        use ::lightstream::models::writers::ipc::table_stream::TableStreamWriter;
         use futures_core::Stream;
         use std::pin::Pin;
         use std::task::{Context, Poll};
@@ -515,8 +515,8 @@ mod integration {
 
     /// In-memory stream roundtrip test with nulls (proper stream protocol test)
     async fn roundtrip_ipc_stream_memory_with_nulls(n_rows: usize) {
-        use ::lightstream::models::readers::ipc::table_reader::TableReader;
-        use ::lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
+        use ::lightstream::models::readers::ipc::table::TableReader;
+        use ::lightstream::models::writers::ipc::table_stream::TableStreamWriter;
         use futures_core::Stream;
         use std::pin::Pin;
         use std::task::{Context, Poll};

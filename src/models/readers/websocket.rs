@@ -47,7 +47,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, connect_async};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
-use crate::models::readers::ipc::table_reader::TableReader;
+use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::websocket::{WsRead, WsWrite};
 use crate::traits::transport_reader::IPCTransportReader;
 

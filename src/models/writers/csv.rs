@@ -15,7 +15,7 @@
 //! # use minarrow::ArrowType::*;
 //! # use minarrow::Field as F;
 //! use lightstream::models::encoders::csv::{CsvEncodeOptions};
-//! use lightstream::models::writers::csv_writer::CsvWriter;
+//! use lightstream::models::writers::csv::CsvWriter;
 //!
 //! // In-memory
 //! let mut w = CsvWriter::new_vec();

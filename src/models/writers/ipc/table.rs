@@ -381,7 +381,10 @@ mod tests {
 
     #[cfg(feature = "snappy")]
     #[tokio::test]
-    async fn test_with_compression_snappy() {
+    async fn test_snappy_rejected_for_ipc() {
+        // Arrow IPC BodyCompression permits only LZ4_FRAME and ZSTD, so the
+        // IPC writer must reject Snappy rather than emit a non-conformant
+        // file.
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
 
@@ -396,20 +399,11 @@ mod tests {
         .unwrap();
         writer.register_dictionary(0, dict_strs());
 
-        let tbl = make_table();
-        writer.write_all_tables(vec![tbl]).await.unwrap();
-
-        // Validate: read file and check it's not empty and has Arrow magic
-        let mut file = File::open(&path).await.unwrap();
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).await.unwrap();
-        assert!(!buf.is_empty());
-        assert!(buf.starts_with(b"ARROW1\0\0"));
-        assert!(buf.ends_with(b"ARROW1"));
-
-        // For compressed files, we expect the content to be different from uncompressed
-        // but still valid Arrow format
-        println!("Snappy compressed file size: {} bytes", buf.len());
+        let err = writer
+            .write_all_tables(vec![make_table()])
+            .await
+            .expect_err("Snappy is not a valid Arrow IPC body codec");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 
     #[cfg(feature = "zstd")]

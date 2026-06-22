@@ -81,7 +81,7 @@ let writer = TcpTableWriter::connect(addr, schema, Some(Compression::Zstd)).awai
 ### Memory-mapped reads
 
 ```rust
-use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
+use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 
 let reader = MmapTableReader::open("data.arrow")?;
 for i in 0..reader.num_batches() {
@@ -95,7 +95,7 @@ for i in 0..reader.num_batches() {
 ```rust
 use minarrow::{arr_i32, arr_str32, FieldArray, Table};
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::models::writers::ipc::table::TableWriter;
 use tokio::fs::File;
 
 let table = Table::new("demo".into(), vec![

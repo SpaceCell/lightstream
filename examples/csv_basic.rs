@@ -5,8 +5,8 @@
 //! - Write it to a CSV file
 //! - Read it back and verify the data
 
-use lightstream::models::readers::csv_reader::CsvReader;
-use lightstream::models::writers::csv_writer::CsvWriter;
+use lightstream::models::readers::csv::CsvReader;
+use lightstream::models::writers::csv::CsvWriter;
 use minarrow::{FieldArray, Table, Vec64, arr_f64, arr_i32, arr_str32};
 use std::path::Path;
 use tempfile::tempdir;

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 use lightstream::models::readers::webtransport::WebTransportTableReader;
 use lightstream::models::streams::webtransport::WebTransportByteStream;
 use lightstream::models::writers::webtransport::WebTransportTableWriter;

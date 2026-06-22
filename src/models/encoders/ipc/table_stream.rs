@@ -166,7 +166,7 @@ mod tests {
     use crate::constants::{ARROW_MAGIC_NUMBER, ARROW_MAGIC_NUMBER_PADDED};
 
     use super::*;
-    use crate::models::writers::ipc::table_stream_writer::TableStreamWriter;
+    use crate::models::writers::ipc::table_stream::TableStreamWriter;
 
     fn make_bitmask(valid: &[bool]) -> Bitmask {
         let mut bits = vec![0u8; (valid.len() + 7) / 8];

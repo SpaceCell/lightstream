@@ -3,11 +3,11 @@ mod pyarrow_roundtrip_tests {
     use std::sync::Arc;
 
     use ::lightstream::enums::IPCMessageProtocol;
-    use ::lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-    use ::lightstream::models::readers::ipc::table_reader::TableReader;
+    use ::lightstream::models::readers::ipc::file_table::FileTableReader;
+    use ::lightstream::models::readers::ipc::table::TableReader;
     use ::lightstream::models::streams::disk::DiskByteStream;
-    use ::lightstream::models::writers::ipc::table_stream_writer::write_tables_to_stream;
-    use ::lightstream::models::writers::ipc::table_writer::write_tables_to_file;
+    use ::lightstream::models::writers::ipc::table_stream::write_tables_to_stream;
+    use ::lightstream::models::writers::ipc::table::write_tables_to_file;
     use futures_util::stream::StreamExt;
     use minarrow::ffi::arrow_dtype::ArrowType;
     use minarrow::*;

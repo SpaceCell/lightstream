@@ -9,12 +9,12 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 use lightstream::models::readers::quic::QuicTableReader;
-use lightstream::models::readers::quic_parallel::QuicParallelTableReader;
+use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
 use lightstream::models::streams::quic::QuicByteStream;
 use lightstream::models::writers::quic::QuicTableWriter;
-use lightstream::models::writers::quic_parallel::QuicParallelTableWriter;
+use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
 use lightstream::traits::parallel_transport_reader::ParallelTransportReader;
 use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 use lightstream::traits::transport_reader::IPCTransportReader;
@@ -441,4 +441,268 @@ async fn test_quic_read_to_super_table() {
         assert_eq!(batch.n_rows, 4);
         assert_eq!(batch.cols.len(), 4);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Parallel stream correctness
+// ---------------------------------------------------------------------------
+
+/// Single Int32 column carrying `marker`, used to track which table lands
+/// on which parallel stream and in what order.
+fn make_marked_table(marker: i32) -> Table {
+    let col = FieldArray::new(
+        Field {
+            name: "marker".into(),
+            dtype: ArrowType::Int32,
+            nullable: false,
+            metadata: Default::default(),
+        },
+        Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
+            data: Buffer::from(Vec64::from_slice(&[marker])),
+            null_mask: None,
+        }))),
+    );
+    Table { cols: vec![col], n_rows: 1, name: "marked".to_string() }
+}
+
+/// Read the marker back out of a table built by `make_marked_table`.
+fn marker_of(table: &Table) -> i32 {
+    match &table.cols[0].array {
+        Array::NumericArray(NumericArray::Int32(arr)) => arr.data[0],
+        other => panic!("expected an Int32 marker column, found {other:?}"),
+    }
+}
+
+/// Decode the category column into its string labels through the
+/// dictionary indices.
+fn category_labels(table: &Table) -> Vec<String> {
+    match &table.cols[3].array {
+        #[cfg(feature = "default_categorical_8")]
+        Array::TextArray(TextArray::Categorical8(arr)) => arr
+            .data
+            .iter()
+            .map(|&i| arr.unique_values[i as usize].clone())
+            .collect(),
+        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        Array::TextArray(TextArray::Categorical32(arr)) => arr
+            .data
+            .iter()
+            .map(|&i| arr.unique_values[i as usize].clone())
+            .collect(),
+        other => panic!("expected a categorical column, found {other:?}"),
+    }
+}
+
+/// Fan indexed tables across several streams and check round-robin
+/// distribution and within-stream ordering. Table `i` routes to stream
+/// `i % STREAMS`, so markers sharing a residue arrive in ascending order
+/// even though the merge interleaves the streams.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_quic_parallel_ordering_and_round_robin() {
+    let schema = vec![Field {
+        name: "marker".into(),
+        dtype: ArrowType::Int32,
+        nullable: false,
+        metadata: Default::default(),
+    }];
+
+    let server_config = make_server_config();
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    const STREAMS: usize = 4;
+    const TABLES: i32 = 40;
+
+    let write_schema = schema.clone();
+    let writer_handle = tokio::spawn(async move {
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let conn = client_endpoint
+            .connect_with(make_client_config(), addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let mut writer = QuicParallelTableWriter::open(&conn, STREAMS, write_schema, Vec::new(), None)
+            .await
+            .unwrap();
+        for i in 0..TABLES {
+            writer.write_table(make_marked_table(i)).await.unwrap();
+        }
+        writer.finish().await.unwrap();
+        conn.closed().await;
+    });
+
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
+    writer_handle.await.unwrap();
+
+    let markers: Vec<i32> = tables.iter().map(marker_of).collect();
+    assert_eq!(markers.len(), TABLES as usize);
+
+    // Every marker arrives once.
+    let mut sorted = markers.clone();
+    sorted.sort();
+    assert_eq!(sorted, (0..TABLES).collect::<Vec<_>>());
+
+    // Markers sharing a residue mod STREAMS came down one stream, so they
+    // must stay in ascending order.
+    for residue in 0..STREAMS as i32 {
+        let stream_markers: Vec<i32> =
+            markers.iter().copied().filter(|m| m % STREAMS as i32 == residue).collect();
+        let mut ascending = stream_markers.clone();
+        ascending.sort();
+        assert_eq!(stream_markers, ascending, "stream {residue} arrived out of order");
+    }
+}
+
+/// Every parallel stream registers the dictionary, so a table landing on
+/// any stream decodes its categorical column to the same labels. TABLES
+/// exceeds STREAMS, so every stream carries at least one table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_quic_parallel_dictionary_per_stream() {
+    let table = make_test_table();
+    let schema = make_schema(&table);
+
+    let server_config = make_server_config();
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    const STREAMS: usize = 4;
+    const TABLES: usize = 8;
+
+    let write_table = table.clone();
+    let write_schema = schema.clone();
+    let writer_handle = tokio::spawn(async move {
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let conn = client_endpoint
+            .connect_with(make_client_config(), addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let dictionaries = vec![(
+            3i64,
+            vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+        )];
+        let mut writer = QuicParallelTableWriter::open(&conn, STREAMS, write_schema, dictionaries, None)
+            .await
+            .unwrap();
+        for _ in 0..TABLES {
+            writer.write_table(write_table.clone()).await.unwrap();
+        }
+        writer.finish().await.unwrap();
+        conn.closed().await;
+    });
+
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
+    writer_handle.await.unwrap();
+
+    assert_eq!(tables.len(), TABLES);
+    for t in &tables {
+        assert_eq!(category_labels(t), vec!["red", "green", "blue", "red"]);
+    }
+}
+
+/// Drive far more tables than the per-stream channel depth so the producer
+/// blocks on send and resumes as the streams drain. Completion with every
+/// table delivered shows backpressure holds without deadlock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_quic_parallel_backpressure_under_load() {
+    let schema = vec![Field {
+        name: "marker".into(),
+        dtype: ArrowType::Int32,
+        nullable: false,
+        metadata: Default::default(),
+    }];
+
+    let server_config = make_server_config();
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    const STREAMS: usize = 3;
+    const TABLES: i32 = 200;
+
+    let write_schema = schema.clone();
+    let writer_handle = tokio::spawn(async move {
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let conn = client_endpoint
+            .connect_with(make_client_config(), addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let mut writer = QuicParallelTableWriter::open(&conn, STREAMS, write_schema, Vec::new(), None)
+            .await
+            .unwrap();
+        for i in 0..TABLES {
+            writer.write_table(make_marked_table(i)).await.unwrap();
+        }
+        writer.finish().await.unwrap();
+        conn.closed().await;
+    });
+
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
+    writer_handle.await.unwrap();
+
+    let mut markers: Vec<i32> = tables.iter().map(marker_of).collect();
+    assert_eq!(markers.len(), TABLES as usize);
+    markers.sort();
+    assert_eq!(markers, (0..TABLES).collect::<Vec<_>>());
+}
+
+/// When the peer stops the receive streams mid-send, finish surfaces the
+/// resulting stream error instead of reporting success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_quic_parallel_finish_reports_error() {
+    let schema = vec![Field {
+        name: "marker".into(),
+        dtype: ArrowType::Int32,
+        nullable: false,
+        metadata: Default::default(),
+    }];
+
+    let server_config = make_server_config();
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    const STREAMS: usize = 4;
+
+    let write_schema = schema.clone();
+    let writer_handle = tokio::spawn(async move {
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let conn = client_endpoint
+            .connect_with(make_client_config(), addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let mut writer = QuicParallelTableWriter::open(&conn, STREAMS, write_schema, Vec::new(), None)
+            .await
+            .unwrap();
+        // Keep pushing until a stream error propagates back through the
+        // producer, then report what finish makes of the failed streams.
+        for i in 0..2000 {
+            if writer.write_table(make_marked_table(i)).await.is_err() {
+                break;
+            }
+        }
+        writer.finish().await
+    });
+
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let mut recvs = Vec::with_capacity(STREAMS);
+    for _ in 0..STREAMS {
+        recvs.push(conn.accept_uni().await.unwrap());
+    }
+    for recv in &mut recvs {
+        let _ = recv.stop(7u32.into());
+    }
+
+    let result = writer_handle.await.unwrap();
+    assert!(result.is_err(), "finish should surface the peer stop as an error");
+    conn.close(0u32.into(), b"done");
 }

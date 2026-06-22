@@ -28,7 +28,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use crate::{
     enums::IPCMessageProtocol,
     models::writers::ipc::{
-        table_stream_writer::write_tables_to_stream, table_writer::write_tables_to_file,
+        table_stream::write_tables_to_stream, table::write_tables_to_file,
     },
 };
 

@@ -20,8 +20,8 @@
 //! controls the wire framing (continuation markers / EOS for Stream; magic +
 //! footer for File), not whether the writer owns a sink.
 //!
-//! [`TableWriter`]: crate::models::writers::ipc::table_writer::TableWriter
-//! [`TableStreamWriter`]: crate::models::writers::ipc::table_stream_writer::TableStreamWriter
+//! [`TableWriter`]: crate::models::writers::ipc::table::TableWriter
+//! [`TableStreamWriter`]: crate::models::writers::ipc::table_stream::TableStreamWriter
 
 use std::io;
 
@@ -29,7 +29,7 @@ use minarrow::{Field, Table, Vec64};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
-use crate::models::writers::ipc::table_stream_writer::TableStreamWriter;
+use crate::models::writers::ipc::table_stream::TableStreamWriter;
 use crate::traits::stream_buffer::StreamBuffer;
 use crate::utils::dict_values;
 
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn writes_arrow_file_round_trips_via_file_reader() {
-        use crate::models::readers::ipc::file_table_reader::FileTableReader;
+        use crate::models::readers::ipc::file_table::FileTableReader;
 
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_path_buf();
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn writes_multiple_tables_via_file_protocol() {
-        use crate::models::readers::ipc::file_table_reader::FileTableReader;
+        use crate::models::readers::ipc::file_table::FileTableReader;
 
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_path_buf();
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn writes_stream_protocol_to_buffer() {
-        use crate::models::readers::ipc::table_reader::TableReader;
+        use crate::models::readers::ipc::table::TableReader;
         use futures_util::StreamExt;
 
         let t1 = Table::new("t".into(), Some(vec![fa_i32!["n", 10, 20, 30]]));

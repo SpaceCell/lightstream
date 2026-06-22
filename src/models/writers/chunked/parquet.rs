@@ -20,7 +20,7 @@ use minarrow::Table;
 
 use crate::compression::Compression;
 use crate::error::IoError;
-use crate::models::writers::parquet_writer::write_parquet_table;
+use crate::models::writers::parquet::write_parquet_table;
 use crate::traits::chunked_table_writer::ChunkedTableWriter;
 
 /// Streaming Parquet sink that writes one file per batch.
@@ -89,7 +89,7 @@ impl ChunkedTableWriter for ChunkedParquetWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::readers::chunked_parquet::ChunkedParquetReader;
+    use crate::models::readers::chunked::parquet::ChunkedParquetReader;
     use crate::traits::chunked_table_reader::ChunkedTableReader;
     use minarrow::{Table, fa_i32};
 

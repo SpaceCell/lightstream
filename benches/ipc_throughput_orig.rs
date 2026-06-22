@@ -26,7 +26,7 @@ use lightstream::enums::IPCMessageProtocol;
     feature = "quic",
     feature = "webtransport"
 ))]
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 #[cfg(any(
     feature = "tcp",
     feature = "uds",

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use minarrow::{Concatenate, SuperTable, Table};
 
-use crate::models::readers::ipc::file_table_reader::FileTableReader;
+use crate::models::readers::ipc::file_table::FileTableReader;
 use crate::traits::chunked_table_reader::ChunkedTableReader;
 
 /// Iterator over chunk files in a directory written by
@@ -134,7 +134,7 @@ impl Iterator for ChunkedArrowReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::writers::chunked_arrow::ChunkedArrowWriter;
+    use crate::models::writers::chunked::arrow::ChunkedArrowWriter;
     use crate::traits::chunked_table_writer::ChunkedTableWriter;
     use minarrow::{Table, fa_i32};
 

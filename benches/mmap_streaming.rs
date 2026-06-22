@@ -76,9 +76,9 @@ use std::sync::OnceLock;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::readers::ipc::file_table_reader::FileTableReader;
-use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
-use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::models::readers::ipc::file_table::FileTableReader;
+use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
+use lightstream::models::writers::ipc::table::TableWriter;
 use minarrow::{Array, NumericArray, Table};
 
 const SHAPE: BenchShape = BenchShape::Mixed;

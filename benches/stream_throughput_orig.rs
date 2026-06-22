@@ -16,7 +16,7 @@ use lightstream::enums::IPCMessageProtocol;
 #[cfg(any(feature = "tcp", feature = "uds"))]
 use lightstream::models::codecs::ipc::ArrowIpcCodec;
 #[cfg(any(feature = "tcp", feature = "uds"))]
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 #[cfg(any(feature = "tcp", feature = "uds"))]
 use minarrow::Field;
 #[cfg(any(feature = "tcp", feature = "uds"))]

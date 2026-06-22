@@ -14,13 +14,13 @@
 //! a standard `Vec<u8>` is the ergonomic default. A 64-byte aligned `Vec64<u8>`
 //! is also supported for callers that want consistent wire alignment across
 //! formats. Alignment matters on the read side - see
-//! [`JsonReader`](crate::models::readers::json_reader::JsonReader).
+//! [`JsonReader`](crate::models::readers::json::JsonReader).
 //!
 //! ## Quick start
 //! ```no_run
 //! # use minarrow::Table;
 //! use lightstream::models::encoders::json::{JsonEncodeOptions, JsonFormat};
-//! use lightstream::models::writers::json_writer::JsonWriter;
+//! use lightstream::models::writers::json::JsonWriter;
 //! use minarrow::Vec64;
 //!
 //! # let table = Table::default();

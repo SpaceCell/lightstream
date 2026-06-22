@@ -29,7 +29,7 @@
 //! use std::fs::File;
 //! use minarrow::Table;
 //! use lightstream::compression::Compression;
-//! use lightstream::models::writers::parquet_writer::write_parquet_table;
+//! use lightstream::models::writers::parquet::write_parquet_table;
 //!
 //! # let table = Table::default();
 //! let mut file = File::create("data.parquet").unwrap();

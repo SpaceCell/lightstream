@@ -5,9 +5,9 @@
 #[cfg(feature = "mmap")]
 use lightstream::enums::IPCMessageProtocol;
 #[cfg(feature = "mmap")]
-use lightstream::models::readers::ipc::mmap_table_reader::MmapTableReader;
+use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 #[cfg(feature = "mmap")]
-use lightstream::models::writers::ipc::table_writer::TableWriter;
+use lightstream::models::writers::ipc::table::TableWriter;
 #[cfg(feature = "mmap")]
 use minarrow::ffi::arrow_dtype::ArrowType;
 #[cfg(feature = "mmap")]

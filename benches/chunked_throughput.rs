@@ -146,8 +146,8 @@ fn evict_pages(dir: &Path) {
 }
 
 fn bench_chunked_arrow(c: &mut Criterion) {
-    use lightstream::models::readers::chunked_arrow::ChunkedArrowReader;
-    use lightstream::models::writers::chunked_arrow::ChunkedArrowWriter;
+    use lightstream::models::readers::chunked::arrow::ChunkedArrowReader;
+    use lightstream::models::writers::chunked::arrow::ChunkedArrowWriter;
     use minarrow::Table;
 
     // 32 distinct tables in distinct memory so the encoder cannot
@@ -293,8 +293,8 @@ fn bench_chunked_arrow(c: &mut Criterion) {
 
 #[cfg(feature = "parquet")]
 fn bench_chunked_parquet(c: &mut Criterion) {
-    use lightstream::models::readers::chunked_parquet::ChunkedParquetReader;
-    use lightstream::models::writers::chunked_parquet::ChunkedParquetWriter;
+    use lightstream::models::readers::chunked::parquet::ChunkedParquetReader;
+    use lightstream::models::writers::chunked::parquet::ChunkedParquetWriter;
     use minarrow::Table;
 
     // 32 distinct tables in distinct memory so the encoder cannot
@@ -429,8 +429,8 @@ fn bench_chunked_parquet(c: &mut Criterion) {
 fn bench_chunked_csv(c: &mut Criterion) {
     use lightstream::models::decoders::csv::CsvDecodeOptions;
     use lightstream::models::encoders::csv::CsvEncodeOptions;
-    use lightstream::models::readers::chunked_csv::{ChunkedCsvReadOptions, ChunkedCsvReader};
-    use lightstream::models::writers::chunked_csv::ChunkedCsvWriter;
+    use lightstream::models::readers::chunked::csv::{ChunkedCsvReadOptions, ChunkedCsvReader};
+    use lightstream::models::writers::chunked::csv::ChunkedCsvWriter;
     use minarrow::Table;
 
     // 32 distinct tables in distinct memory so the encoder cannot

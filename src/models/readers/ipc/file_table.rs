@@ -458,7 +458,7 @@ mod tests {
     use tracing::debug;
 
     use crate::{
-        models::readers::ipc::file_table_reader::FileTableReader,
+        models::readers::ipc::file_table::FileTableReader,
         test_helpers::{make_all_types_table, write_test_table_to_file},
     };
 

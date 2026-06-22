@@ -18,7 +18,7 @@ use std::sync::Arc;
 use minarrow::{ColumnSelection, Concatenate, SuperTable, Table};
 
 use crate::models::decoders::csv::CsvDecodeOptions;
-use crate::models::readers::csv_reader::CsvReader;
+use crate::models::readers::csv::CsvReader;
 use crate::traits::chunked_table_reader::ChunkedTableReader;
 
 /// Per-format `Options` for `ChunkedCsvReader::open`.
@@ -162,7 +162,7 @@ impl Iterator for ChunkedCsvReader {
 mod tests {
     use super::*;
     use crate::models::encoders::csv::CsvEncodeOptions;
-    use crate::models::writers::chunked_csv::ChunkedCsvWriter;
+    use crate::models::writers::chunked::csv::ChunkedCsvWriter;
     use crate::traits::chunked_table_writer::ChunkedTableWriter;
     use minarrow::{Table, fa_i32};
 

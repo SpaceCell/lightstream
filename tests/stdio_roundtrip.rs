@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
@@ -115,7 +115,7 @@ fn make_schema(table: &Table) -> Vec<Field> {
 
 /// Encode a table to Arrow IPC bytes using TableStreamWriter.
 fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
-    use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
+    use lightstream::models::writers::ipc::table_stream::TableStreamWriter;
 
     let mut writer =
         TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream, None);
@@ -139,7 +139,7 @@ fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
 
 /// Encode multiple tables to Arrow IPC bytes.
 fn encode_tables_to_bytes(tables: &[&Table], schema: &[Field]) -> Vec<u8> {
-    use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
+    use lightstream::models::writers::ipc::table_stream::TableStreamWriter;
 
     let mut writer =
         TableStreamWriter::<Vec64<u8>>::new(schema.to_vec(), IPCMessageProtocol::Stream, None);

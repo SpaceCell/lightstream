@@ -29,7 +29,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
 use lightstream::traits::transport_writer::IPCTransportWriter;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]

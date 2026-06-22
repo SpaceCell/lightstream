@@ -41,7 +41,7 @@
 //!
 //! ```rust,no_run
 //! use minarrow::{arr_i32, arr_str32, vec64, FieldArray, Table};
-//! use lightstream::models::writers::ipc::table_writer::TableWriter;
+//! use lightstream::models::writers::ipc::table::TableWriter;
 //! use lightstream::enums::IPCMessageProtocol;
 //! use tokio::fs::File;
 //!
@@ -213,42 +213,42 @@ pub mod models {
         /// Arrow IPC readers
         pub mod ipc {
             /// File-based IPC reader
-            pub mod file_table_reader;
+            pub mod file_table;
 
             /// 64-Byte Aligned Zero Copy Mmap IPC reader
             #[cfg(feature = "mmap")]
-            pub mod mmap_table_reader;
+            pub mod mmap_table;
 
             /// Streamed IPC table reader
-            pub mod table_reader;
+            pub mod table;
         }
 
         /// CSV reader utilities.
         #[cfg(feature = "csv")]
-        pub mod csv_reader;
+        pub mod csv;
 
-        /// Chunked CSV reader: globs a directory of `<base>-NNNNN.csv`
-        /// files and presents them as an ordered iterator of `Table`s.
-        #[cfg(feature = "csv")]
-        pub mod chunked_csv;
         /// JSON reader (array-of-objects and NDJSON)
         #[cfg(feature = "json")]
-        pub mod json_reader;
+        pub mod json;
 
         /// Parquet reader
         #[cfg(feature = "parquet")]
-        pub mod parquet_reader;
+        pub mod parquet;
 
-        /// Chunked Parquet reader: globs a directory of
-        /// `<base>-NNNNN.parquet` files and presents them as an ordered
-        /// iterator of `Table`s.
-        #[cfg(feature = "parquet")]
-        pub mod chunked_parquet;
+        /// Chunked file readers - glob a directory of `<base>-NNNNN.<ext>`
+        /// files and present them as an ordered iterator of `Table`s.
+        pub mod chunked {
+            /// Chunked CSV reader.
+            #[cfg(feature = "csv")]
+            pub mod csv;
 
-        /// Chunked Arrow IPC reader: globs a directory of
-        /// `<base>-NNNNN.arrow` files and presents them as an ordered
-        /// iterator of `Table`s.
-        pub mod chunked_arrow;
+            /// Chunked Parquet reader.
+            #[cfg(feature = "parquet")]
+            pub mod parquet;
+
+            /// Chunked Arrow IPC reader.
+            pub mod arrow;
+        }
 
         /// TCP table reader
         #[cfg(feature = "tcp")]
@@ -262,11 +262,6 @@ pub mod models {
         #[cfg(feature = "quic")]
         pub mod quic;
 
-        /// Parallel QUIC table reader - merges several concurrent QUIC
-        /// streams on one connection.
-        #[cfg(feature = "quic")]
-        pub mod quic_parallel;
-
         /// WebTransport table reader
         #[cfg(feature = "webtransport")]
         pub mod webtransport;
@@ -274,6 +269,18 @@ pub mod models {
         /// HTTP/2 table reader (GET; streaming response body)
         #[cfg(feature = "http")]
         pub mod http;
+
+        /// Parallel transport readers - merge several concurrent streams
+        /// on one connection into a single table stream.
+        pub mod parallel {
+            /// Parallel QUIC table reader.
+            #[cfg(feature = "quic")]
+            pub mod quic;
+
+            /// Parallel HTTP/2 table reader.
+            #[cfg(feature = "http")]
+            pub mod http;
+        }
 
         /// UDS table reader
         #[cfg(feature = "uds")]
@@ -292,40 +299,42 @@ pub mod models {
     pub mod writers {
         pub mod ipc {
             /// Sync IPC stream writer.
-            pub mod table_stream_writer;
+            pub mod table_stream;
 
             /// Async IPC file/stream writer.
-            pub mod table_writer;
+            pub mod table;
 
             /// Sync end-to-end IPC writer over `std::io::Write`.
-            pub mod sync_table_writer;
+            pub mod sync_table;
         }
 
         /// CSV writer - for both file and network contexts
         #[cfg(feature = "csv")]
-        pub mod csv_writer;
+        pub mod csv;
 
-        /// Chunked CSV writer: writes each batch to a separate
-        /// `<base>-NNNNN.csv` file inside a directory.
-        #[cfg(feature = "csv")]
-        pub mod chunked_csv;
         /// JSON writer - array-of-objects or NDJSON, any io::Write sink
         #[cfg(feature = "json")]
-        pub mod json_writer;
+        pub mod json;
 
         /// Parquet writer
         #[cfg(feature = "parquet")]
-        pub mod parquet_writer;
+        pub mod parquet;
 
-        /// Chunked Parquet writer: writes each batch to a separate
-        /// `<base>-NNNNN.parquet` file inside a directory.
-        #[cfg(feature = "parquet")]
-        pub mod chunked_parquet;
+        /// Chunked file writers - write each batch to a separate
+        /// `<base>-NNNNN.<ext>` file inside a directory.
+        pub mod chunked {
+            /// Chunked CSV writer.
+            #[cfg(feature = "csv")]
+            pub mod csv;
 
-        /// Chunked Arrow IPC writer: writes each batch to a separate
-        /// `<base>-NNNNN.arrow` file inside a directory. Holds a tokio
-        /// runtime internally to drive the async IPC file writer.
-        pub mod chunked_arrow;
+            /// Chunked Parquet writer.
+            #[cfg(feature = "parquet")]
+            pub mod parquet;
+
+            /// Chunked Arrow IPC writer. Holds a tokio runtime internally
+            /// to drive the async IPC file writer.
+            pub mod arrow;
+        }
 
         /// TCP table writer
         #[cfg(feature = "tcp")]
@@ -339,11 +348,6 @@ pub mod models {
         #[cfg(feature = "quic")]
         pub mod quic;
 
-        /// Parallel QUIC table writer - fans a table sequence across
-        /// several concurrent QUIC streams on one connection.
-        #[cfg(feature = "quic")]
-        pub mod quic_parallel;
-
         /// WebTransport table writer
         #[cfg(feature = "webtransport")]
         pub mod webtransport;
@@ -351,6 +355,18 @@ pub mod models {
         /// HTTP/2 table writer (POST; streaming request body)
         #[cfg(feature = "http")]
         pub mod http;
+
+        /// Parallel transport writers - fan a table sequence across
+        /// several concurrent streams on one connection.
+        pub mod parallel {
+            /// Parallel QUIC table writer.
+            #[cfg(feature = "quic")]
+            pub mod quic;
+
+            /// Parallel HTTP/2 table writer.
+            #[cfg(feature = "http")]
+            pub mod http;
+        }
 
         /// UDS table writer
         #[cfg(feature = "uds")]

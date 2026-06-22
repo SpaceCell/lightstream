@@ -6,9 +6,9 @@
 use futures_util::StreamExt;
 use lightstream::enums::BufferChunkSize;
 use lightstream::enums::IPCMessageProtocol;
-use lightstream::models::readers::ipc::table_reader::TableReader;
+use lightstream::models::readers::ipc::table::TableReader;
 use lightstream::models::streams::disk::DiskByteStream;
-use lightstream::models::writers::ipc::table_stream_writer::TableStreamWriter;
+use lightstream::models::writers::ipc::table_stream::TableStreamWriter;
 use minarrow::{Field, FieldArray, Table, Vec64, arr_i32, arr_str32};
 use tempfile::tempdir;
 use tokio::fs::File;

@@ -4,7 +4,7 @@
 //! [`quinn::Connection`] and merges them into one table stream. Tables
 //! arrive from every stream as they decode; ordering is preserved
 //! within a stream, not across the set - the mirror of
-//! [`QuicParallelTableWriter`](crate::models::writers::quic_parallel::QuicParallelTableWriter).
+//! [`QuicParallelTableWriter`](crate::models::writers::parallel::quic::QuicParallelTableWriter).
 //!
 //! Implements `Stream<Item = io::Result<Table>>`, so it drives with
 //! `StreamExt` like any other reader.

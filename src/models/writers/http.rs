@@ -74,7 +74,7 @@ impl HttpTableWriter {
         let (host, port) = host_port(req.uri(), "http", 80)?;
         let tcp = TcpStream::connect((host.as_str(), port)).await?;
         let (send_stream, response_fut) = h2_send_post(tcp, req).await?;
-        Self::install_sink(send_stream, response_fut, schema, compression)
+        Self::from_send_stream(send_stream, response_fut, schema, compression)
     }
 
     /// As [`Self::from_request`], over HTTPS h2. Scheme must be `https`.
@@ -99,10 +99,14 @@ impl HttpTableWriter {
             ));
         }
         let (send_stream, response_fut) = h2_send_post(tls, req).await?;
-        Self::install_sink(send_stream, response_fut, schema, compression)
+        Self::from_send_stream(send_stream, response_fut, schema, compression)
     }
 
-    fn install_sink(
+    /// Build a writer over an already-open h2 request stream and its
+    /// response future. The parallel writer uses this to place one writer
+    /// on each request stream of a shared connection. Pass `None` for
+    /// `compression` to write uncompressed batches.
+    pub fn from_send_stream(
         send_stream: h2::SendStream<Bytes>,
         response_fut: h2::client::ResponseFuture,
         schema: Vec<Field>,

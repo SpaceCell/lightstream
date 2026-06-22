@@ -27,7 +27,7 @@ use std::sync::atomic::AtomicU64;
 use minarrow::{Field, Table};
 
 use crate::enums::IPCMessageProtocol;
-use crate::models::writers::ipc::sync_table_writer::SyncTableWriter;
+use crate::models::writers::ipc::sync_table::SyncTableWriter;
 use crate::traits::chunked_table_writer::ChunkedTableWriter;
 
 /// Streaming Arrow IPC sink that writes one file per batch.
@@ -101,7 +101,7 @@ impl ChunkedTableWriter for ChunkedArrowWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::readers::chunked_arrow::ChunkedArrowReader;
+    use crate::models::readers::chunked::arrow::ChunkedArrowReader;
     use crate::traits::chunked_table_reader::ChunkedTableReader;
     use minarrow::{Table, fa_i32};
 
