@@ -1,9 +1,10 @@
-//! AWS rig receiver. Connects to the sender, reads `--batches` tables,
-//! and reports timed throughput. The receive loop is the timed region
-//! so the reported number is what the consuming service experiences.
+//! Receiver for the AWS A-to-B benchmark.
 //!
-//! See `bench/aws/README.md` for the EC2 setup steps. Run with
-//! `--help` for the argument surface.
+//! Connects to the sender, receives the configured number of table batches and
+//! reports throughput measured across the receive loop.
+//!
+//! See `bench/aws/README.md` for setup instructions. Run with `--help` for the
+//! available command-line options.
 
 use std::time::Instant;
 
@@ -13,8 +14,9 @@ use tokio::net::TcpStream;
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
 use lightstream::models::readers::ipc::table::TableReader;
 
-#[path = "../../benches/bench_helpers.rs"]
+#[path = "../../benches/common/bench_helpers.rs"]
 mod bench_helpers;
+
 use bench_helpers::BenchShape;
 
 #[derive(Debug, Clone, Copy)]
@@ -154,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         throughput_gib
     );
     // Print a machine-parsable summary line on stdout so wrapper scripts
-    // can capture the result directly without parsing the human log.
+    // can capture the result without parsing the log.
     println!(
         "RESULT shape={} rows={} batches={} bytes={} elapsed_s={:.6} gib_per_s={:.3}",
         args.shape.label(),

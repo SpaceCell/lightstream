@@ -1,43 +1,29 @@
-//! # Type-level serialise/deserialise
+//! Codec-based serialisation and deserialisation.
 //!
-//! User-facing round-trip trait. Implemented ON minarrow value types
-//! (`Table`, `Array`, `FieldArray`, etc.). Parametrised over a codec
-//! type: the codec is whatever
-//! [`crate::traits::encoder::Encoder`] +
-//! [`crate::traits::decoder::Decoder`] pair the implementer wants to
-//! drive. The codec knows the wire format; `Serialise` itself does
-//! not.
+//! [`Serialise`] is implemented for Minarrow value types such as `Table`,
+//! `Array` and `FieldArray`. The codec type `C` defines the encoded format and
+//! provides the corresponding encoder and decoder implementations.
 //!
-//! `Serialise<C>` is a thin wrapper around the codec's encode and
-//! decode: each impl constructs the codec and forwards. Method names
-//! mirror the codec on purpose - the operation is the same, the
-//! receiver is what differs.
+//! Implementations construct the codec and delegate to its encode and decode
+//! operations.
 
 use minarrow::Vec64;
 
-/// In-memory round-trip driven by codec `C`. A single value type can
-/// implement `Serialise` once per codec it supports.
-///
-/// `encode` produces a self-contained `Vec64<u8>`. `decode` parses a
-/// borrowed slice back into `Self`. Both are required so the
-/// implementation contract is even on both sides.
-///
-/// `decode_owned` is an optional zero-copy override: the default
-/// forwards to `decode`, but codecs whose decoder can wrap an aligned
-/// `Vec64<u8>` directly can override it to skip the memcpy.
+/// Encodes and decodes a value using codec `C`.
 pub trait Serialise<C>: Sized {
-    /// Error surfaced by the round-trip methods.
+    /// Error returned by encoding or decoding.
     type Error;
 
-    /// Encode `self` to a self-contained byte buffer using codec `C`.
+    /// Encodes this value into a self-contained byte buffer.
     fn encode(&self) -> Result<Vec64<u8>, Self::Error>;
 
-    /// Decode bytes back into `Self` using codec `C`.
+    /// Decodes a value from a borrowed byte slice.
     fn decode(bytes: &[u8]) -> Result<Self, Self::Error>;
 
-    /// Owned-bytes entry. Default forwards to `decode`. Override
-    /// when the codec can take ownership of the buffer directly
-    /// without a memcpy.
+    /// Decodes a value from an owned byte buffer.
+    ///
+    /// The default implementation delegates to [`Self::decode`]. Codecs may
+    /// override this method when they can consume the buffer without copying.
     fn decode_owned(bytes: Vec64<u8>) -> Result<Self, Self::Error> {
         Self::decode(&bytes)
     }

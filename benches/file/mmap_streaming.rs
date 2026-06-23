@@ -1,71 +1,43 @@
-//! Larger-than-memory mmap streaming bench, sum-and-subtract
-//! methodology. **Linux-only.**
+// TODO: Fix - Lightstream has column projection
+
+//! Benchmarks memory-mapped streaming with cold and warm page-cache states.
+//! Linux only.
 //!
-//! Each reader computes the sum of the `values` (`f64`) column across
-//! the whole bench file. Two cells per reader:
+//! Each reader sums the `values` (`f64`) column across the benchmark file.
 //!
-//! - `_cold` - calls `posix_fadvise(POSIX_FADV_DONTNEED)` before each
-//!   iteration so every iteration begins with the file's pages evicted
-//!   from the OS page cache. Forces real disk reads.
-//! - `_warm` - primes the page cache once outside the timed region,
-//!   then iterates with the cache hot.
+//! - `_cold` evicts the file from the page cache before each iteration.
+//! - `_warm` primes the page cache before measurement.
 //!
-//! Subtracting `warm` from `cold` isolates the disk and page-cache
-//! read cost from the decode + sum arithmetic. The `warm` numbers also
-//! stand on their own as a measure of decode-plus-compute throughput
-//! once the OS has the data resident.
+//! The difference between cold and warm timings approximates storage and
+//! page-fault overhead. Warm timings measure decoding and aggregation with the
+//! file resident in memory.
 //!
 //! ## Column projection
 //!
-//! Where the reader supports projecting to a subset of columns at read
-//! time, an extra `_projected` variant runs the workload reading only
-//! the `values` column. That's the real-world one-column read users
-//! reach for in larger-than-memory analytics. Surfaces are:
+//! Readers that support column projection also include a `_projected` variant
+//! that reads only the `values` column:
 //!
-//! - polars: `IpcReader::memory_mapped(None).with_columns(["values"])`.
-//!   The non-projected columns' pages are never faulted in; polars
-//!   reads only the bytes it needs.
-//! - arrow-rs: `FileReader::try_new(file, Some(vec![1]))`. Same idea
-//!   on the file-reader path.
-//! - lightstream: `MmapTableReader` does not currently expose a
-//!   column-projection API. Tracked as an upcoming follow-up; the
-//!   lightstream cells therefore read the full batch and sum the
-//!   target column in place. That is intentionally an apples-to-
-//!   oranges comparison against the `_projected` variants, and the
-//!   README should call that out explicitly when citing numbers.
+//! - Polars uses `IpcReader::memory_mapped(None).with_columns(["values"])`.
+//! - Arrow-rs uses `FileReader::try_new(file, Some(vec![1]))`.
+//! - Lightstream currently reads the complete batch because `MmapTableReader`
+//!   does not expose column projection.
 //!
-//! ## Path selection
+//! Projected results should not be compared directly with Lightstream results,
+//! because the amount of data read differs.
 //!
-//! `posix_fadvise(POSIX_FADV_DONTNEED)` only evicts pages from the
-//! file's backing block-device cache; it has no effect on tmpfs.
-//! The bench file defaults to `/tmp/lightstream_mmap_bench`, which
-//! is disk-backed on systems where `/tmp` is an ordinary filesystem
-//! and is normally cleared on reboot so the file never persists.
-//! Override with `LIGHTSTREAM_MMAP_BENCH_DIR` if `/tmp` is tmpfs on
-//! your host (the bench will OOM the host at large sizes if `/tmp`
-//! is tmpfs); `/var/tmp` is a typical alternative.
+//! ## Benchmark file
 //!
-//! ## File reuse and cleanup
+//! `LIGHTSTREAM_MMAP_BENCH_DIR` sets the file directory. The default is
+//! `/tmp/lightstream_mmap_bench`. Use a disk-backed directory such as
+//! `/var/tmp` when `/tmp` is mounted as `tmpfs`.
 //!
-//! Generating a multi-GiB bench file takes time and disk. The bench
-//! reuses an existing file at the resolved path if its size matches
-//! `LIGHTSTREAM_MMAP_BENCH_SIZE_GIB`. Only files of the active size
-//! are generated; the bench will refuse to write a second file
-//! alongside an existing smaller one (it overwrites the existing
-//! path).
+//! `LIGHTSTREAM_MMAP_BENCH_SIZE_GIB` sets the file size in GiB and defaults to
+//! 2. An existing file is reused when its size matches the requested size.
 //!
-//! After all bench groups have run, the file is deleted by default.
-//! Set `LIGHTSTREAM_MMAP_BENCH_CLEANUP=false` to keep it around for
-//! repeated iteration runs during development; leaving the default
-//! (`true`) is appropriate for production runs and avoids leaving
-//! multi-GiB artefacts on the host.
-//!
-//! File size is controlled by `LIGHTSTREAM_MMAP_BENCH_SIZE_GIB`
-//! (default 2). The first invocation prints the resolved path so the
-//! choice is visible.
+//! The file is deleted after the benchmarks complete. Set
+//! `LIGHTSTREAM_MMAP_BENCH_CLEANUP=false` to retain it.
 
-// Linux-only via libc::posix_fadvise; mmap-only via Cargo.toml's
-// `required-features = ["mmap"]`.
+// Requires Linux `posix_fadvise` support and the `mmap` Cargo feature.
 
 #[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
@@ -85,16 +57,12 @@ use minarrow::{Array, NumericArray, Table};
 const SHAPE: BenchShape = BenchShape::Mixed;
 const ROWS_PER_BATCH: usize = 100_000;
 const DEFAULT_FILE_SIZE_GIB: usize = 2;
-// Column index of the f64 `values` column in the Mixed shape. The
-// sum target.
+
+// Index of the `values` column in the `Mixed` shape.
 const VALUES_COL_INDEX: usize = 1;
 const VALUES_COL_NAME: &str = "values";
 
-// Resolves to the on-disk file used by every bench in this group. The
-// file is generated once per process the first time the path is
-// requested. The cache is intentionally process-scoped: criterion
-// re-runs the same fn many times and we want all of them to share the
-// same input, but a fresh `cargo bench` regenerates from scratch.
+// Shared benchmark file state, initialised once per process.
 static FILE_STATE: OnceLock<FileState> = OnceLock::new();
 
 struct FileState {

@@ -1,19 +1,14 @@
-//! Shared helpers for throughput benchmarks.
+//! Shared support code for throughput benchmarks.
 //!
-//! The matrix described by [`BenchShape`] x [`BenchScale`] is consumed
-//! by the network and file throughput benches and the head-to-head
-//! comparison against Arrow Flight. The shape exercises a specific
-//! decoder path - numeric only, wide schemas, string-heavy mixes, or
-//! the canonical mixed table - and the scale selects row count.
+//! [`BenchShape`] defines the column layout and [`BenchScale`] defines the row
+//! count. The resulting matrix is used by the network, file and Arrow Flight
+//! benchmarks.
 //!
-//! Bench presets are configured via the `LIGHTSTREAM_BENCH_MATRIX`
-//! environment variable:
+//! Set `LIGHTSTREAM_BENCH_MATRIX` to select a preset:
 //!
-//! - `quick`   - one cell, fastest run, suitable for local smoke checks.
-//! - `standard` (default) - six cells covering each shape at Small scale
-//!   plus two mid-scale cells.
-//! - `full`    - sixteen cells across all shapes and scales including
-//!   the Large scale that produces multi-GiB per-iteration payloads.
+//! - `quick`: one cell for smoke testing.
+//! - `standard`: the default six-cell matrix.
+//! - `full`: all sixteen shape and scale combinations.
 
 #![allow(dead_code)]
 
@@ -27,27 +22,28 @@ use minarrow::{
 };
 
 // ---------------------------------------------------------------------------
-// Shape and scale
+// Shapes and scales
 // ---------------------------------------------------------------------------
 
-/// Workload payload shape. Each shape stresses a different decoder path.
+/// Column layout used by a benchmark workload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BenchShape {
-    /// Four numeric columns - `i32`, `i64`, `f32`, `f64`. Tests the
-    /// fixed-width buffer copy and SIMD-friendly numeric path.
+    /// Four fixed-width numeric columns: `i32`, `i64`, `f32` and `f64`.
     NarrowNumeric,
-    /// One hundred columns split 25 each across `i32`, `i64`, `f32`,
-    /// `f64`. Tests schema-handling and per-buffer overhead.
+
+    /// One hundred numeric columns, split evenly across `i32`, `i64`, `f32`
+    /// and `f64`.
     Wide,
-    /// Four columns - `i32` id, long `utf8`, short `utf8`,
-    /// `categorical32` with a hundred unique values. Tests offset
-    /// buffers, variable-length payload, and dictionary roundtripping.
+
+    /// An `i32` identifier, long and short UTF-8 columns, and a `categorical32`
+    /// column containing one hundred distinct values.
     StringHeavy,
-    /// Four columns - `i32`, `f64`, short `utf8`, `categorical32` with
-    /// three unique values. Canonical mixed shape matching the
-    /// pre-matrix bench layout.
+
+    /// An `i32`, an `f64`, a short UTF-8 column and a `categorical32` column
+    /// containing three distinct values.
     Mixed,
 }
+
 
 impl BenchShape {
     pub fn label(self) -> &'static str {

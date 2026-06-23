@@ -1,86 +1,88 @@
-# Lightstream cross-host bench - ephemeral EKS
+# Lightstream cross-host benchmark on EKS
 
-Local benches measure a software ceiling. A deployed service crosses a
-real NIC. This rig measures the second case: it stands up a throwaway
-EKS cluster, schedules the lightstream sender and receiver on two
-separate nodes, sends the bench workload between them, harvests the
-receiver's throughput, then destroys it.
+This benchmark provisions a temporary EKS cluster and runs the Lightstream sender and receiver on separate worker nodes. It records receiver-side throughput across the network between the nodes, then destroys the infrastructure.
 
-The number it produces is what a service actually sees on the wire,
-inclusive of the network hop.
+## Measurement setup
 
-## Why the result is credible
-
-- **Real network hop.** The receiver Job carries a `required` pod
-  anti-affinity against the sender on `topologyKey: kubernetes.io/hostname`.
-  Kubernetes will not co-schedule them, so the two pods land on distinct
-  nodes and traffic crosses a real NIC rather than a shared loopback.
-- **Same throughput accounting as the in-process benches.** The
-  receiver reports logical-byte throughput via the same
-  `bench_helpers` path used everywhere else, so the cross-host number is
-  comparable to the loopback one.
-- **Ephemeral and reproducible.** Every run provisions a fresh cluster
-  with a random-suffixed name, runs, and destroys. Nothing lingers, and
-  two runs do not collide.
+* **Separate worker nodes.** The receiver Job uses required pod anti-affinity against the sender with `kubernetes.io/hostname` as the topology key. This prevents both pods from being scheduled on the same node.
+* **Consistent throughput accounting.** The receiver calculates logical-byte throughput through the same `bench_helpers` code used by the local benchmarks.
+* **Isolated runs.** Each run creates resources with a random suffix, avoiding naming conflicts between concurrent runs.
+* **Automatic cleanup.** The cluster is destroyed when the script exits unless `KEEP=1` is set.
 
 ## Layout
 
-```
+```text
 bench/cluster/
-  Dockerfile            multi-stage build of bench_sender / bench_receiver
-  terraform/main.tf     throwaway VPC, EKS cluster, 2-node group, ECR repo
-  k8s/namespace.yaml    bench namespace
-  k8s/sender.yaml       sender Deployment + ClusterIP Service
-  k8s/receiver.yaml     receiver Job with anti-affinity to the sender
-  run.sh                end-to-end: apply -> build/push -> run -> destroy
+  Dockerfile            builds bench_sender and bench_receiver
+  terraform/main.tf     creates the VPC, EKS cluster, node group and ECR repository
+  k8s/namespace.yaml    creates the benchmark namespace
+  k8s/sender.yaml       defines the sender Deployment and Service
+  k8s/receiver.yaml     defines the receiver Job and pod anti-affinity
+  run.sh                provisions, builds, runs and destroys the benchmark
 ```
 
 ## Prerequisites
 
-- `aws` CLI, authenticated with rights to create VPC, EKS, EC2, and ECR.
-- `terraform` >= 1.6, `kubectl`, `docker`, and `envsubst` (gettext).
+* AWS CLI credentials with permission to manage VPC, EKS, EC2 and ECR resources.
+* Terraform 1.6 or later.
+* `kubectl`.
+* Docker.
+* `envsubst`, provided by gettext.
 
-`terraform init` pulls the `terraform-aws-modules/vpc` and
-`terraform-aws-modules/eks` modules.
+Terraform downloads the `terraform-aws-modules/vpc` and `terraform-aws-modules/eks` modules during initialisation.
 
-## Run
+## Run the benchmark
+
+Run with the default configuration:
 
 ```bash
-# Defaults: us-east-1, mixed shape, 100k rows, 2000 batches, c5n.large nodes
 ./bench/cluster/run.sh
+```
 
-# Tune the workload and region
-REGION=us-west-2 SHAPE=narrow_numeric ROWS=1000000 BATCHES=500 \
-  ./bench/cluster/run.sh
+The defaults are:
 
-# Leave the cluster up to inspect (destroy it yourself afterwards)
+* Region: `us-east-1`
+* Shape: `mixed`
+* Rows per batch: `100000`
+* Batches: `2000`
+* Worker instance type: `c5n.large`
+
+Override the workload or region with environment variables:
+
+```bash
+REGION=us-west-2 \
+SHAPE=narrow_numeric \
+ROWS=1000000 \
+BATCHES=500 \
+./bench/cluster/run.sh
+```
+
+Keep the infrastructure after the benchmark for inspection:
+
+```bash
 KEEP=1 ./bench/cluster/run.sh
 ```
 
-`run.sh` prints the pod placement (proving the two pods are on different
-nodes) and the receiver's `RESULT ...` line, for example:
+The script prints the sender and receiver pod placement, followed by the receiver result:
 
-```
+```text
 RESULT shape=mixed rows=100000 batches=2000 bytes=... elapsed_s=... gib_per_s=...
 ```
 
-The cluster is destroyed on exit unless `KEEP=1`.
+## Cleanup
 
-## Cost and cleanup
+The EKS control plane and two worker instances continue to incur charges while they are running. The script destroys the infrastructure on exit unless `KEEP=1` is set.
 
-An EKS control plane bills per hour and the node group runs two
-instances. A single run is minutes, but a forgotten `KEEP=1` cluster
-keeps billing. If a run is interrupted before cleanup, destroy by hand:
+To destroy the infrastructure manually:
 
 ```bash
-terraform -chdir=bench/cluster/terraform destroy -auto-approve -var region=<region>
+terraform -chdir=bench/cluster/terraform destroy \
+  -auto-approve \
+  -var region=<region>
 ```
 
 ## Transports
 
-The sender and receiver speak TCP, so the rig measures TCP across the
-network. The `Dockerfile` takes a `FEATURES` build arg and the manifests
-pass the workload through env, so extending to the other transports
-(QUIC, HTTP/2, WebSocket, and the parallel multi-stream path) is a matter
-of teaching the sender and receiver to select a transport at runtime.
-That lands alongside the parallel-streams API.
+The current sender and receiver use TCP.
+
+The Dockerfile accepts a `FEATURES` build argument, and the Kubernetes manifests receive their workload configuration through `run.sh`. Supporting QUIC, HTTP/2, WebSocket or parallel streams requires adding runtime transport selection to the sender and receiver binaries.

@@ -1,17 +1,19 @@
 ################################################################################
-# Lightstream AWS A-to-B benchmark - infrastructure module.
+# Lightstream AWS A-to-B benchmark infrastructure.
 #
-# Provisions two EC2 instances in the same Availability Zone, in a cluster
-# placement group, on the AWS default VPC. The instances are bootstrapped
-# minimally (chrony enabled, ulimits raised); the lightstream binaries are
-# expected to be SCP'd in after `terraform apply` returns, then driven by
-# `bench/aws/run.sh`. Outputs include the public IPs to SSH to and the
-# sender's private IP for the receiver to connect to.
+# Creates two EC2 instances in the same Availability Zone and cluster placement
+# group within the default VPC.
 #
-# The user supplies their own SSH public key via the `ssh_public_key_path`
-# variable. Terraform creates an `aws_key_pair` from it; SSH access uses
-# the matching private key the user already holds. No key material is
-# bundled with this module.
+# Each instance is configured with chrony and increased resource limits.
+# Lightstream binaries must be copied to the instances after `terraform apply`,
+# then the benchmark can be run with `bench/aws/run.sh`.
+#
+# Outputs provide the public IP addresses for SSH access and the sender's private
+# IP address for the receiver connection.
+#
+# The `ssh_public_key_path` variable must reference the user's SSH public key.
+# Terraform registers it as an AWS key pair. The corresponding private key
+# remains with the user and is not included in this module.
 ################################################################################
 
 terraform {
@@ -72,7 +74,9 @@ data "aws_ami" "al2023" {
 }
 
 ################################################################################
-# Networking - security group only; VPC and subnet come from defaults
+# Networking - security group.
+#
+# Note: VPC and subnet come from defaults
 ################################################################################
 
 resource "aws_security_group" "bench" {
@@ -98,8 +102,7 @@ resource "aws_security_group" "bench" {
 }
 
 # Separate rule so the group can reference itself. The bench port is open
-# from any instance in this SG to any other - matches the workflow where
-# the receiver connects to the sender on a single TCP port.
+# from any instance in this SG to any other
 resource "aws_security_group_rule" "bench_self_ingress" {
   type                     = "ingress"
   from_port                = var.bench_port
@@ -115,7 +118,9 @@ resource "random_id" "suffix" {
 }
 
 ################################################################################
-# SSH key pair (built from a user-supplied public key)
+# SSH key pair.
+#
+# This is built from a user-supplied public key
 ################################################################################
 
 resource "aws_key_pair" "bench" {
@@ -166,9 +171,8 @@ resource "aws_instance" "receiver" {
   }
 }
 
-# Minimal bootstrap: enable chrony for clock sync (the bench reports
-# sub-millisecond timings) and raise nofile so the bench binary's
-# sockets and buffers do not hit the 1024 default.
+# Enable chrony for accurate benchmark timing and increase the open-file limit
+# to support the benchmark's sockets and buffers.
 locals {
   bootstrap_user_data = <<-EOT
     #!/bin/bash
@@ -184,16 +188,16 @@ locals {
 ################################################################################
 
 variable "region" {
-  description = "AWS region to deploy into."
+  description = "AWS region in which to create the benchmark infrastructure."
   type        = string
   default     = "us-east-1"
 }
 
 variable "instance_type" {
   description = <<-EOT
-    EC2 instance type. Default `c7gn.large` is network-optimised Graviton in
-    the same NIC class as the published numbers. For x86, use `c7i.large`.
-    Larger sizes lift the network ceiling at higher cost.
+    EC2 instance type. The default, `c7gn.large`, is a network-optimised
+    Graviton instance. Use `c7i.large` for x86_64. Larger instance types
+    provide more network bandwidth at a higher cost.
   EOT
   type        = string
   default     = "c7gn.large"
@@ -201,11 +205,13 @@ variable "instance_type" {
 
 variable "architecture" {
   description = <<-EOT
-    AMI architecture: `arm64` for Graviton instance types (c7g/c7gn/m7g),
-    `x86_64` for Intel/AMD types (c7i/m7i).
+    AMI architecture. Use `arm64` for Graviton instance types such as
+    c7g, c7gn and m7g. Use `x86_64` for Intel or AMD instance types such
+    as c7i and m7i.
   EOT
   type        = string
   default     = "arm64"
+
   validation {
     condition     = contains(["arm64", "x86_64"], var.architecture)
     error_message = "architecture must be arm64 or x86_64."
@@ -214,61 +220,60 @@ variable "architecture" {
 
 variable "ssh_public_key_path" {
   description = <<-EOT
-    Filesystem path to the SSH public key Terraform should register on
-    both instances. The user owns the matching private key; no key
-    material is bundled with this module. Example:
-    `~/.ssh/lightstream_bench.pub`.
+    Path to the SSH public key to register with AWS for both instances.
+    The corresponding private key remains with the user and is not included
+    in this module.
   EOT
   type        = string
 }
 
 variable "ssh_allow_cidr" {
   description = <<-EOT
-    CIDR block permitted to SSH into the instances. Set to the operator's
-    public IP/32 - the default of 0.0.0.0/0 is convenient for one-shot
-    runs but is not recommended for anything left running.
+    CIDR block allowed to connect to the instances over SSH. Restrict this
+    to the operator's public IP address using a /32 suffix where possible.
+    The default permits SSH access from any address.
   EOT
   type        = string
   default     = "0.0.0.0/0"
 }
 
 variable "bench_port" {
-  description = "TCP port the sender listens on and the receiver connects to."
+  description = "TCP port used for the benchmark connection."
   type        = number
   default     = 9001
 }
 
 ################################################################################
-# Outputs - feed these into `bench/aws/run.sh`
+# Outputs used by `bench/aws/run.sh`.
 ################################################################################
 
 output "sender_public_ip" {
-  description = "Public IP for SSH'ing to the sender host."
+  description = "Public IP address of the sender instance."
   value       = aws_instance.sender.public_ip
 }
 
 output "sender_private_ip" {
-  description = "Private IP the receiver should connect to (pass as SENDER_PRIVATE_IP to run.sh)."
+  description = "Private IP address used by the receiver to connect to the sender."
   value       = aws_instance.sender.private_ip
 }
 
 output "receiver_public_ip" {
-  description = "Public IP for SSH'ing to the receiver."
+  description = "Public IP address of the receiver instance."
   value       = aws_instance.receiver.public_ip
 }
 
 output "availability_zone" {
-  description = "AZ the instances land in (same-AZ via the placement group)."
+  description = "Availability Zone containing both benchmark instances."
   value       = data.aws_subnet.selected.availability_zone
 }
 
 output "ssh_user" {
-  description = "SSH user for Amazon Linux 2023."
+  description = "SSH username for Amazon Linux 2023."
   value       = "ec2-user"
 }
 
 output "run_sh_invocation" {
-  description = "Ready-to-paste invocation of bench/aws/run.sh using these outputs."
+  description = "Command for running the benchmark with the provisioned instances."
   value = <<-EOT
     SENDER_HOST=ec2-user@${aws_instance.sender.public_ip} \
     RECEIVER_HOST=ec2-user@${aws_instance.receiver.public_ip} \
@@ -277,3 +282,4 @@ output "run_sh_invocation" {
     bench/aws/run.sh
   EOT
 }
+

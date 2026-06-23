@@ -1,20 +1,20 @@
-//! Arrow Flight head-to-head bench.
+//! Compares Apache Arrow Flight and Lightstream TCP throughput.
 //!
-//! For each `BenchMatrix` cell the same logical workload runs through
-//! Apache Arrow Flight (gRPC + Arrow IPC) and through lightstream TCP
-//! on loopback. Both endpoints live in this process, listen on
-//! 127.0.0.1, and stream batches to a client whose receive loop is
-//! the timed region. Connection setup, schema negotiation, and any
-//! per-iteration buffer construction happen outside the timer.
+//! Each [`BenchMatrix`] cell runs the same workload over Arrow Flight and
+//! Lightstream TCP on loopback. Both servers run in-process and listen on
+//! `127.0.0.1`. Only the client receive loop is timed; connection setup,
+//! schema negotiation and per-iteration buffer construction are excluded.
 //!
-//! Logical-bytes throughput is computed from the source columns in
-//! [`bench_helpers::logical_payload_bytes_shape`] so the denominator
-//! matches the figure reported by `transport_throughput` for the
-//! same cell, letting the two bench files be read side by side.
+//! Arrow Flight uses 8 MiB HTTP/2 flow-control windows and increased gRPC
+//! message limits so each batch can be sent as a single message. Lightstream
+//! uses its default configuration.
 //!
-//! Gated entirely on the `bench_arrow_flight` feature; without it,
-//! `arrow-flight` and `tonic` are not pulled into the dependency
-//! graph and this file is not built.
+//! Throughput is calculated from the source columns using
+//! [`bench_helpers::logical_payload_bytes_shape`], matching the accounting used
+//! by the transport benchmarks.
+//!
+//! This benchmark requires the `bench_arrow_flight` feature. Arrow Flight and
+//! Tonic are not included in the dependency graph when the feature is disabled.
 
 #[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
@@ -241,10 +241,22 @@ fn wide_batch(n_rows: usize) -> RecordBatch {
 // times. Every other RPC is unsupported.
 // ---------------------------------------------------------------------------
 
+// Flight tuning that mirrors lightstream within Flight's public API. The 8 MiB
+// HTTP/2 windows match the lightstream HTTP/2 path, and the message and
+// flight-data limits let each batch travel as one message rather than the
+// default 2 MiB slices.
+const FLIGHT_HTTP2_WINDOW: u32 = 8 * 1024 * 1024;
+const FLIGHT_MAX_MESSAGE_BYTES: usize = i32::MAX as usize;
+
+// Stream counts for the matched parallel comparison. Each side fans the same
+// table sequence across N concurrent streams on one connection.
+const PARALLEL_STREAM_COUNTS: &[usize] = &[2, 4, 8, 16];
+
+// The DoGet ticket carries the batch count the client wants, so each concurrent
+// stream in the parallel comparison asks for its own share.
 #[derive(Clone)]
 struct BenchFlightService {
     batch: Arc<RecordBatch>,
-    repetitions: u64,
 }
 
 #[tonic::async_trait]
@@ -294,14 +306,16 @@ impl FlightService for BenchFlightService {
 
     async fn do_get(
         &self,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
+        let ticket = request.into_inner();
+        let n = u64::from_le_bytes(ticket.ticket.as_ref().try_into().unwrap());
         let batch = Arc::clone(&self.batch);
-        let n = self.repetitions;
         let batch_stream = stream::iter((0..n).map(move |_| {
             Ok::<RecordBatch, arrow_flight::error::FlightError>((*batch).clone())
         }));
         let flight_data = FlightDataEncoderBuilder::new()
+            .with_max_flight_data_size(FLIGHT_MAX_MESSAGE_BYTES)
             .build(batch_stream)
             .map_err(|err| Status::internal(format!("flight encode failure: {err}")));
         Ok(Response::new(Box::pin(flight_data)))
@@ -341,6 +355,13 @@ impl FlightService for BenchFlightService {
 // ---------------------------------------------------------------------------
 
 fn bench_arrow_flight_compare(c: &mut Criterion) {
+    // QUIC's rustls config needs a process-wide crypto provider installed
+    // before the first handshake.
+    #[cfg(feature = "quic")]
+    {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     let rt = Runtime::new().unwrap();
 
     for (shape, scale) in BenchMatrix::from_env().cells() {
@@ -362,6 +383,17 @@ fn bench_arrow_flight_compare(c: &mut Criterion) {
         bench_flight_do_get(&mut group, &rt, &arrow_batch);
         bench_lightstream_tcp(&mut group, &rt, &table, &schema, &dict_regs);
 
+        // Each side fans the same per-stream workload across N concurrent
+        // streams on one connection.
+        for &streams in PARALLEL_STREAM_COUNTS {
+            group.throughput(Throughput::Bytes(logical_payload_bytes_shape(shape, rows, streams)));
+            bench_flight_parallel(&mut group, &rt, &arrow_batch, streams);
+            #[cfg(feature = "http")]
+            bench_lightstream_http2_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
+            #[cfg(feature = "quic")]
+            bench_lightstream_quic_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
+        }
+
         group.finish();
     }
 }
@@ -382,13 +414,18 @@ fn bench_flight_do_get(
 
                 let service = BenchFlightService {
                     batch: Arc::clone(&batch),
-                    repetitions: iters,
                 };
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
                 let server = tokio::spawn(async move {
                     Server::builder()
-                        .add_service(FlightServiceServer::new(service))
+                        .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
+                        .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
+                        .add_service(
+                            FlightServiceServer::new(service)
+                                .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
+                                .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES),
+                        )
                         .serve_with_incoming_shutdown(incoming, async {
                             let _ = shutdown_rx.await;
                         })
@@ -398,14 +435,16 @@ fn bench_flight_do_get(
 
                 let channel = tonic::transport::Endpoint::try_from(format!("http://{addr}"))
                     .unwrap()
+                    .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
+                    .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
                     .connect()
                     .await
                     .unwrap();
-                let mut client = FlightServiceClient::new(channel);
+                let mut client = FlightServiceClient::new(channel)
+                    .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
 
-                let ticket = Ticket {
-                    ticket: bytes::Bytes::from_static(b"bench"),
-                };
+                let ticket = Ticket::new(iters.to_le_bytes().to_vec());
 
                 let start = std::time::Instant::now();
                 let stream = client.do_get(Request::new(ticket)).await.unwrap().into_inner();
@@ -425,12 +464,10 @@ fn bench_flight_do_get(
                     count += 1;
                 }
                 let elapsed = start.elapsed();
-                // FlightDataEncoderBuilder slices each input batch when
-                // it exceeds the gRPC target size (default 2 MiB), so
-                // one input batch can yield several decoded batches.
-                // The honest comparison keeps the default chunking; the
-                // sanity check is just that we received at least the
-                // input count.
+                // The raised flight-data limit sends each batch as one message,
+                // matching lightstream's one-IPC-message-per-table framing, so
+                // the decoded count tracks the input count. A batch above the
+                // limit would still split, so the check stays a lower bound.
                 assert!(count >= iters);
 
                 let _ = shutdown_tx.send(());
@@ -503,6 +540,316 @@ fn bench_lightstream_tcp(
             }
         });
     });
+}
+
+// Arrow Flight across N concurrent DoGet streams on one channel. Each stream
+// requests `iters` batches through a cloned ticket, so the channel carries the
+// same per-stream workload as lightstream's N parallel streams. `Bytes` clones
+// share the one ticket buffer, so only the initial ticket allocates.
+fn bench_flight_parallel(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    batch: &Arc<RecordBatch>,
+    streams: usize,
+) {
+    group.bench_function(format!("arrow_flight_parallel_{streams}"), |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let batch = Arc::clone(batch);
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+                let service = BenchFlightService {
+                    batch: Arc::clone(&batch),
+                };
+                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+                let server = tokio::spawn(async move {
+                    Server::builder()
+                        .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
+                        .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
+                        .add_service(
+                            FlightServiceServer::new(service)
+                                .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
+                                .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES),
+                        )
+                        .serve_with_incoming_shutdown(incoming, async {
+                            let _ = shutdown_rx.await;
+                        })
+                        .await
+                        .unwrap();
+                });
+
+                let channel = tonic::transport::Endpoint::try_from(format!("http://{addr}"))
+                    .unwrap()
+                    .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
+                    .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
+                    .connect()
+                    .await
+                    .unwrap();
+
+                let ticket = Ticket::new(iters.to_le_bytes().to_vec());
+
+                let start = std::time::Instant::now();
+                let mut handles = Vec::with_capacity(streams);
+                for _ in 0..streams {
+                    let mut client = FlightServiceClient::new(channel.clone())
+                        .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
+                        .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
+                    let ticket = ticket.clone();
+                    handles.push(tokio::spawn(async move {
+                        let stream = client
+                            .do_get(Request::new(ticket))
+                            .await
+                            .unwrap()
+                            .into_inner();
+                        let decoder =
+                            arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
+                                stream.map_err(|err| {
+                                    arrow_flight::error::FlightError::from_external_error(
+                                        Box::new(err),
+                                    )
+                                }),
+                            );
+                        let mut decoder = std::pin::pin!(decoder);
+                        let mut received = 0u64;
+                        while let Some(item) = decoder.next().await {
+                            let rb = item.unwrap();
+                            std::hint::black_box(rb.columns());
+                            received += 1;
+                        }
+                        received
+                    }));
+                }
+                let mut total = 0u64;
+                for handle in handles {
+                    total += handle.await.unwrap();
+                }
+                let elapsed = start.elapsed();
+                assert!(total >= iters * streams as u64);
+
+                let _ = shutdown_tx.send(());
+                server.await.unwrap();
+                elapsed
+            }
+        });
+    });
+}
+
+// lightstream HTTP/2 across N concurrent request streams on one connection.
+#[cfg(feature = "http")]
+fn bench_lightstream_http2_parallel(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+    dict_regs: &[(i64, Vec<String>)],
+    streams: usize,
+) {
+    use lightstream::models::readers::parallel::http::HttpParallelTableReader;
+    use lightstream::models::writers::parallel::http::HttpParallelTableWriter;
+    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+
+    group.bench_function(format!("lightstream_http2_parallel_{streams}"), |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            let dict_regs = dict_regs.to_vec();
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let url = format!("http://{addr}/ingest");
+
+                let total_tables = iters * streams as u64;
+
+                let server = tokio::spawn(async move {
+                    let (tcp, _peer) = listener.accept().await.unwrap();
+                    let reader = HttpParallelTableReader::from_tcp(tcp, streams).await.unwrap();
+                    let mut reader = std::pin::pin!(reader);
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let table = item.unwrap();
+                        std::hint::black_box(&table.cols);
+                        received += 1;
+                    }
+                    received
+                });
+
+                let mut writer =
+                    HttpParallelTableWriter::connect(&url, streams, schema, dict_regs, None)
+                        .await
+                        .unwrap();
+
+                let start = std::time::Instant::now();
+                for _ in 0..total_tables {
+                    writer.write_table((*table).clone()).await.unwrap();
+                }
+                writer.finish().await.unwrap();
+                let received = server.await.unwrap();
+                let elapsed = start.elapsed();
+                assert_eq!(received, total_tables);
+                elapsed
+            }
+        });
+    });
+}
+
+// lightstream QUIC across N concurrent unidirectional streams on one
+// connection. quinn drives the connection in the background, so the merged
+// reader drains as a plain `Stream`.
+#[cfg(feature = "quic")]
+fn bench_lightstream_quic_parallel(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+    dict_regs: &[(i64, Vec<String>)],
+    streams: usize,
+) {
+    use std::net::SocketAddr;
+
+    use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
+    use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
+    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+
+    group.bench_function(format!("lightstream_quic_parallel_{streams}"), |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            let dict_regs = dict_regs.to_vec();
+            async move {
+                let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+                let cert_der = rustls::pki_types::CertificateDer::from(cert.cert);
+                let key_der =
+                    rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der())
+                        .unwrap();
+
+                let mut server_crypto = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(vec![cert_der], key_der)
+                    .unwrap();
+                server_crypto.alpn_protocols = vec![b"ls".to_vec()];
+                let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+                    quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto).unwrap(),
+                ));
+                Arc::get_mut(&mut server_config.transport)
+                    .unwrap()
+                    .max_concurrent_uni_streams((streams as u32).into());
+
+                let endpoint = quinn::Endpoint::server(
+                    server_config,
+                    "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+                )
+                .unwrap();
+                let addr = endpoint.local_addr().unwrap();
+
+                let mut client_crypto = rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(BenchSkipVerification))
+                    .with_no_client_auth();
+                client_crypto.alpn_protocols = vec![b"ls".to_vec()];
+                let client_config = quinn::ClientConfig::new(Arc::new(
+                    quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
+                ));
+
+                let total_tables = iters * streams as u64;
+
+                let server = tokio::spawn(async move {
+                    let incoming = endpoint.accept().await.unwrap();
+                    let conn = incoming.await.unwrap();
+                    let reader = QuicParallelTableReader::accept(&conn, streams).await.unwrap();
+                    let mut reader = std::pin::pin!(reader);
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let table = item.unwrap();
+                        std::hint::black_box(&table.cols);
+                        received += 1;
+                    }
+                    // The streams end when the writer FINs them, so the drain
+                    // completes here. The connection and endpoint close on drop
+                    // at the end of this task, keeping the QUIC idle-drain out
+                    // of the timed region.
+                    received
+                });
+
+                let mut client_ep =
+                    quinn::Endpoint::client("0.0.0.0:0".parse::<SocketAddr>().unwrap()).unwrap();
+                client_ep.set_default_client_config(client_config);
+                let conn = client_ep.connect(addr, "localhost").unwrap().await.unwrap();
+
+                let mut writer =
+                    QuicParallelTableWriter::open(&conn, streams, schema, dict_regs, None)
+                        .await
+                        .unwrap();
+
+                // Build the tables to send before the timer so the measured
+                // region is the transport alone. The clone is an Arc bump on
+                // the shared column buffers.
+                let tables: Vec<Table> = (0..total_tables).map(|_| (*table).clone()).collect();
+
+                let start = std::time::Instant::now();
+                for table in tables {
+                    writer.write_table(table).await.unwrap();
+                }
+                writer.finish().await.unwrap();
+                let received = server.await.unwrap();
+                let elapsed = start.elapsed();
+                assert_eq!(received, total_tables);
+                elapsed
+            }
+        });
+    });
+}
+
+// Bench-only TLS verifier that skips certificate validation. QUIC needs it
+// because each bench iteration generates a fresh self-signed cert, so the
+// client has no trust root to validate against.
+#[cfg(feature = "quic")]
+#[derive(Debug)]
+struct BenchSkipVerification;
+
+#[cfg(feature = "quic")]
+impl rustls::client::danger::ServerCertVerifier for BenchSkipVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+        ]
+    }
 }
 
 criterion_group!(benches, bench_arrow_flight_compare);

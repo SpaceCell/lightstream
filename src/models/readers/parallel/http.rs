@@ -85,7 +85,7 @@ impl HttpParallelTableReader {
             readers.push(HttpTableReader::from_recv(request.into_body()));
         }
         // Keep polling the connection so the accepted request bodies
-        // receive their DATA frames. The loop ends when the peer closes.
+        // receive their data frames. The loop ends when the peer closes.
         // The Drop impl aborts it otherwise.
         let driver = tokio::spawn(async move { while connection.accept().await.is_some() {} });
         Ok(Self { inner: select_all(readers), driver, stream_count })

@@ -1,18 +1,14 @@
-//! # `Serialise<ArrowIpcCodec<Vec64<u8>>>` impls for minarrow value types
+//! Arrow IPC serialisation for minarrow value types.
 //!
-//! Wires each top-level minarrow value type through `ArrowIpcCodec`
-//! for an Arrow IPC Stream round-trip. Higher-level value types
-//! delegate down to lower-level ones: `Table` is the ground impl,
-//! `FieldArray` and `Array` wrap as one-column `Table`s, `NumericArray`
-//! and `TextArray` wrap to `Array`, and the concrete array types
-//! wrap to their enclosing enum variant. `SuperTable` and
-//! `SuperArray` drive a multi-batch session via the codec's
-//! `encode_stream_batch` / `finish` pair on encode, and
-//! `decode_stream` on decode.
+//! [`Table`] provides the base implementation. Other value types are converted
+//! to a table-compatible representation before encoding and converted back
+//! after decoding.
 //!
-//! The [`IpcSerialise`] brand sub-trait is defined here so callers
-//! can write `T: IpcSerialise` in generic code to constrain a type
-//! to the IPC round-trip.
+//! [`SuperTable`] and [`SuperArray`] use the streaming codec API to encode and
+//! decode multiple batches in one IPC stream.
+//!
+//! [`IpcSerialise`] can be used as a generic bound for types that support this
+//! Arrow IPC round trip.
 
 use std::sync::Arc;
 
@@ -31,22 +27,21 @@ use crate::traits::serialise::Serialise;
 #[cfg(feature = "datetime")]
 use minarrow::{DatetimeArray, TemporalArray};
 
-/// Brand sub-trait for round-tripping a minarrow value via Arrow IPC
-/// Stream. Any type with `impl Serialise<ArrowIpcCodec<Vec64<u8>>,
-/// Error = IoError>` picks `IpcSerialise` up automatically; import
-/// this trait to mark IPC round-trip as the intent in generic code.
+/// Marker trait for minarrow values that support Arrow IPC serialisation.
 pub trait IpcSerialise: Serialise<ArrowIpcCodec<Vec64<u8>>, Error = IoError> {}
+
 impl<T> IpcSerialise for T where T: Serialise<ArrowIpcCodec<Vec64<u8>>, Error = IoError> {}
 
-/// Build a fresh Stream-protocol IPC codec for one-shot encode or
-/// decode. Schema is supplied for encode and left empty for decode -
-/// the codec accumulates schema from the first decoded frame.
+/// Creates an Arrow IPC stream codec.
+///
+/// Encoding requires a schema. During decoding, the schema is read from the
+/// stream.
 fn fresh_codec(schema: Vec<minarrow::Field>) -> ArrowIpcCodec<Vec64<u8>> {
     ArrowIpcCodec::new(schema, IPCMessageProtocol::Stream, None, None)
 }
 
 // =====================================================================
-// Table - ground impl. All other impls compose down to this one.
+// Table
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for Table {
@@ -70,7 +65,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for Table {
 }
 
 // =====================================================================
-// FieldArray - one-column Table preserving the caller's field.
+// FieldArray
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for FieldArray {
@@ -105,7 +100,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for FieldArray {
 }
 
 // =====================================================================
-// Array - one-column Table, field auto-detected from the array via `fa`.
+// Array
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for Array {
@@ -140,7 +135,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for Array {
 }
 
 // =====================================================================
-// NumericArray / TextArray - wrap to Array, peel back via match.
+// Array categories
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for NumericArray {
@@ -199,7 +194,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for TemporalArray {
 }
 
 // =====================================================================
-// BooleanArray<()> - top-level Array variant in its own right.
+// Boolean arrays
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for BooleanArray<()> {
@@ -225,8 +220,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for BooleanArray<()> {
 }
 
 // =====================================================================
-// Concrete numeric array types via macro: each one wraps into its
-// NumericArray variant, then into Array, and reverses on the way out.
+// Numeric arrays
 // =====================================================================
 
 macro_rules! impl_ipc_numeric_array {
@@ -272,8 +266,7 @@ impl_ipc_numeric_array!(IntegerArray<u8>, UInt8);
 impl_ipc_numeric_array!(IntegerArray<u16>, UInt16);
 
 // =====================================================================
-// String array types via the same shape, against TextArray::String32
-// and String64 variants.
+// String arrays
 // =====================================================================
 
 macro_rules! impl_ipc_text_array {
@@ -307,9 +300,7 @@ impl_ipc_text_array!(StringArray<u32>, String32);
 impl_ipc_text_array!(StringArray<u64>, String64);
 
 // =====================================================================
-// Categorical array types. The codec auto-registers dictionaries from
-// categorical columns inside `encode_record_batch`, so each impl
-// reuses the same wrap-to-Array delegation as the string array types.
+// Categorical arrays
 // =====================================================================
 
 #[cfg(feature = "default_categorical_8")]
@@ -404,7 +395,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for minarrow::CategoricalArray<u64> {
 }
 
 // =====================================================================
-// Datetime array types - feature-gated alongside the temporal types.
+// Datetime arrays
 // =====================================================================
 
 #[cfg(feature = "datetime")]
@@ -440,9 +431,7 @@ impl_ipc_temporal_array!(DatetimeArray<i32>, Datetime32);
 impl_ipc_temporal_array!(DatetimeArray<i64>, Datetime64);
 
 // =====================================================================
-// SuperTable - multi-batch session: encode every batch via
-// `encode_stream_batch`, terminate with `finish`; decode walks the
-// frames via `decode_stream`.
+// SuperTable
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperTable {
@@ -475,18 +464,15 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperTable {
 }
 
 // =====================================================================
-// SuperArray - one column across many batches. Encode wraps each
-// chunk as a one-column Table, decode pulls each batch's lone column
-// back out.
+// SuperArray
 // =====================================================================
 
 impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperArray {
     type Error = IoError;
 
     fn encode(&self) -> Result<Vec64<u8>, IoError> {
-        // Build the schema from the first chunk so the codec emits
-        // the correct field metadata. Empty SuperArrays produce a
-        // self-contained payload with no record batches.
+        // Derive the stream schema from the first chunk. Empty values produce
+        // an IPC stream without record batches.
         let first_field_array: Option<FieldArray> = self.chunks().first().map(|arr| {
             arr.clone().fa(self
                 .field()

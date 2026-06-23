@@ -1,11 +1,9 @@
-# Receiver Job. Connects to the sender Service, reads ${BATCHES} tables,
-# and prints a `RESULT ...` line that run.sh harvests. Templated fields
-# are filled by run.sh via envsubst.
+# Receiver job. Connects to the sender service, receives the configured number
+# of tables and writes the benchmark result to standard output. `run.sh`
+# substitutes the template variables before applying the manifest.
 #
-# The required pod anti-affinity is the credibility crux: it forces the
-# receiver onto a different node from the sender via the hostname
-# topologyKey, so the measured throughput crosses a real NIC rather than
-# a shared kernel loopback.
+# Required pod anti-affinity places the receiver on a different node from the
+# sender so traffic crosses the network rather than the local loopback path.
 apiVersion: batch/v1
 kind: Job
 metadata:

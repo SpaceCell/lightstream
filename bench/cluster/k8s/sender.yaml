@@ -1,11 +1,9 @@
-# Sender Deployment plus a ClusterIP Service the receiver dials by DNS.
-# Templated fields (${IMAGE}, ${PORT}, ${SHAPE}, ${ROWS}, ${BATCHES},
-# ${NAMESPACE}) are filled by run.sh via envsubst.
+# Sender deployment and ClusterIP service. The receiver connects to the service
+# by DNS. `run.sh` substitutes the template variables before applying the
+# manifest.
 #
-# The sender binds, accepts one connection, sends ${BATCHES} tables, then
-# exits, and the Deployment restarts it. run.sh applies the receiver once
-# the sender pod is running, so a single clean run completes before any
-# restart matters.
+# The sender accepts one connection, sends the configured number of tables and
+# exits. The deployment may restart the pod after the benchmark completes.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

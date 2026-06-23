@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
-# Ephemeral EKS cross-host bench for lightstream.
+# Runs the Lightstream cross-host benchmark on a temporary EKS cluster.
 #
-# Full lifecycle in one command: provision a throwaway EKS cluster, build
-# and push the bench image, schedule the sender and receiver on separate
-# nodes via pod anti-affinity, harvest the receiver result, then destroy.
+# The script provisions the cluster, builds and pushes the benchmark image,
+# runs the sender and receiver on separate worker nodes, prints the receiver
+# result and destroys the infrastructure.
 #
-# The receiver runs on a different node from the sender, so the measured
-# throughput crosses a real NIC.
+# Required tools: AWS CLI, Terraform 1.6 or later, kubectl, Docker and envsubst.
 #
-# Prerequisites: aws CLI (authenticated), terraform >= 1.6, kubectl,
-# docker, and envsubst (from gettext).
+# Configuration:
 #
-# Configuration via environment:
-#   REGION         AWS region (default us-east-1, must match terraform)
-#   SHAPE          mixed | narrow_numeric | string_heavy | wide
-#   ROWS           rows per batch (default 100000)
-#   BATCHES        total batches (default 2000)
-#   PORT           bench port (default 9001)
-#   NAMESPACE      k8s namespace (default lightstream-bench)
-#   INSTANCE_TYPE  node instance type (default from terraform: c5n.large)
-#   KEEP           set to 1 to leave the cluster up after the run
+#   REGION         AWS region. Defaults to us-east-1.
+#   SHAPE          Data shape: mixed, narrow_numeric, string_heavy or wide.
+#   ROWS           Number of rows per batch. Defaults to 100000.
+#   BATCHES        Number of batches to send. Defaults to 2000.
+#   PORT           Benchmark port. Defaults to 9001.
+#   NAMESPACE      Kubernetes namespace. Defaults to lightstream-bench.
+#   INSTANCE_TYPE  Worker node instance type. Defaults to the Terraform value.
+#   KEEP           Set to 1 to retain the infrastructure after the run.
 
 set -euo pipefail
 
@@ -74,9 +71,11 @@ export NAMESPACE IMAGE PORT SHAPE ROWS BATCHES
 envsubst < "$HERE/k8s/namespace.yaml" | kubectl apply -f -
 envsubst < "$HERE/k8s/sender.yaml"    | kubectl apply -f -
 kubectl -n "$NAMESPACE" rollout status deploy/bench-sender --timeout=180s
-# Brief settle so the sender reaches its accept() before the receiver dials.
+
+# Allow the sender time to start listening before creating the receiver.
 sleep 3
-envsubst < "$HERE/k8s/receiver.yaml"  | kubectl apply -f -
+
+envsubst < "$HERE/k8s/receiver.yaml" | kubectl apply -f -
 
 echo "[run] waiting for the receiver to finish"
 kubectl -n "$NAMESPACE" wait --for=condition=complete job/bench-receiver --timeout=900s \

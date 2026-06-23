@@ -1,22 +1,18 @@
-//! Transport throughput benchmark across every enabled transport.
+//! Benchmarks throughput across the enabled transports.
 //!
-//! For each cell in the `BenchMatrix` resolved from
-//! `LIGHTSTREAM_BENCH_MATRIX` (quick, standard, full) and for each
-//! enabled transport, the writer sends `iters` tables of the chosen
-//! shape and scale across the wire while the reader is timed.
-//! Connection setup is excluded from the timed region by accepting
-//! the writer's connect before the timer starts. Each (shape, scale)
-//! cell becomes a Criterion benchmark group named
-//! `transport_<shape>_<scale>`, with one bench function per
-//! (transport, compression) pair so transports are directly
-//! comparable for the same workload.
+//! For each [`BenchMatrix`] cell selected by `LIGHTSTREAM_BENCH_MATRIX`, the
+//! writer sends a fixed number of tables while the reader is timed. Connection
+//! setup is completed before measurement begins.
 //!
-//! Each enabled transport contributes its own bench functions: TCP,
-//! Unix domain sockets, WebSocket, QUIC, WebTransport, HTTP/2, the
-//! Lightstream protocol over TCP, and the io_uring TCP and UDS paths
-//! under the `io_uring` feature. Zstd compression variants are emitted
-//! when the `zstd` feature is enabled, TLS variants when the `tls`
-//! feature is enabled.
+//! Each shape and scale pair creates a Criterion group named
+//! `transport_<shape>_<scale>`. Enabled transport and compression combinations
+//! are registered as separate benchmarks within the group.
+//!
+//! Supported benchmarks include TCP, Unix domain sockets, WebSocket, QUIC,
+//! WebTransport, HTTP/2 and the Lightstream protocol over TCP. The `io_uring`
+//! feature adds TCP and UDS variants. The `zstd` and `tls` features add their
+//! respective compression and TLS variants.
+
 
 #[path = "../common/bench_helpers.rs"]
 mod bench_helpers;

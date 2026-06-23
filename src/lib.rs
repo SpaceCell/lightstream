@@ -1,64 +1,108 @@
-//! # Lightstream - Streaming Arrow IPC, TLV, and Parquet I/O and Transport for Extreme Performance Data
+//! # Lightstream
 //!
-//! **Lightstream** includes composable building blocks for high-performance data I/O in Rust.
+//! Lightstream provides format codecs, file readers and writers, framed streams,
+//! and network transports for Arrow data via [`minarrow`](https://crates.io/crates/minarrow)
+//! tables.
 //!
-//! It extends [Minarrow](https://crates.io/crates/minarrow) with a set of modular, format-aware components for:
+//! The crate supports both low-level composition and complete table-oriented I/O.
+//! Encoders, decoders, framing, byte streams and transports are exposed
+//! independently, while the reader and writer modules combine them into
+//! higher-level interfaces.
 //!
-//! - High-performance asynchronous Arrow IPC streaming and file writing
-//! - Framed decoders and sinks for `IPC`, `TLV`, `CSV`, and opt-in `Parquet`
-//! - Zero-Copy memory-mapped Arrow file reads
-//! - Direct Tokio integration with zero-copy buffers
-//! - 64-byte SIMD aligned readers and writers - *(not generally available in the Arrow ecosystem)*
+//! ## Formats and protocols
 //!
-//! Then, on top of that, it includes the high performance Lightstream protocol and out of the box support for
-//!     - Arrow IPC (including mmap, File and Stream protocols)
-//!     - CSV
-//!     - Parquet
-//!     - QUIC
-//!     - IOUring for kernel bypass    
-//!     - Stdin/StdOut
-//!     - TCP
-//!     - UDS
-//!     - Websocket
-//!     - Webtransport
-//!     - Memory Mapped IPC Readers/Writers + Parquet
-//!     
-//! These are built via a consistent interface where the protocol is agnostic to the transport, making adding new ones trivial.
+//! - Arrow IPC stream and file formats
+//! - Lightstream framed protocol
+//! - TLV framing
+//! - CSV
+//! - JSON arrays and NDJSON
+//! - Parquet
+//! - Chunked Arrow IPC, CSV and Parquet datasets
 //!
-//! Additionally, it is highly customisable as the layered architecture allows opting up to the desired level for modifying and/or implementing
-//! new protocols as needed.
+//! Format support includes synchronous and asynchronous readers and writers,
+//! one-shot codecs, schema-aware decoding, dictionary-encoded columns and
+//! configurable decode limits for untrusted input.
 //!
-//! ## Highlights
+//! ## Storage I/O
 //!
-//! - ✅ Fully async-compatible with [`tokio::io::AsyncWrite`]  
-//! - ✅ Pluggable encoders and frame formats  
-//! - ✅ Arrow IPC framing with dictionary + schema support  
-//! - ✅ Categorical dictionary support
-//! - ✅ Compatible with [`minarrow::Table`] and [`minarrow::SuperTable`]  
-//! - ✅ Feature flags for `parquet`, `zstd`, `snappy`, compression and `mmap`  
+//! - Arrow IPC file and stream readers and writers
+//! - Memory-mapped Arrow IPC reads
+//! - Chunked-directory readers and writers
+//! - Serial and parallel chunk loading
+//! - Disk-backed asynchronous byte streams
+//! - Standard input and output
 //!
-//! ## Example - Arrow Table Writer
+//! Buffers use Minarrow's 64-byte-aligned storage. Owned decode
+//! paths may reuse aligned input buffers without copying when the selected codec
+//! permits it.
+//!
+//! ## Network transports
+//!
+//! - TCP
+//! - Unix domain sockets
+//! - WebSocket
+//! - QUIC
+//! - WebTransport
+//! - HTTP/2 streaming requests and responses
+//! - Linux `io_uring` transport support
+//!
+//! QUIC and HTTP/2 also provide parallel readers and writers that distribute
+//! tables across several concurrent streams on one connection. The transport
+//! interfaces are independent of the table codec, allowing the same framing and
+//! encoding layers to be used with different transports.
+//!
+//! ## Compression
+//!
+//! Compression support is feature-gated and includes zstd and Snappy where
+//! supported by the selected format or protocol.
+//!
+//! ## Feature flags
+//!
+//! Most optional formats and transports are controlled through Cargo features,
+//! including:
+//!
+//! - `csv`
+//! - `json`
+//! - `parquet`
+//! - `mmap`
+//! - `tcp`
+//! - `uds`
+//! - `stdio`
+//! - `websocket`
+//! - `quic`
+//! - `webtransport`
+//! - `http`
+//! - `protocol`
+//! - `io_uring`
+//! - `zstd`
+//! - `snappy`
+//!
+//! ## Example: writing an Arrow IPC file
 //!
 //! ```rust,no_run
-//! use minarrow::{arr_i32, arr_str32, vec64, FieldArray, Table};
-//! use lightstream::models::writers::ipc::table::TableWriter;
 //! use lightstream::enums::IPCMessageProtocol;
+//! use lightstream::models::writers::ipc::table::TableWriter;
+//! use minarrow::{FieldArray, Table, arr_i32, arr_str32};
 //! use tokio::fs::File;
 //!
 //! # async fn write() -> std::io::Result<()> {
-//! let col1 = FieldArray::from_arr("ids", arr_i32![1, 2, 3]);
-//! let col2 = FieldArray::from_arr("names", arr_str32!["a", "b", "c"]);
-//! let table = Table::new("example".to_string(), vec![col1, col2].into());
+//! let ids = FieldArray::from_arr("ids", arr_i32![1, 2, 3]);
+//! let names = FieldArray::from_arr("names", arr_str32!["a", "b", "c"]);
+//! let table = Table::new("example".to_string(), vec![ids, names].into());
 //!
 //! let file = File::create("out.arrow").await?;
+//! let mut writer =
+//!     TableWriter::from_schema(file, table.schema(), IPCMessageProtocol::File)?;
 //!
-//! let mut writer = TableWriter::from_schema(file, table.schema(), IPCMessageProtocol::File)?;
 //! writer.write_table(table).await?;
 //! writer.finish().await?;
-//! # Ok(()) }
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! See the [README](https://github.com/pbower/lightstream) for more examples.
+//! See the [project README](https://github.com/SpaceCell/lightstream) for build
+//! configuration and further examples.
+
 
 /// Composable traits for streaming bytes and frames.
 pub mod traits {

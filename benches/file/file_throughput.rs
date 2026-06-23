@@ -1,8 +1,7 @@
-//! Criterion benchmarks measuring Arrow IPC File format write and read
-//! throughput, including mmap zero-copy reads.
+//! Benchmarks Arrow IPC file read and write throughput.
 //!
-//! Writes tables to a temp file, then reads them back via the standard
-//! file reader and the mmap reader. Measures write and read separately.
+//! Measures writes to a temporary file, standard file reads and memory-mapped
+//! reads as separate Criterion benchmarks.
 
 use std::sync::Arc;
 
@@ -154,7 +153,7 @@ fn bench_file_throughput(c: &mut Criterion) {
         });
     });
 
-    // Mmap reader benchmark - cold (evict page cache before each read)
+    // Mmap reader benchmark - cold. Evicts page cache before each read.
     #[cfg(all(feature = "mmap", target_os = "linux"))]
     group.bench_function("read_mmap_cold", |b| {
         use lightstream::models::readers::ipc::mmap_table::MmapTableReader;

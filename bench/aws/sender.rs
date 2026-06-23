@@ -1,10 +1,11 @@
-//! AWS rig sender. Binds a TCP listener on the configured address,
-//! accepts one connection, and streams `--batches` tables of the
-//! chosen shape and row count to the receiver. Times the send loop
-//! locally for cross-checking against the receiver-side throughput.
+//! Sender for the AWS A-to-B benchmark.
 //!
-//! See `bench/aws/README.md` for the EC2 setup steps. Run with
-//! `--help` for the argument surface.
+//! Listens on the configured address, accepts one connection and sends the
+//! configured number of table batches. Throughput is measured across the send
+//! loop for comparison with the receiver result.
+//!
+//! See `bench/aws/README.md` for setup instructions. Run with `--help` for the
+//! available command-line options.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,7 +16,7 @@ use tokio::net::TcpListener;
 use lightstream::models::writers::tcp::TcpTableWriter;
 use lightstream::traits::transport_writer::IPCTransportWriter;
 
-#[path = "../../benches/bench_helpers.rs"]
+#[path = "../../benches/common/bench_helpers.rs"]
 mod bench_helpers;
 use bench_helpers::{BenchShape, bench_schema, make_bench_table_shape};
 

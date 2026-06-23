@@ -1,8 +1,9 @@
-# Bench namespace. Templated with ${NAMESPACE}.
-# run.sh fills it via envsubst before kubectl apply.
+# Benchmark namespace. `run.sh` substitutes `${NAMESPACE}` before applying the
+# manifest.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ${NAMESPACE}
   labels:
     app: bench
+

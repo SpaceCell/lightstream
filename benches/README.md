@@ -1,162 +1,212 @@
 # Lightstream benchmarks
 
-The throughput benchmark suite. Each bench is a Criterion target, run
-with `cargo bench --bench <name>` under the features it needs. Criterion
-writes its report to `target/criterion/<group>/report/index.html`.
+The benchmark suite uses Criterion. Run a benchmark with:
 
-Absolute throughput depends on the host CPU, NIC, and storage.
+```bash
+cargo bench --bench <name> --features "<features>"
+```
+
+Criterion writes reports under:
+
+```text
+target/criterion/<group>/report/index.html
+```
+
+Results depend on the host CPU, network interface and storage.
+Linux is recommended to match the published benchmark environment and use the Linux-specific optimisations in Minarrow and Lightstream.
+
 
 ## Layout
 
-| Directory | Contents |
-|-----------|----------|
-| `transport/` | Streaming over a transport. |
-| `file/` | Arrow IPC file, chunked-file, and memory-mapped reads. |
-| `json/` | JSON encode and decode. |
-| `arrow/` | Apache Arrow Flight head-to-head comparison. |
-| `common/` | `bench_helpers.rs`, the shape and scale matrix shared across benches. |
+| Directory    | Contents                                                        |
+| ------------ | --------------------------------------------------------------- |
+| `transport/` | Transport streaming benchmarks.                                 |
+| `file/`      | Arrow IPC file, chunked-file and memory-mapped read benchmarks. |
+| `json/`      | JSON encoding and decoding benchmarks.                          |
+| `arrow/`     | Apache Arrow Flight comparison.                                 |
+| `common/`    | Shared benchmark helpers, data shapes and scale definitions.    |
 
-## Benches
+## Benchmarks
 
-| Bench | Measures |
-|-------|----------|
-| `transport/transport_bench_matrix.rs` | Matrix-driven run across every enabled transport (TCP, UDS, WebSocket, QUIC, WebTransport, HTTP/2, Lightstream protocol over TCP), with TLS and zstd variants under their features and io_uring TCP and UDS cells under `io_uring`. Connection setup is outside the timed region. |
-| `transport/lightstream_throughput.rs` | Lightstream protocol steady-state streaming over TCP and UDS, with io_uring cells under `io_uring`. Single Mixed shape. |
-| `transport/ipc_throughput.rs` | Raw Arrow IPC streaming across the transports, single Mixed shape. |
-| `file/file_throughput.rs` | Arrow IPC file write and read for the Mixed shape, including mmap reads, with arrow-rs and polars comparators under their bench features. |
-| `file/chunked_throughput.rs` | Chunked-directory write and read for Arrow IPC, CSV, and Parquet (under `parquet`), serial and parallel load paths. Linux-only. |
-| `file/mmap_streaming.rs` | Larger-than-memory cold-page streaming over a multi-GiB file, sum-and-subtract methodology. Linux-only. |
-| `json/json_throughput.rs` | JSON array-of-objects and NDJSON encode and decode through `simd-json`. |
-| `arrow/arrow_flight_comparison.rs` | Apache Arrow Flight `DoGet` (gRPC plus Arrow IPC) against lightstream TCP, same workload, loopback, both endpoints in one process. Gated on `bench_arrow_flight`. |
+| Benchmark                             | Measures                                                                                                                                                                                                                                                                                             |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transport/transport_bench_matrix.rs` | Runs the configured shape and scale matrix across each enabled transport: TCP, UDS, WebSocket, QUIC, WebTransport, HTTP/2 and the Lightstream protocol over TCP. TLS, zstd and `io_uring` variants are included when their features are enabled. Connection setup is excluded from the timed region. |
+| `transport/lightstream_throughput.rs` | Steady-state Lightstream protocol throughput over TCP and UDS using the `Mixed` shape. Includes `io_uring` variants when enabled.                                                                                                                                                                    |
+| `transport/ipc_throughput.rs`         | Raw Arrow IPC streaming throughput across the supported transports using the `Mixed` shape.                                                                                                                                                                                                          |
+| `file/file_throughput.rs`             | Arrow IPC file reads and writes using the `Mixed` shape, including memory-mapped reads. Arrow-rs and Polars comparisons are available through their benchmark features.                                                                                                                              |
+| `file/chunked_throughput.rs`          | Serial and parallel chunked-directory reads and writes for Arrow IPC, CSV and, when enabled, Parquet. Linux only.                                                                                                                                                                                    |
+| `file/mmap_streaming.rs`              | Cold-page streaming from a multi-GiB file using a sum-and-subtract measurement method. Linux only.                                                                                                                                                                                                   |
+| `json/json_throughput.rs`             | Array-of-objects JSON and NDJSON encoding and decoding with `simd-json`.                                                                                                                                                                                                                             |
+| `arrow/arrow_flight_comparison.rs`    | Compares Apache Arrow Flight `DoGet` with Lightstream TCP using the same loopback workload. Requires `bench_arrow_flight`.                                                                                                                                                                           |
 
-`ipc_throughput` and `lightstream_throughput` run a single Mixed shape.
-`transport_bench_matrix` sweeps the full shape and scale grid below.
+`ipc_throughput` and `lightstream_throughput` use only the `Mixed` shape. `transport_bench_matrix` runs the configured shape and scale matrix.
 
 ## Shape and scale matrix
 
-`bench_helpers::BenchMatrix::from_env()` resolves a preset from the
-`LIGHTSTREAM_BENCH_MATRIX` environment variable.
+`bench_helpers::BenchMatrix::from_env()` selects a preset using the `LIGHTSTREAM_BENCH_MATRIX` environment variable.
 
-| Preset | Cells | Use |
-|--------|-------|-----|
-| `quick` | Mixed at 100k rows | Local smoke check, finishes in seconds. |
-| `standard` (default) | Each shape at 100k plus two mid-scale | Local-run footprint. |
-| `full` | All shapes across Tiny, Small, Medium, Large | Publishable grid, minutes per transport. |
+| Preset     | Cells                                                   | Intended use            |
+| ---------- | ------------------------------------------------------- | ----------------------- |
+| `quick`    | `Mixed` at 100,000 rows                                 | Smoke test.             |
+| `standard` | Each shape at 100,000 rows, plus two medium-scale cells | Default local run.      |
+| `full`     | Every shape at each defined scale                       | Complete benchmark run. |
 
-Shapes:
+### Shapes
 
-- `NarrowNumeric` - i32, i64, f32, f64. Exercises the SIMD-friendly numeric path.
-- `Wide` - 100 numeric columns across i32, i64, f32, f64. Exercises schema handling and per-buffer overhead.
-- `StringHeavy` - i32 id, long utf8, short utf8, categorical32 with 100 entries. Exercises offset buffers and dictionary roundtripping.
-- `Mixed` - i32, f64, short utf8, categorical with three entries. The reference shape.
+| Shape           | Columns                                                                      | Purpose                                |
+| --------------- | ---------------------------------------------------------------------------- | -------------------------------------- |
+| `NarrowNumeric` | `i32`, `i64`, `f32`, `f64`                                                   | Numeric buffer throughput.             |
+| `Wide`          | 100 numeric columns across `i32`, `i64`, `f32` and `f64`                     | Schema and per-buffer overhead.        |
+| `StringHeavy`   | `i32` identifier, long UTF-8, short UTF-8 and a 100-entry categorical column | Offset-buffer and dictionary handling. |
+| `Mixed`         | `i32`, `f64`, short UTF-8 and a three-entry categorical column               | General reference workload.            |
 
-Scales: `Tiny=1_000`, `Small=100_000`, `Medium=1_000_000`, `Large=100_000_000` rows.
+### Scales
 
-## Running
+| Scale    |        Rows |
+| -------- | ----------: |
+| `Tiny`   |       1,000 |
+| `Small`  |     100,000 |
+| `Medium` |   1,000,000 |
+| `Large`  | 100,000,000 |
+
+## Running the benchmarks
 
 ### Transport matrix
 
+Run the quick matrix across the enabled transports:
+
 ```bash
-# Quick smoke, one cell, every enabled transport
 LIGHTSTREAM_BENCH_MATRIX=quick \
 cargo bench --bench transport_bench_matrix \
-    --features "tcp,uds,websocket,zstd,protocol"
-
-# Standard run
-cargo bench --bench transport_bench_matrix \
-    --features "tcp,uds,websocket,quic,webtransport,zstd,protocol"
-
-# Full matrix, with io_uring cells (Linux)
-LIGHTSTREAM_BENCH_MATRIX=full \
-cargo bench --bench transport_bench_matrix \
-    --features "tcp,uds,websocket,quic,webtransport,zstd,protocol,io_uring"
+  --features "tcp,uds,websocket,zstd,protocol"
 ```
 
-Each `(shape, scale)` cell becomes a Criterion group, and every enabled
-transport runs as a bench function inside it, so the report cross-compares
-transports for that cell. The `io_uring` feature adds `tcp_io_uring` and
-`uds_io_uring` cells, Linux-only.
+Run the standard matrix:
+
+```bash
+cargo bench --bench transport_bench_matrix \
+  --features "tcp,uds,websocket,quic,webtransport,zstd,protocol"
+```
+
+Run the full matrix with Linux `io_uring` variants:
+
+```bash
+LIGHTSTREAM_BENCH_MATRIX=full \
+cargo bench --bench transport_bench_matrix \
+  --features "tcp,uds,websocket,quic,webtransport,zstd,protocol,io_uring"
+```
+
+Each shape and scale pair forms a Criterion group. Each enabled transport is registered as a benchmark within that group.
+
+Enabling `io_uring` adds the Linux-only `tcp_io_uring` and `uds_io_uring` benchmarks.
 
 ### Arrow Flight comparison
 
 ```bash
 LIGHTSTREAM_BENCH_MATRIX=quick \
 cargo bench --bench arrow_flight_comparison \
-    --features "bench_arrow_flight,tcp" -- --quick
+  --features "bench_arrow_flight,tcp" \
+  -- --quick
 ```
 
-Each cell becomes a group named
-`arrow_flight_vs_lightstream_<shape>_<scale>` with two bench functions,
-`arrow_flight_do_get` and `lightstream_tcp`, both carrying the same
-workload on loopback.
+Each matrix cell creates a group named:
 
-The Flight encoder splits batches above the 2 MiB gRPC target, so the
-receiver can decode more `RecordBatch` values than were sent. Throughput
-accounts for the input logical bytes, so the split does not change the
-denominator.
+```text
+arrow_flight_vs_lightstream_<shape>_<scale>
+```
 
-### mmap streaming
+The group contains:
+
+```text
+arrow_flight_do_get
+lightstream_tcp
+```
+
+Both benchmarks use the same workload over loopback.
+
+Arrow Flight splits batches that exceed the 2 MiB gRPC target. The receiver may therefore decode more `RecordBatch` values than the sender submitted. Throughput is calculated from the logical size of the input data, so batch splitting does not affect the denominator.
+
+### Memory-mapped streaming
+
+Create and benchmark the default 2 GiB file:
 
 ```bash
-# Generates a 2 GiB file under /var/tmp/lightstream_mmap_bench on first run
 cargo bench --bench mmap_streaming --features "mmap"
+```
 
-# Smaller file for a faster run
+Use a smaller file:
+
+```bash
 LIGHTSTREAM_MMAP_BENCH_SIZE_GIB=1 \
 cargo bench --bench mmap_streaming --features "mmap" -- --quick
+```
 
-# Compare against polars
-cargo bench --bench mmap_streaming --features "mmap,bench_polars"
+Include the Polars comparison:
 
-# Relocate the bench file
+```bash
+cargo bench --bench mmap_streaming \
+  --features "mmap,bench_polars"
+```
+
+Use a different directory:
+
+```bash
 LIGHTSTREAM_MMAP_BENCH_DIR=/data/lightstream_bench \
 cargo bench --bench mmap_streaming --features "mmap"
 ```
 
-Linux-only, requires `posix_fadvise`. The bench file lives under
-`/var/tmp` by default because many distros mount `/tmp` as tmpfs, where
-`posix_fadvise(DONTNEED)` is a no-op and a cold read becomes a warm-RAM
-read. The first invocation prints the resolved path.
+This benchmark is Linux-only and requires `posix_fadvise`.
 
-### Other benches
+The benchmark file is stored under `/var/tmp/lightstream_mmap_bench` by default. `/tmp` is avoided because it is commonly mounted as `tmpfs`; in that configuration, `posix_fadvise(..., DONTNEED)` does not produce a cold storage read.
+
+The resolved file path is printed when the benchmark starts.
+
+### Other benchmarks
+
+Run the Arrow IPC file benchmark with Arrow-rs and Polars comparisons:
 
 ```bash
-# Arrow IPC file read and write with arrow-rs and polars comparators
-cargo bench --bench file_throughput --features "mmap,bench_arrow,bench_polars"
+cargo bench --bench file_throughput \
+  --features "mmap,bench_arrow,bench_polars"
+```
 
-# Chunked write and read, Linux only
-cargo bench --bench chunked_throughput --features "parquet,zstd"
+Run the Linux chunked-file benchmark:
 
-# JSON encode and decode
-cargo bench --bench json_throughput --features "json"
+```bash
+cargo bench --bench chunked_throughput \
+  --features "parquet,zstd"
+```
+
+Run the JSON benchmark:
+
+```bash
+cargo bench --bench json_throughput \
+  --features "json"
 ```
 
 ## Methodology
 
-The suite measures sustained throughput with connection setup outside the
-timed region. It does not measure per-batch latency. Criterion's HTML
-output carries the sample distribution and p50/p99 figures under
-`target/criterion/<group>/<bench>/report/index.html`.
+The benchmarks measure sustained throughput. Connection setup is performed outside the timed region, and per-batch latency is not measured.
 
-Throughput is reported in logical bytes through
-`bench_helpers::logical_payload_bytes_shape`, the size of the source
-columns being shipped rather than the encoded bytes on the wire. Encoded
-throughput differs by the IPC framing overhead, which is small for the
-numeric shapes and larger for `StringHeavy` because of the offset buffers.
+Criterion reports are written under:
 
-`std::hint::black_box` wraps the decoded `cols` slice, and the protocol
-message where one applies, so the reader cannot elide payload
-materialisation. Receiver-side throughput is what the suite reports.
+```text
+target/criterion/<group>/<benchmark>/report/index.html
+```
 
-## Cross-host rigs
+Throughput is expressed in logical payload bytes, calculated by `bench_helpers::logical_payload_bytes_shape`. This is the size of the source columns rather than the encoded byte count transmitted by the transport.
 
-Local benches measure the software ceiling on one host. The rigs under
-`bench/` run the sender and receiver on separate hosts over a real
-network.
+Wire throughput differs because of framing and encoding overhead. The difference is generally smaller for numeric shapes and larger for `StringHeavy`, which includes offset and dictionary buffers.
 
-- `bench/cluster/` provisions an ephemeral EKS cluster and places a
-  sender and receiver pod on separate nodes via anti-affinity, measuring
-  container-to-container throughput across the VPC. See
-  `bench/cluster/README.md`.
-- `bench/aws/` provisions two EC2 hosts and streams between them over
-  plaintext TCP. See `bench/aws/README.md`.
+Decoded columns and protocol messages are passed through `std::hint::black_box` where applicable to prevent the compiler from removing payload materialisation.
+
+Transport benchmarks report receiver-side throughput.
+
+## Cross-host benchmarks
+
+The local benchmarks run both endpoints on one host. The cross-host rigs run the sender and receiver on separate machines.
+
+| Directory        | Description                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `bench/cluster/` | Provisions a temporary EKS cluster and schedules the sender and receiver on separate worker nodes. See `bench/cluster/README.md`. |
+| `bench/aws/`     | Provisions two EC2 instances and runs the benchmark over plaintext TCP. See `bench/aws/README.md`.                                |

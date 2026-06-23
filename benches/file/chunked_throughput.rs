@@ -1,83 +1,38 @@
-//! Chunked-format throughput bench. **Linux-only.**
+//! Chunked-format throughput benchmarks. Linux only.
 //!
-//! Writes ~100 MiB worth of batches into a tmp directory as
-//! `<base>-NNNNNNNNNN.<ext>` chunk files, reads them back via the serial
-//! Iterator path and the parallel `par_load_batched` path, then deletes the
-//! directory. Covers each enabled chunked format - Arrow IPC always,
-//! CSV always, Parquet under the `parquet` feature.
+//! Writes approximately 100 MiB of data as numbered chunk files, then measures
+//! serial and parallel reads before removing the temporary directory. Arrow IPC
+//! and CSV are always included; Parquet requires the `parquet` feature.
 //!
-//! Chunk size is chosen to be representative of what a streaming sink
-//! should aim for: small enough that per-batch latency stays low, large
-//! enough that per-file overhead amortises. The `make_bench_table`
-//! helper produces ~32 bytes per row across 4 columns (i32, f64, utf8,
-//! categorical), so 100 K rows ≈ 3 MiB per chunk and 32 chunks ≈ 96 MiB
-//! on the wire.
+//! Each chunk contains 100,000 rows, or approximately 3 MiB for the benchmark
+//! table. A complete iteration writes 32 chunks using distinct in-memory tables
+//! so the encoder processes data beyond typical CPU cache capacity.
 //!
-//! ## What the write benchmarks measure
+//! ## Write benchmarks
 //!
-//! Each write bench operates on **32 distinct in-memory Tables** built
-//! once at the top of the bench function. Distinct tables (rather than
-//! one Table reused 32x) means the encoder reads ~96 MiB of unique
-//! buffer memory per iteration, which exceeds typical L2/L3 cache
-//! capacity and so does not let cache effects unrealistically inflate
-//! the measured throughput.
+//! Each format has two write benchmarks:
 //!
-//! ## Two write benches per operation: logical and physical
+//! - `*_logical` measures encoding and buffered writes. It excludes `fsync` and
+//!   reports throughput using the logical size of the source column buffers.
+//! - `*_physical` measures encoding, writes and durability. Each chunk file and
+//!   the parent directory are synchronised before the timed region ends.
+//!   Throughput uses the resulting file size.
 //!
-//! Every write operation is benched twice with deliberately different
-//! workloads. They answer two distinct questions:
+//! Directory cleanup runs outside the timed region. Logical and physical results
+//! use different denominators and should only be compared to assess the cost of
+//! durable writes.
 //!
-//! - `*_logical`: "how long does my process take to hand the data to
-//!   the kernel". Encodes the 32 source tables and calls `write()` on
-//!   each chunk file. The kernel buffers the bytes in its page cache
-//!   and returns immediately - no fsync, no waiting for the storage
-//!   device. This matches what a typical streaming producer
-//!   experiences: write call returns, process moves on, kernel
-//!   flushes in the background. Throughput denominator is the source
-//!   byte count - the size of the in-memory column buffers being
-//!   consumed: binary numerics (4 bytes per i32, 8 per f64, ...), raw
-//!   UTF-8 string bytes plus their offset buffers, categorical index
-//!   buffers. Independent of the output format.
+//! Read benchmarks use the physical file size as their throughput denominator.
 //!
-//! - `*_physical`: "how long until my output is durably on disk".
-//!   Same encode + write as the logical bench, plus an explicit
-//!   `fsync` on every chunk file AND on the parent directory before
-//!   the timed window ends. Fsyncing the parent directory makes the
-//!   chunk dir entries themselves durable - without it, file contents
-//!   survive a power cut but the dir entries can vanish, leaving
-//!   orphan inodes (this is what databases like postgres and sqlite
-//!   do). The timing includes waiting for the storage device to
-//!   acknowledge both. Matches a durability-sensitive workload that
-//!   needs the data persisted before continuing. Throughput
-//!   denominator is the output file byte count, taken by stat'ing the
-//!   chunk files after a one-off pre-write.
+//! ## Linux requirement
 //!
-//! Cleanup of the chunk directory between iterations is NOT included
-//! in the timed window: `fresh_dir` in the next iteration's setup
-//! wipes the previous run via `remove_dir_all`, which runs in
-//! `iter_batched`'s setup phase outside the measurement. The final
-//! iteration's directory is reaped at the bottom of each bench fn.
+//! Before each read iteration, every chunk file is removed from the page cache
+//! with `posix_fadvise(POSIX_FADV_DONTNEED)`. Cache eviction runs outside the
+//! timed region, and each iteration begins with cold pages.
 //!
-//! Different work being timed, different denominators. The numbers
-//! aren't meant to be cross-compared except to see the cost of
-//! durability. Read benches use the physical denominator since that
-//! is what flows from disk into memory per second.
-//!
-//! ## Why Linux-only
-//!
-//! For the read benchmarks to mean "open files I didn't just write" -
-//! not "decode files still warm in the kernel page cache from the write
-//! that ran milliseconds ago" - every chunk file is evicted from the
-//! page cache via `posix_fadvise(POSIX_FADV_DONTNEED)` immediately
-//! before each measured iteration. The eviction call runs as
-//! `iter_batched` setup so it does not count toward the timed window,
-//! and `BatchSize::PerIteration` makes sure each iteration starts cold
-//! (otherwise the first read in a batch would warm the cache for the
-//! rest). `posix_fadvise` is the Linux interface for this; macOS and
-//! Windows have no portable equivalent that gives the same guarantee.
-//! `libc` is wired in as a dev-dependency only on Linux, so attempting
-//! to build this bench elsewhere is an unambiguous signal that this
-//! workload isn't supported there.
+//! The benchmark is Linux-only because other supported platforms do not provide
+//! an equivalent cache-eviction interface with the same semantics.
+
 
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -104,11 +59,7 @@ fn cleanup(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Sum the size on disk of every regular file directly under `dir`.
-/// Used once per format to derive the real physical byte count of a
-/// fully-written chunk set, so the bench can report throughput against
-/// both the Arrow logical denominator and the actual physical
-/// denominator side by side - no surrogate, no guess.
+/// Returns the total size of regular files directly under `dir`.
 fn physical_bytes(dir: &Path) -> u64 {
     let mut total: u64 = 0;
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -127,18 +78,18 @@ fn total_payload_bytes() -> u64 {
     logical_payload_bytes(BENCH_ROWS) * N_CHUNKS as u64
 }
 
-/// Hint the kernel to drop every chunk file in `dir` from the page
-/// cache so the next read goes to disk. Best-effort: errors are
-/// ignored. Used as `iter_batched` setup so the syscall cost stays out
-/// of the timed window.
+/// Requests eviction of each chunk file from the page cache.
+///
+/// Errors are ignored because `POSIX_FADV_DONTNEED` is advisory. This function
+/// runs outside the timed region.
 fn evict_pages(dir: &Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
+
     for entry in entries.flatten() {
         if let Ok(f) = std::fs::File::open(entry.path()) {
-            // POSIX_FADV_DONTNEED is advisory; ignore the return.
             unsafe {
                 libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
             }
@@ -151,15 +102,14 @@ fn bench_chunked_arrow(c: &mut Criterion) {
     use lightstream::models::writers::chunked::arrow::ChunkedArrowWriter;
     use minarrow::Table;
 
-    // 32 distinct tables in distinct memory so the encoder cannot
-    // unrealistically benefit from L2/L3 cache residency.
+    // Use distinct tables so each iteration reads separate source buffers.
     let tables: Vec<Table> = (0..N_CHUNKS)
         .map(|_| make_bench_table(BENCH_ROWS))
         .collect();
     let table_refs: Vec<&Table> = tables.iter().collect();
 
-    // Pre-write the dataset once to learn the real physical byte count,
-    // which is reported alongside the logical (in-memory) byte count.
+    // Write one dataset to determine the encoded size used by physical
+    // throughput measurements.
     let read_dir = fresh_dir("arrow_read");
     {
         let mut w = ChunkedArrowWriter::new(&read_dir, BASE).unwrap();
@@ -167,42 +117,41 @@ fn bench_chunked_arrow(c: &mut Criterion) {
             w.write_chunk(t).unwrap();
         }
     }
+
     let logical_bytes = total_payload_bytes();
     let physical_bytes = physical_bytes(&read_dir);
 
     let mut group = c.benchmark_group("chunked_arrow");
     group.sample_size(10);
 
-    // `_logical`: process completion time. Encode + hand bytes to the
-    // kernel and return. Denominator = source bytes.
-    // `_physical`: durable on-disk time. Same encode + write, then
-    // fsync every chunk file AND the parent directory so both the
-    // file contents and the directory entries are durable before the
-    // timed window ends. Denominator = output file bytes.
+    // Logical writes measure encoding and buffered file writes using the source
+    // payload size. Physical writes also synchronise each file and the parent
+    // directory, using the encoded file size.
     //
-    // Cleanup of the chunk dir is NOT in the timed region: `fresh_dir`
-    // in the next iteration's setup wipes it via `remove_dir_all`. The
-    // final iteration's dir is reaped at the end of this fn.
+    // Directory cleanup runs in the next iteration's setup and is not timed.
     let write_serial_logical = |dir: PathBuf| {
         let mut w = ChunkedArrowWriter::new(&dir, BASE).unwrap();
         for t in &tables {
             w.write_chunk(t).unwrap();
         }
     };
+
     let write_serial_physical = |dir: PathBuf| {
         let mut w = ChunkedArrowWriter::new(&dir, BASE).unwrap();
         let mut paths: Vec<PathBuf> = Vec::with_capacity(N_CHUNKS);
+
         for t in &tables {
             paths.push(w.write_chunk(t).unwrap());
         }
+
         for p in &paths {
             std::fs::File::open(p).unwrap().sync_all().unwrap();
         }
-        // Fsync the parent dir so the chunk dir entries themselves are
-        // durable - without this, file contents persist but the dir
-        // entries can vanish on power loss, leaving orphan inodes.
+
+        // Synchronise directory metadata for the newly created chunk files.
         std::fs::File::open(&dir).unwrap().sync_all().unwrap();
     };
+
 
     group.throughput(Throughput::Bytes(logical_bytes));
     group.bench_function("write_logical", |b| {
@@ -455,16 +404,16 @@ fn bench_chunked_csv(c: &mut Criterion) {
     let mut group = c.benchmark_group("chunked_csv");
     group.sample_size(10);
 
-    // `_logical`: encode + write, no fsync. Denominator = source bytes.
-    // `_physical`: encode + write + fsync per chunk + fsync the parent
-    // dir. Denominator = output file bytes. Cleanup of the chunk dir
-    // is NOT in the timed region.
+    // Logical writes exclude synchronisation and use the source payload size.
+    // Physical writes synchronise each chunk and the parent directory, and use the
+    // encoded file size. Directory cleanup runs outside the timed region.
     let write_serial_logical = |dir: PathBuf| {
         let mut w = ChunkedCsvWriter::new(&dir, BASE, CsvEncodeOptions::default()).unwrap();
         for t in &tables {
             w.write_chunk(t).unwrap();
         }
     };
+    
     let write_serial_physical = |dir: PathBuf| {
         let mut w = ChunkedCsvWriter::new(&dir, BASE, CsvEncodeOptions::default()).unwrap();
         let mut paths: Vec<PathBuf> = Vec::with_capacity(N_CHUNKS);

@@ -1,40 +1,36 @@
-# Terraform provisioning for the A-to-B rig
+# AWS A-to-B benchmark infrastructure
 
-Stands up two EC2 instances in the same Availability Zone, in a cluster
-placement group, on the AWS default VPC. The instances are bootstrapped
-minimally; the lightstream `bench_sender` and `bench_receiver` binaries
-are SCP'd in after `terraform apply` and then driven by `bench/aws/run.sh`.
+This Terraform module creates two EC2 instances in the same Availability Zone and cluster placement group, using the default VPC.
+
+The instances are configured with clock synchronisation and increased open-file limits. After applying the Terraform configuration, copy the Lightstream `bench_sender` and `bench_receiver` binaries to the instances and run the benchmark with `bench/aws/run.sh`.
 
 ## Prerequisites
 
-- AWS account with EC2 + VPC permissions.
-- Terraform `>= 1.6` installed locally.
-- `aws` CLI configured with credentials (`aws configure` or environment
-  variables).
-- An SSH key pair the user already holds. Generate one if you have not:
+* An AWS account with permission to manage EC2 and VPC resources.
+* Terraform 1.6 or later.
+* AWS credentials configured through the AWS CLI or environment variables.
+* An SSH key pair.
 
-  ```bash
-  ssh-keygen -t ed25519 -f ~/.ssh/lightstream_bench -N ""
-  ```
+Create an SSH key pair if required:
 
-No SSH key material is committed in this repository. The public key path
-is supplied through the `ssh_public_key_path` variable; Terraform reads
-it from disk and registers it as an EC2 key pair tied to a one-shot name
-prefixed with a random suffix. The matching private key stays on the
-operator's workstation.
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/lightstream_bench -N ""
+```
+
+Set `ssh_public_key_path` to the path of the public key. Terraform registers the public key as an EC2 key pair. The private key remains on the local machine and is not stored in this repository or managed by Terraform.
 
 ## Inputs
 
-| Variable               | Default          | Notes                                                                              |
-|------------------------|------------------|------------------------------------------------------------------------------------|
-| `region`               | `us-east-1`      | Any region the AWS account can launch EC2 in.                                       |
-| `instance_type`        | `c7gn.large`     | Network-optimised Graviton. For Intel/AMD, use `c7i.large` and switch `architecture`. |
-| `architecture`         | `arm64`          | `arm64` for Graviton, `x86_64` for Intel/AMD types.                                |
-| `ssh_public_key_path`  | _(required)_     | Filesystem path to your SSH public key, e.g. `~/.ssh/lightstream_bench.pub`.       |
-| `ssh_allow_cidr`       | `0.0.0.0/0`      | CIDR allowed to SSH. Set to `<your-public-ip>/32` if leaving the rig running.       |
-| `bench_port`           | `9001`           | TCP port the sender listens on and the receiver connects to.                       |
+| Variable              |      Default | Description                                                                                                 |
+| --------------------- | -----------: | ----------------------------------------------------------------------------------------------------------- |
+| `region`              |  `us-east-1` | AWS region in which to create the benchmark infrastructure.                                                 |
+| `instance_type`       | `c7gn.large` | EC2 instance type. Use `c7i.large` with `architecture = "x86_64"` for x86_64.                               |
+| `architecture`        |      `arm64` | AMI architecture: `arm64` for Graviton or `x86_64` for Intel and AMD instances.                             |
+| `ssh_public_key_path` |     Required | Path to the SSH public key, such as `~/.ssh/lightstream_bench.pub`.                                         |
+| `ssh_allow_cidr`      |  `0.0.0.0/0` | CIDR block permitted to connect over SSH. Restrict this to the operator's public IP address where possible. |
+| `bench_port`          |       `9001` | TCP port used for the benchmark connection.                                                                 |
 
-## Apply
+## Provision the instances
 
 ```bash
 cd bench/aws/terraform
@@ -46,10 +42,11 @@ terraform apply \
     -var "ssh_allow_cidr=$(curl -fsS https://checkip.amazonaws.com)/32"
 ```
 
-Successful apply outputs:
+Terraform returns the instance addresses and a command for running the benchmark:
 
-```
+```text
 Outputs:
+
 sender_public_ip   = "..."
 sender_private_ip  = "..."
 receiver_public_ip = "..."
@@ -60,39 +57,42 @@ SENDER_HOST=ec2-user@... ...
 EOT
 ```
 
-## Push binaries onto the instances
+## Build and copy the binaries
 
-Build the binaries locally - `arm64` if you kept the Graviton default:
+For the default ARM64 instance type:
 
 ```bash
 cargo build --release --target aarch64-unknown-linux-gnu \
-    --example bench_sender --example bench_receiver --features tcp
+    --example bench_sender \
+    --example bench_receiver \
+    --features tcp
 ```
 
-For x86 instances, drop the `--target` flag or use `x86_64-unknown-linux-gnu`.
+For x86_64 instances, omit `--target` or use `--target x86_64-unknown-linux-gnu`.
 
-Then SCP both binaries to both hosts (each side runs only one of the
-two, but mirroring is the simplest setup):
+Copy the binaries to both instances:
 
 ```bash
 SENDER_IP=$(terraform output -raw sender_public_ip)
 RECEIVER_IP=$(terraform output -raw receiver_public_ip)
 KEY=$HOME/.ssh/lightstream_bench
 
-for host in $SENDER_IP $RECEIVER_IP; do
+for host in "$SENDER_IP" "$RECEIVER_IP"; do
   scp -i "$KEY" -o StrictHostKeyChecking=accept-new \
       target/aarch64-unknown-linux-gnu/release/examples/bench_sender \
       target/aarch64-unknown-linux-gnu/release/examples/bench_receiver \
-      ec2-user@$host:/tmp/
-  ssh -i "$KEY" ec2-user@$host "sudo mv /tmp/bench_{sender,receiver} /usr/local/bin/"
+      "ec2-user@$host:/tmp/"
+
+  ssh -i "$KEY" "ec2-user@$host" \
+      "sudo mv /tmp/bench_{sender,receiver} /usr/local/bin/"
 done
 ```
 
-## Run the bench
+Update the binary paths when building for a different target.
 
-`terraform output run_sh_invocation` prints a ready-to-paste line that
-plugs the host/IP outputs into `bench/aws/run.sh`. Set `SSH_OPTS` to
-point at the matching private key:
+## Run the benchmark
+
+The `run_sh_invocation` output contains the instance addresses required by `bench/aws/run.sh`. Set `SSH_OPTS` to use the corresponding private key:
 
 ```bash
 SENDER_HOST=ec2-user@$(terraform output -raw sender_public_ip) \
@@ -105,30 +105,30 @@ SSH_OPTS="-i $HOME/.ssh/lightstream_bench -o StrictHostKeyChecking=accept-new" \
 ../run.sh
 ```
 
-The receiver prints one `RESULT shape=... gib_per_s=...` line on stdout;
-the sender's log is left on the sender host at `/tmp/lightstream_bench_sender_<pid>.log`.
+The receiver writes a result line to standard output:
 
-## Tear down
+```text
+RESULT shape=... gib_per_s=...
+```
+
+The sender log remains on the sender instance at:
+
+```text
+/tmp/lightstream_bench_sender_<pid>.log
+```
+
+## Destroy the infrastructure
 
 ```bash
 terraform destroy \
     -var "ssh_public_key_path=$HOME/.ssh/lightstream_bench.pub"
 ```
 
-EC2 instances are billed by the second; the rig is intended to be
-provisioned, measured, and destroyed in one session.
+Destroy the infrastructure after the benchmark completes to avoid further EC2 charges.
 
-## What this module does not cover
+## Limitations
 
-- Cross-region or cross-AZ rigs. The cluster placement group requires
-  same-AZ. For an inter-region measurement, fork this module into two
-  per-region copies and add explicit peering.
-- Larger network classes that require Elastic Network Adapter
-  enablement (`*.metal` and several `n` types). For most measurements
-  the `c7gn.large` default is enough; bump `instance_type` for higher
-  ceilings, but verify ENA is on by default for your chosen size.
-- IPv6. The bench connects via the IPv4 private IP exposed in the
-  `sender_private_ip` output.
-- TLS or QUIC variants. The sender/receiver pair speaks plaintext TCP;
-  the matrix bench at `benches/transport_throughput.rs` is where to
-  measure TLS / QUIC / WebTransport / HTTP/2.
+* Both instances are created in the same Availability Zone. Cross-AZ and cross-region benchmarks require separate infrastructure and network configuration.
+* Larger instance types may provide higher network bandwidth and may have additional networking requirements.
+* The benchmark uses the sender's private IPv4 address. IPv6 is not configured.
+* The sender and receiver use plaintext TCP. TLS, QUIC, WebTransport and HTTP/2 measurements are handled by `benches/transport_throughput.rs`.

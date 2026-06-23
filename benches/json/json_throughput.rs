@@ -1,10 +1,8 @@
-//! Criterion benchmarks measuring JSON encode and decode throughput for
-//! both array-of-objects and NDJSON output shapes.
+//! Benchmarks JSON encoding and decoding throughput for JSON arrays and NDJSON.
 //!
-//! Decoder is backed by `simd-json` (the `json` feature pulls it in).
-//! Reads use the slice variants (`decode_json_slice` / `decode_ndjson_slice`)
-//! so the timed body doesn't repeat the kernel-to-user copy already paid
-//! when the pre-encoded fixture was built.
+//! Decoding uses `simd-json` through the `json` feature. The slice-based decode
+//! functions operate on pre-encoded fixtures, excluding file I/O from the
+//! measurements.
 
 #[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
@@ -40,7 +38,7 @@ fn bench_json(c: &mut Criterion) {
         logical_payload_bytes(BENCH_ROWS) * BENCH_BATCHES as u64,
     ));
 
-    // One JSON array per batch. NDJSON concatenates naturally across batches.
+    // Store JSON arrays separately and NDJSON as one concatenated fixture.
     let array_per_batch: Vec<Vec<u8>> = tables
         .iter()
         .map(|t| encode_one(t, JsonFormat::Array { pretty: false }))
@@ -90,9 +88,8 @@ fn bench_json(c: &mut Criterion) {
         ..Default::default()
     };
 
-    // simd-json's tape parser mutates the input buffer (in-place string
-    // unescape), so each timed iteration needs a fresh copy. The clones
-    // run in `iter_batched` setup and don't count toward the measurement.
+    // `simd-json` mutates array input while parsing, so each iteration receives
+    // a fresh copy prepared outside the timed region.
     group.bench_function("read_array", |b| {
         b.iter_batched(
             || array_per_batch.clone(),
@@ -115,9 +112,8 @@ fn bench_json(c: &mut Criterion) {
         });
     });
 
-    // Apples-to-apples parser baseline: same simd-json API the decoder
-    // uses (`to_tape_with_buffers`), with the buffers reused across
-    // iterations and the input clone done in untimed setup.
+    // Measure tape parsing without table construction. Parser buffers are reused,
+    // and mutable input copies are prepared outside the timed region.
     group.bench_function("parse_array_tape_only", |b| {
         let mut buffers = Buffers::default();
         b.iter_batched(

@@ -1,17 +1,16 @@
 ################################################################################
-# Lightstream cross-host bench - ephemeral EKS cluster.
+# Lightstream cross-host benchmark infrastructure.
 #
-# Stands up a throwaway VPC, an EKS cluster, a two-node managed node
-# group pinned to one subnet, and an ECR repository for the bench image.
-# Both nodes share an AZ for a real NIC hop with minimal latency variance.
+# Creates a VPC, an EKS cluster, a two-node managed node group and an ECR
+# repository for the benchmark image. Both worker nodes are placed in the same
+# Availability Zone to reduce network latency variance.
 #
-# `bench/cluster/run.sh` drives the full lifecycle: apply, build and push
-# the image, schedule the sender and receiver pods on separate nodes via
-# pod anti-affinity, collect the receiver result, then destroy.
+# `bench/cluster/run.sh` provisions the infrastructure, builds and pushes the
+# image, runs the sender and receiver on separate nodes, collects the result and
+# destroys the infrastructure.
 #
-# Everything carries a random suffix so parallel runs stay isolated and
-# each destroys cleanly. The VPC and node group use public subnets only
-# with no NAT gateway, so apply and destroy stay fast.
+# Resource names include a random suffix to isolate concurrent runs. The VPC
+# uses public subnets without a NAT gateway.
 ################################################################################
 
 terraform {
@@ -51,7 +50,7 @@ locals {
 }
 
 ################################################################################
-# Networking - throwaway VPC, public subnets only
+# Networking
 ################################################################################
 
 module "vpc" {
@@ -68,7 +67,7 @@ module "vpc" {
   enable_nat_gateway      = false
   enable_dns_hostnames    = true
 
-  # EKS discovers cluster subnets by tag.
+  # Tag public subnets for Kubernetes load balancer discovery.
   public_subnet_tags = {
     "kubernetes.io/role/elb" = "1"
   }
@@ -77,7 +76,7 @@ module "vpc" {
 }
 
 ################################################################################
-# EKS cluster + two-node group on a single subnet (same AZ)
+# EKS cluster and managed node group
 ################################################################################
 
 module "eks" {
@@ -102,9 +101,8 @@ module "eks" {
       max_size     = 2
       desired_size = 2
 
-      # Pin both nodes to the first subnet so they share an AZ. Pod
-      # anti-affinity then lands the sender and receiver on the two
-      # distinct nodes, and traffic crosses a real NIC.
+      # Place both nodes in the same Availability Zone. Pod anti-affinity places
+      # the sender and receiver on separate nodes.
       subnet_ids = [module.vpc.public_subnets[0]]
     }
   }
@@ -113,7 +111,7 @@ module "eks" {
 }
 
 ################################################################################
-# ECR repository for the bench image
+# Benchmark image repository
 ################################################################################
 
 resource "aws_ecr_repository" "bench" {
@@ -133,22 +131,22 @@ resource "aws_ecr_repository" "bench" {
 ################################################################################
 
 variable "region" {
-  description = "AWS region to deploy into."
+  description = "AWS region in which to create the benchmark infrastructure."
   type        = string
   default     = "us-east-1"
 }
 
 variable "kubernetes_version" {
-  description = "EKS control plane version."
+  description = "Kubernetes version for the EKS control plane."
   type        = string
   default     = "1.31"
 }
 
 variable "instance_type" {
   description = <<-EOT
-    Node instance type. Default `c5n.large` is network-optimised x86 in
-    the class used for the published numbers. Larger sizes lift the
-    network ceiling at higher cost.
+    EC2 instance type for the worker nodes. The default, `c5n.large`, is a
+    network-optimised x86_64 instance. Larger instance types provide more
+    network bandwidth at a higher cost.
   EOT
   type        = string
   default     = "c5n.large"
@@ -156,29 +154,29 @@ variable "instance_type" {
 
 variable "ami_type" {
   description = <<-EOT
-    EKS managed node group AMI type. Must match the instance
-    architecture: `AL2023_x86_64_STANDARD` for x86 (c5n/c7i),
-    `AL2023_ARM_64_STANDARD` for Graviton (c7gn/m7g).
+    AMI type for the EKS managed node group. Use `AL2023_x86_64_STANDARD`
+    for x86_64 instance types and `AL2023_ARM_64_STANDARD` for Graviton
+    instance types.
   EOT
   type        = string
   default     = "AL2023_x86_64_STANDARD"
 }
 
 ################################################################################
-# Outputs - consumed by bench/cluster/run.sh
+# Outputs used by `bench/cluster/run.sh`
 ################################################################################
 
 output "cluster_name" {
-  description = "EKS cluster name for `aws eks update-kubeconfig`."
+  description = "EKS cluster name used to configure kubectl access."
   value       = module.eks.cluster_name
 }
 
 output "region" {
-  description = "Region the cluster runs in."
+  description = "AWS region containing the EKS cluster."
   value       = var.region
 }
 
 output "ecr_repository_url" {
-  description = "ECR repository URL to tag and push the bench image to."
+  description = "ECR repository URL for the benchmark image."
   value       = aws_ecr_repository.bench.repository_url
 }
