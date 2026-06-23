@@ -1,11 +1,11 @@
 use minarrow::{FieldArray, Table, Vec64, arr_f64, arr_i32, arr_str32};
 
 #[cfg(feature = "msgpack")]
-use futures_core::Stream;
-#[cfg(feature = "msgpack")]
 use lightstream::models::protocol::LightstreamMessage;
 #[cfg(feature = "msgpack")]
 use lightstream::models::protocol::connection::LightstreamConnection;
+#[cfg(feature = "msgpack")]
+use lightstream::traits::stream_buffer::StreamBuffer;
 #[cfg(feature = "msgpack")]
 use tokio::io::AsyncWrite;
 
@@ -47,10 +47,10 @@ pub fn table_schema() -> Vec<minarrow::Field> {
 /// - "command" i.e. tag 1, msgpack-encoded `Command` structs
 /// - "metrics" i.e. Arrow table channel
 #[cfg(feature = "msgpack")]
-pub fn register_demo_types<S, W>(conn: &mut LightstreamConnection<S, W>)
+pub fn register_demo_types<W, B>(conn: &mut LightstreamConnection<W, B>)
 where
-    S: Stream<Item = Result<Vec<u8>, std::io::Error>> + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
+    B: StreamBuffer + Unpin,
 {
     conn.register_message("raw");
     conn.register_message("command");
@@ -60,13 +60,13 @@ where
 /// Send a representative mix of raw, msgpack, and Arrow table messages,
 /// then flush and shut down the connection.
 #[cfg(feature = "msgpack")]
-pub async fn send_demo_messages<S, W>(
-    conn: &mut LightstreamConnection<S, W>,
+pub async fn send_demo_messages<W, B>(
+    conn: &mut LightstreamConnection<W, B>,
     label: &str,
 ) -> std::io::Result<()>
 where
-    S: Stream<Item = Result<Vec<u8>, std::io::Error>> + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
+    B: StreamBuffer + Unpin,
 {
     conn.send("raw", format!("hello-{}", label).as_bytes())
         .await?;
@@ -89,10 +89,10 @@ where
 
 /// Receive and print all messages until the connection closes.
 #[cfg(feature = "msgpack")]
-pub async fn recv_and_print_all<S, W>(conn: &mut LightstreamConnection<S, W>)
+pub async fn recv_and_print_all<W, B>(conn: &mut LightstreamConnection<W, B>)
 where
-    S: Stream<Item = Result<Vec<u8>, std::io::Error>> + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
+    B: StreamBuffer + Unpin,
 {
     while let Some(result) = conn.recv().await {
         let msg = result.unwrap();

@@ -1,10 +1,19 @@
-//! QUIC Transport Example
+//! Parallel QUIC Arrow IPC Example
 //!
-//! Demonstrates the Lightstream protocol over QUIC.
+//! Fans one table sequence across several concurrent unidirectional QUIC
+//! streams on a single connection. The server accepts the same number of
+//! streams and merges them back into one table sequence. Ordering holds
+//! within a stream, but not across the set, so the merged tables can
+//! interleave between streams.
+//!
+//! 1. Generate a self-signed TLS certificate via `rcgen`
+//! 2. Create server and client `quinn::Endpoint`s with custom TLS config
+//! 3. Client opens `STREAMS` unidirectional streams via `QuicParallelTableWriter`
+//! 4. Server merges them via `QuicParallelTableReader`
 //!
 //! Run with:
 //! ```sh
-//! cargo run --example quic_lightstream --features "protocol,quic,msgpack"
+//! cargo run --example quic_arrow_parallel --features quic
 //! ```
 
 #[path = "../helpers/mod.rs"]
@@ -12,8 +21,14 @@ mod helpers;
 
 use std::sync::Arc;
 
-use helpers::{recv_and_print_all, register_demo_types, send_demo_messages};
-use lightstream::models::protocol::connection::QuicLightstreamConnection;
+use helpers::{make_table, table_schema};
+use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
+use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
+use lightstream::traits::parallel_transport_reader::ParallelTransportReader;
+use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+
+const STREAMS: usize = 4;
+const TABLES: usize = 12;
 
 // ---------------------------------------------------------------------------
 // TLS helpers
@@ -25,6 +40,8 @@ use lightstream::models::protocol::connection::QuicLightstreamConnection;
 struct SkipVerification;
 
 impl rustls::client::danger::ServerCertVerifier for SkipVerification {
+    // Note in a prod setting these of course need to be completed robustly
+    // and extensively, and generally not self-signed
     fn verify_server_cert(
         &self,
         _end_entity: &rustls::pki_types::CertificateDer<'_>,
@@ -79,12 +96,15 @@ fn generate_self_signed_cert() -> (
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("QUIC Transport Example");
-    println!("======================\n");
+    println!("Parallel QUIC Arrow IPC Example");
+    println!("===============================\n");
+
+    let schema = table_schema();
 
     // --- TLS setup ---
     let (certs, key) = generate_self_signed_cert();
 
+    // Server TLS config
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
@@ -92,9 +112,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?,
     ));
+    // Admit the concurrent unidirectional streams the parallel writer opens.
     let transport = Arc::get_mut(&mut server_config.transport).unwrap();
-    transport.max_concurrent_bidi_streams(1u8.into());
+    transport.max_concurrent_uni_streams((STREAMS as u32).into());
 
+    // Client TLS config
     let mut client_crypto = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(SkipVerification))
@@ -107,22 +129,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Server endpoint ---
     let server_endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap())?;
     let addr = server_endpoint.local_addr()?;
-    println!("QUIC server listening on {}", addr);
+    println!("QUIC server listening on {addr} across {STREAMS} streams");
 
     let server = tokio::spawn(async move {
         let incoming = server_endpoint.accept().await.unwrap();
         let connection = incoming.await.unwrap();
         println!("Server accepted QUIC connection.");
 
-        let (send_stream, recv_stream) = connection.accept_bi().await.unwrap();
-
-        let mut conn = QuicLightstreamConnection::from_quic(recv_stream, send_stream);
-        register_demo_types(&mut conn);
-        recv_and_print_all(&mut conn).await;
+        let reader = QuicParallelTableReader::accept(&connection, STREAMS)
+            .await
+            .unwrap();
+        let tables = reader.read_all_tables().await.unwrap();
 
         connection.close(0u32.into(), b"done");
         server_endpoint.wait_idle().await;
-        println!("Server connection closed.");
+        tables
     });
 
     // --- Client endpoint ---
@@ -132,13 +153,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = client_endpoint.connect(addr, "localhost")?.await?;
     println!("Client connected to QUIC server.");
 
-    let (send_stream, recv_stream) = connection.open_bi().await?;
+    let mut writer =
+        QuicParallelTableWriter::open(&connection, STREAMS, schema, Vec::new(), None).await?;
+    println!(
+        "Client sending {TABLES} tables across {} streams",
+        writer.stream_count()
+    );
 
-    let mut client = QuicLightstreamConnection::from_quic(recv_stream, send_stream);
-    register_demo_types(&mut client);
-    send_demo_messages(&mut client, "quic").await?;
+    // Tables round-robin across the streams in open order.
+    for i in 0..TABLES {
+        writer.write_table(make_table(&format!("batch_{i}"), 5)).await?;
+    }
+    writer.finish().await?;
 
-    server.await?;
-    println!("\nQUIC transport example completed successfully!");
+    let tables = server.await?;
+    let total_rows: usize = tables.iter().map(|t| t.n_rows).sum();
+    println!(
+        "Server merged {} tables ({total_rows} rows) from {STREAMS} streams.",
+        tables.len()
+    );
+    assert_eq!(tables.len(), TABLES);
+
+    println!("\nParallel QUIC Arrow IPC example completed successfully!");
     Ok(())
 }

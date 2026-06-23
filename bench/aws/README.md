@@ -141,6 +141,6 @@ hosts on the AWS network. It does not measure:
 - TLS handshake or per-connection setup overhead - both are
   excluded from the timed region.
 
-Use `cargo bench --bench transport_throughput` locally for the
+Use `cargo bench --bench transport_bench_matrix` locally for the
 transport matrix, and the head-to-head Arrow Flight bench at
-`benches/arrow_flight_compare.rs` for the gRPC comparison number.
+`benches/arrow/arrow_flight_comparison.rs` for the gRPC comparison number.

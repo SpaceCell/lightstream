@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("install ring crypto provider");
 
-    // --- Mint a self-signed cert valid for `localhost`. -----------------
+    // --- Create a self-signed cert valid for `localhost`. -----------------
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let cert_der: CertificateDer<'static> = cert.cert.der().clone();
     let key_der: PrivateKeyDer<'static> = PrivateKeyDer::try_from(cert.signing_key.serialize_der())

@@ -1,10 +1,10 @@
-//! Memory-mapped zero-copy Arrow IPC example.
+//! Memory-mapped Arrow IPC example.
 //!
 //! This example demonstrates how to:
 //! - Create a table with sample data using Vec64 for alignment  
 //! - Write it to Arrow IPC File format using TableWriter
-//! - Read it back using MmapTableReader for zero-copy access
-//! - Show the performance benefits of memory mapping vs regular file I/O
+//! - Read it back using MmapTableReader for fast-mmap cached access,
+//! which can also be useful for 'larger than available RAM' workloads.
 
 use lightstream::enums::IPCMessageProtocol;
 #[cfg(feature = "mmap")]
@@ -19,7 +19,7 @@ use tokio::fs::File;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Memory-Mapped Zero-Copy Example");
+    println!("Memory-Mapped Example");
     println!("==============================");
 
     // Create large sample data to show performance benefits

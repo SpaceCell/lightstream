@@ -86,6 +86,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use lightstream::traits::chunked_table_reader::ChunkedTableReader;
 use lightstream::traits::chunked_table_writer::ChunkedTableWriter;
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 use bench_helpers::{BENCH_ROWS, logical_payload_bytes, make_bench_table};
 

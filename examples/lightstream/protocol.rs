@@ -15,6 +15,7 @@
 //! cargo run --example lightstream --features "protocol,tcp,msgpack"
 //! ```
 
+#[path = "../helpers/mod.rs"]
 mod helpers;
 
 use helpers::{Command, make_table, table_schema};

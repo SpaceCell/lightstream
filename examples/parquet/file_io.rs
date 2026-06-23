@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "parquet"))]
     {
         println!("\nParquet feature not enabled. Enable with --features parquet");
-        println!("Run: cargo run --example parquet_io --features parquet");
+        println!("Run: cargo run --example parquet_file_io --features parquet");
     }
 
     Ok(())

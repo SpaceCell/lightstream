@@ -16,6 +16,7 @@
 //! `arrow-flight` and `tonic` are not pulled into the dependency
 //! graph and this file is not built.
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 
 use std::sync::Arc;

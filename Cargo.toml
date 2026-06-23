@@ -89,41 +89,46 @@ libc = "0.2"
 
 [[bench]]
 name = "file_throughput"
+path = "benches/file/file_throughput.rs"
 harness = false
 
 [[bench]]
-name = "ipc_throughput_orig"
+name = "ipc_throughput"
+path = "benches/transport/ipc_throughput.rs"
 harness = false
 
 [[bench]]
-name = "stream_throughput_orig"
-harness = false
-
-[[bench]]
-name = "lightstream_throughput_orig"
+name = "lightstream_throughput"
+path = "benches/transport/lightstream_throughput.rs"
 harness = false
 required-features = ["protocol", "tcp", "uds"]
 
 [[bench]]
 name = "json_throughput"
+path = "benches/json/json_throughput.rs"
 harness = false
 required-features = ["json"]
 
 [[bench]]
 name = "chunked_throughput"
+path = "benches/file/chunked_throughput.rs"
 harness = false
 
 [[bench]]
-name = "transport_throughput"
+name = "transport_bench_matrix"
+path = "benches/transport/transport_bench_matrix.rs"
 harness = false
+required-features = ["tcp", "uds", "websocket"]
 
 [[bench]]
-name = "arrow_flight_compare"
+name = "arrow_flight_comparison"
+path = "benches/arrow/arrow_flight_comparison.rs"
 harness = false
 required-features = ["bench_arrow_flight", "tcp"]
 
 [[bench]]
 name = "mmap_streaming"
+path = "benches/file/mmap_streaming.rs"
 harness = false
 required-features = ["mmap"]
 
@@ -224,6 +229,7 @@ default = ["default_categorical_8", "arena"]
 
 [[example]]
 name = "lightstream"
+path = "examples/lightstream/protocol.rs"
 required-features = ["protocol", "tcp", "msgpack"]
 
 [[example]]
@@ -267,6 +273,11 @@ path = "examples/http/arrow.rs"
 required-features = ["http"]
 
 [[example]]
+name = "http_arrow_parallel"
+path = "examples/http/arrow-parallel.rs"
+required-features = ["http"]
+
+[[example]]
 name = "websocket_arrow_tls"
 path = "examples/websocket/arrow_tls.rs"
 required-features = ["websocket", "tls"]
@@ -292,6 +303,11 @@ path = "examples/quic/arrow.rs"
 required-features = ["quic"]
 
 [[example]]
+name = "quic_arrow_parallel"
+path = "examples/quic/arrow-parallel.rs"
+required-features = ["quic"]
+
+[[example]]
 name = "webtransport_lightstream"
 path = "examples/webtransport/lightstream.rs"
 required-features = ["protocol", "webtransport", "msgpack"]
@@ -303,5 +319,37 @@ required-features = ["webtransport"]
 
 [[example]]
 name = "csv_basic"
-path = "examples/csv_basic.rs"
+path = "examples/csv/basic.rs"
 required-features = ["csv"]
+
+[[example]]
+name = "arrow_ipc_basic"
+path = "examples/arrow/ipc_basic.rs"
+
+[[example]]
+name = "arrow_mmap"
+path = "examples/arrow/mmap.rs"
+
+[[example]]
+name = "arrow_table_reader"
+path = "examples/arrow/table_reader.rs"
+
+[[example]]
+name = "arrow_table_stream_reader"
+path = "examples/arrow/table_stream_reader.rs"
+
+[[example]]
+name = "arrow_table_stream_writer"
+path = "examples/arrow/table_stream_writer.rs"
+
+[[example]]
+name = "arrow_table_writer"
+path = "examples/arrow/table_writer.rs"
+
+[[example]]
+name = "parquet_file_io"
+path = "examples/parquet/file_io.rs"
+
+[[example]]
+name = "tlv_protocol"
+path = "examples/tlv/protocol.rs"

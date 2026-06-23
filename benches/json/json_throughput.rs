@@ -6,6 +6,7 @@
 //! so the timed body doesn't repeat the kernel-to-user copy already paid
 //! when the pre-encoded fixture was built.
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 
 use bench_helpers::{BENCH_ROWS, bench_schema, logical_payload_bytes, make_bench_table};

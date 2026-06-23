@@ -5,6 +5,7 @@
 //! establishes one connection, then streams `iters` batches through it,
 //! timing only the encode/decode pipeline.
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 use bench_helpers::*;
 

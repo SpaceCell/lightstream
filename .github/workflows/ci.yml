@@ -1,10 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # Automatic push and pull_request triggers are paused. Re-enable by
+  # uncommenting the two blocks below.
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
   workflow_dispatch:
 
 env:

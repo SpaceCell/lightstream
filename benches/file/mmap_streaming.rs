@@ -67,6 +67,7 @@
 // Linux-only via libc::posix_fadvise; mmap-only via Cargo.toml's
 // `required-features = ["mmap"]`.
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 use bench_helpers::{BenchShape, logical_payload_bytes_shape, make_bench_table_shape};
 

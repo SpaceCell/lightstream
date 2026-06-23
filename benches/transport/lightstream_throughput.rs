@@ -5,6 +5,7 @@
 //! one connection, then streams `iters` batches through it, timing only the
 //! send/recv pipeline. Criterion reports throughput in bytes/sec.
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 use bench_helpers::*;
 

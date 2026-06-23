@@ -1,4 +1,4 @@
-//! Consolidated transport throughput benchmark.
+//! Transport throughput benchmark across every enabled transport.
 //!
 //! For each cell in the `BenchMatrix` resolved from
 //! `LIGHTSTREAM_BENCH_MATRIX` (quick, standard, full) and for each
@@ -11,12 +11,14 @@
 //! (transport, compression) pair so transports are directly
 //! comparable for the same workload.
 //!
-//! Coverage in this revision is TCP, Unix domain sockets, WebSocket,
-//! and the Lightstream protocol over TCP. QUIC, WebTransport, and
-//! HTTP/2 will follow in a separate change so the per-transport TLS
-//! plumbing can land cleanly. Zstd compression variants are emitted
-//! when the `zstd` feature is enabled.
+//! Each enabled transport contributes its own bench functions: TCP,
+//! Unix domain sockets, WebSocket, QUIC, WebTransport, HTTP/2, the
+//! Lightstream protocol over TCP, and the io_uring TCP and UDS paths
+//! under the `io_uring` feature. Zstd compression variants are emitted
+//! when the `zstd` feature is enabled, TLS variants when the `tls`
+//! feature is enabled.
 
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
 use bench_helpers::{
     BenchMatrix, BenchScale, bench_schema, logical_payload_bytes_shape, make_bench_table_shape,
@@ -33,14 +35,7 @@ use lightstream::models::readers::ipc::table::TableReader;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
 use lightstream::traits::transport_writer::IPCTransportWriter;
 #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
-use minarrow::{Field, Vec64};
-#[cfg(any(
-    feature = "tcp",
-    feature = "uds",
-    feature = "websocket",
-    all(feature = "protocol", feature = "tcp"),
-))]
-use minarrow::Table;
+use minarrow::{Field, Table, Vec64};
 
 #[cfg(feature = "tcp")]
 use tokio::net::TcpListener;
@@ -51,13 +46,15 @@ use tokio::runtime::Runtime;
 #[cfg(feature = "zstd")]
 use lightstream::compression::Compression;
 
+#[cfg(feature = "io_uring")]
+use lightstream::models::io_uring::{IoUringTcpConnection, IoUringUdsConnection};
+
 #[cfg(any(feature = "quic", feature = "webtransport"))]
 use std::net::SocketAddr;
 
-// `rustls` is a dev-dependency available whenever the `tls` feature is on
-// (the same setup the TLS examples use). The bench-only TLS paths below
-// generate a self-signed cert per iteration with `rcgen` and pin it on the
-// client side via a fresh `RootCertStore`, matching the example wiring.
+// `rustls` is a dev-dependency available whenever the `tls` feature is on.
+// The bench-only TLS paths below generate a self-signed cert per iteration
+// with `rcgen` and pin it on the client side via a fresh `RootCertStore`.
 #[cfg(all(feature = "tls", any(feature = "tcp", feature = "websocket")))]
 use std::sync::Arc as TlsArc;
 
@@ -70,16 +67,19 @@ use std::sync::Arc as TlsArc;
         feature = "tcp",
         feature = "uds",
         feature = "websocket",
+        feature = "quic",
+        feature = "webtransport",
+        feature = "http",
+        feature = "io_uring",
         all(feature = "protocol", feature = "tcp"),
     )),
     allow(unused_variables)
 )]
 fn bench_transport(c: &mut Criterion) {
-    // rustls needs a process-wide crypto provider before any TLS handshake
-    // (the bench-only TLS variants below all build a ServerConfig /
-    // ClientConfig). Install the default ring provider once; ignoring the
-    // Err here means subsequent benches in the same process do not panic
-    // on the second attempt.
+    // rustls needs a process-wide crypto provider before any TLS handshake.
+    // The bench-only TLS variants below build a ServerConfig or ClientConfig
+    // against it. Install the default ring provider once and ignore a
+    // repeated install, which returns Err on the second attempt.
     #[cfg(any(
         all(feature = "tcp", feature = "tls"),
         all(feature = "websocket", feature = "tls"),
@@ -94,24 +94,15 @@ fn bench_transport(c: &mut Criterion) {
     for (shape, scale) in BenchMatrix::from_env().cells() {
         let rows = scale.rows();
         let table = Arc::new(make_bench_table_shape(shape, rows));
-        let _schema_unused_when_no_transports = bench_schema(&table);
-        let _dict_regs_unused_when_no_transports = shape.dictionary_registrations();
-
-        // The schema and dictionary registrations are only actually consumed
-        // when at least one transport feature is enabled. Hold the values in
-        // explicitly-prefixed bindings so the compiler accepts them under
-        // the no-transport feature set.
-        #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
-        let schema: Vec<Field> = _schema_unused_when_no_transports.clone();
-        #[cfg(any(feature = "tcp", feature = "uds", feature = "websocket"))]
-        let dict_regs = _dict_regs_unused_when_no_transports.clone();
+        let schema = bench_schema(&table);
+        let dict_regs = shape.dictionary_registrations();
 
         let group_name = format!("transport_{}_{}", shape.label(), scale.label());
         let mut group = c.benchmark_group(&group_name);
         group.throughput(Throughput::Bytes(logical_payload_bytes_shape(shape, rows, 1)));
 
         // Mid- and large-scale cells take long enough per iteration that
-        // Criterion's default sample size becomes unworkable; cap it.
+        // Criterion's default sample size runs too long, so cap it.
         if matches!(scale, BenchScale::Medium | BenchScale::Large) {
             group.sample_size(10);
         }
@@ -168,31 +159,55 @@ fn bench_transport(c: &mut Criterion) {
 
         // ---- HTTP/2 (h2c) ----------------------------------------------
         #[cfg(feature = "http")]
-        bench_http2(&mut group, &rt, &table, &_schema_unused_when_no_transports, &_dict_regs_unused_when_no_transports);
+        bench_http2(&mut group, &rt, &table, &schema, &dict_regs, "http2", None);
+        #[cfg(all(feature = "http", feature = "zstd"))]
+        bench_http2(
+            &mut group,
+            &rt,
+            &table,
+            &schema,
+            &dict_regs,
+            "http2_zstd",
+            Some(Compression::Zstd),
+        );
 
         // ---- QUIC ------------------------------------------------------
         #[cfg(feature = "quic")]
+        bench_quic(&mut group, &rt, &table, &schema, &dict_regs, "quic", None);
+        #[cfg(all(feature = "quic", feature = "zstd"))]
         bench_quic(
             &mut group,
             &rt,
             &table,
-            &_schema_unused_when_no_transports,
-            &_dict_regs_unused_when_no_transports,
+            &schema,
+            &dict_regs,
+            "quic_zstd",
+            Some(Compression::Zstd),
         );
 
         // ---- WebTransport ----------------------------------------------
         #[cfg(feature = "webtransport")]
+        bench_webtransport(&mut group, &rt, &table, &schema, &dict_regs, "webtransport", None);
+        #[cfg(all(feature = "webtransport", feature = "zstd"))]
         bench_webtransport(
             &mut group,
             &rt,
             &table,
-            &_schema_unused_when_no_transports,
-            &_dict_regs_unused_when_no_transports,
+            &schema,
+            &dict_regs,
+            "webtransport_zstd",
+            Some(Compression::Zstd),
         );
 
         // ---- Lightstream protocol over TCP -----------------------------
         #[cfg(all(feature = "protocol", feature = "tcp"))]
-        bench_protocol_tcp(&mut group, &rt, &table, &_schema_unused_when_no_transports);
+        bench_protocol_tcp(&mut group, &rt, &table, &schema);
+
+        // ---- io_uring (Lightstream protocol over tokio-uring) ----------
+        #[cfg(feature = "io_uring")]
+        bench_uds_io_uring(&mut group, &table, &schema, "uds_io_uring");
+        #[cfg(feature = "io_uring")]
+        bench_tcp_io_uring(&mut group, &table, &schema, "tcp_io_uring");
 
         group.finish();
     }
@@ -486,8 +501,10 @@ fn bench_quic(
     table: &Arc<Table>,
     schema: &[Field],
     dict_regs: &[(i64, Vec<String>)],
+    name: &str,
+    compression: Option<lightstream::compression::Compression>,
 ) {
-    group.bench_function("quic", |b| {
+    group.bench_function(name, |b| {
         b.to_async(rt).iter_custom(|iters| {
             let table = Arc::clone(table);
             let schema = schema.to_vec();
@@ -536,7 +553,7 @@ fn bench_quic(
                     let mut writer = lightstream::models::writers::quic::QuicTableWriter::new(
                         send,
                         write_schema,
-                        None,
+                        compression,
                     )
                     .unwrap();
                     for (id, values) in write_dicts {
@@ -592,8 +609,10 @@ fn bench_webtransport(
     table: &Arc<Table>,
     schema: &[Field],
     dict_regs: &[(i64, Vec<String>)],
+    name: &str,
+    compression: Option<lightstream::compression::Compression>,
 ) {
-    group.bench_function("webtransport", |b| {
+    group.bench_function(name, |b| {
         b.to_async(rt).iter_custom(|iters| {
             let table = Arc::clone(table);
             let schema = schema.to_vec();
@@ -629,7 +648,7 @@ fn bench_webtransport(
                         lightstream::models::writers::webtransport::WebTransportTableWriter::new(
                             send,
                             write_schema,
-                            None,
+                            compression,
                         )
                         .unwrap();
                     for (id, values) in write_dicts {
@@ -676,8 +695,8 @@ fn bench_webtransport(
 }
 
 // ---------------------------------------------------------------------------
-// Bench-only TLS verifier: skips certificate validation. QUIC needs this
-// because we generate a fresh self-signed cert per bench iteration so the
+// Bench-only TLS verifier that skips certificate validation. QUIC needs it
+// because each bench iteration generates a fresh self-signed cert, so the
 // client has no trust root to validate against.
 // ---------------------------------------------------------------------------
 
@@ -776,11 +795,11 @@ fn bench_tcp_tls(
 
                 let n = iters;
 
-                // The server (reader) runs in the spawned task; the writer
-                // stays in this task so its TLS write half is not dropped
-                // before the server finishes reading. The opposite ordering
-                // races the TLS close_notify against the server's read
-                // path and surfaces as ConnectionReset on the reader side.
+                // The server reader runs in the spawned task. The writer stays
+                // in this task so its TLS write half is not dropped before the
+                // server finishes reading. The opposite ordering races the TLS
+                // close_notify against the server's read path and surfaces as
+                // ConnectionReset on the reader side.
                 let server = tokio::spawn(async move {
                     let (tcp, _peer) = listener.accept().await.unwrap();
                     let tls = acceptor.accept(tcp).await.unwrap();
@@ -936,10 +955,10 @@ fn bench_websocket_tls(
 }
 
 // ---------------------------------------------------------------------------
-// HTTP/2 (plaintext h2c). Server runs the h2 handshake, accepts the POST
-// request, and decodes the request body via `HttpTableReader::from_recv`.
-// The window sizes match the example so multi-MiB Arrow batches do not pay
-// a WINDOW_UPDATE round-trip every 64 KiB.
+// HTTP/2 (plaintext h2c). The server runs the h2 handshake, accepts the
+// POST request, and decodes the request body via `HttpTableReader::from_recv`.
+// The 8 MiB connection and stream windows let multi-MiB Arrow batches stream
+// without a WINDOW_UPDATE round-trip every 64 KiB.
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "http")]
@@ -949,12 +968,14 @@ fn bench_http2(
     table: &Arc<Table>,
     schema: &[Field],
     dict_regs: &[(i64, Vec<String>)],
+    name: &str,
+    compression: Option<lightstream::compression::Compression>,
 ) {
     use lightstream::models::readers::http::HttpTableReader;
     use lightstream::models::writers::http::HttpTableWriter;
     use lightstream::traits::transport_reader::IPCTransportReader;
 
-    group.bench_function("http2", |b| {
+    group.bench_function(name, |b| {
         b.to_async(rt).iter_custom(|iters| {
             let table = Arc::clone(table);
             let schema = schema.to_vec();
@@ -999,11 +1020,15 @@ fn bench_http2(
 
                 ready.notified().await;
 
-                let start = std::time::Instant::now();
-                let mut writer = HttpTableWriter::post(&url, write_schema, None).await.unwrap();
+                // Connection setup stays outside the timed region, as with the
+                // other transports. The POST opens the request and runs the h2
+                // handshake before the timer starts.
+                let mut writer = HttpTableWriter::post(&url, write_schema, compression).await.unwrap();
                 for (id, values) in write_dicts {
                     writer.register_dictionary(id, values);
                 }
+
+                let start = std::time::Instant::now();
                 for _ in 0..n {
                     writer.write_table((*write_table).clone()).await.unwrap();
                 }
@@ -1014,6 +1039,119 @@ fn bench_http2(
                 std::hint::black_box(received);
                 elapsed
             }
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// io_uring (Lightstream protocol over the tokio-uring completion driver)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "io_uring")]
+fn bench_uds_io_uring(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    table: &Arc<Table>,
+    schema: &[Field],
+    name: &str,
+) {
+    group.bench_function(name, |b| {
+        b.iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            // io_uring runs on the tokio-uring runtime rather than the
+            // shared tokio runtime the other transports drive.
+            tokio_uring::start(async move {
+                // socketpair sidesteps tokio-uring's AF_UNIX bind path.
+                let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+                a.set_nonblocking(true).unwrap();
+                b.set_nonblocking(true).unwrap();
+                let stream_a = tokio_uring::net::UnixStream::from_std(a);
+                let stream_b = tokio_uring::net::UnixStream::from_std(b);
+
+                let write_table = Arc::clone(&table);
+                let write_schema = schema.clone();
+                let n = iters;
+
+                let writer = tokio_uring::spawn(async move {
+                    let mut conn = IoUringUdsConnection::new(stream_a);
+                    conn.register_table("Data", write_schema);
+                    for _ in 0..n {
+                        conn.send_table("Data", &write_table).await.unwrap();
+                    }
+                    conn.flush().await.unwrap();
+                    conn.shutdown().await.unwrap();
+                });
+
+                let mut conn = IoUringUdsConnection::new(stream_b);
+                conn.register_table("Data", schema);
+
+                let start = std::time::Instant::now();
+                let mut count = 0u64;
+                for _ in 0..n {
+                    let msg = conn.recv().await.unwrap().unwrap();
+                    assert!(msg.is_table());
+                    std::hint::black_box(&msg);
+                    count += 1;
+                }
+                let elapsed = start.elapsed();
+                assert_eq!(count, n);
+
+                writer.await.unwrap();
+                elapsed
+            })
+        });
+    });
+}
+
+#[cfg(feature = "io_uring")]
+fn bench_tcp_io_uring(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    table: &Arc<Table>,
+    schema: &[Field],
+    name: &str,
+) {
+    group.bench_function(name, |b| {
+        b.iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            tokio_uring::start(async move {
+                let listener =
+                    tokio_uring::net::TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let write_table = Arc::clone(&table);
+                let write_schema = schema.clone();
+                let n = iters;
+
+                let writer = tokio_uring::spawn(async move {
+                    let stream = tokio_uring::net::TcpStream::connect(addr).await.unwrap();
+                    let mut conn = IoUringTcpConnection::new(stream);
+                    conn.register_table("Data", write_schema);
+                    for _ in 0..n {
+                        conn.send_table("Data", &write_table).await.unwrap();
+                    }
+                    conn.flush().await.unwrap();
+                    conn.shutdown().await.unwrap();
+                });
+
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut conn = IoUringTcpConnection::new(stream);
+                conn.register_table("Data", schema);
+
+                let start = std::time::Instant::now();
+                let mut count = 0u64;
+                for _ in 0..n {
+                    let msg = conn.recv().await.unwrap().unwrap();
+                    assert!(msg.is_table());
+                    std::hint::black_box(&msg);
+                    count += 1;
+                }
+                let elapsed = start.elapsed();
+                assert_eq!(count, n);
+
+                writer.await.unwrap();
+                elapsed
+            })
         });
     });
 }
