@@ -388,6 +388,9 @@ fn bench_arrow_flight_compare(c: &mut Criterion) {
         for &streams in PARALLEL_STREAM_COUNTS {
             group.throughput(Throughput::Bytes(logical_payload_bytes_shape(shape, rows, streams)));
             bench_flight_parallel(&mut group, &rt, &arrow_batch, streams);
+            bench_lightstream_tcp_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
+            #[cfg(feature = "protocol")]
+            bench_lightstream_protocol_parallel(&mut group, &rt, &table, &schema, streams);
             #[cfg(feature = "http")]
             bench_lightstream_http2_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
             #[cfg(feature = "quic")]
@@ -631,6 +634,127 @@ fn bench_flight_parallel(
 
                 let _ = shutdown_tx.send(());
                 server.await.unwrap();
+                elapsed
+            }
+        });
+    });
+}
+
+// lightstream TCP across N concurrent connections to one endpoint. TCP has no
+// in-band multiplexing, so each stream is its own connection. The reader merges
+// the connections in global write order under `Ordered`, matching Flight's
+// ordered DoGet streams.
+fn bench_lightstream_tcp_parallel(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+    dict_regs: &[(i64, Vec<String>)],
+    streams: usize,
+) {
+    use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
+    use lightstream::models::writers::parallel::tcp::TcpParallelTableWriter;
+    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
+    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+
+    group.bench_function(format!("lightstream_tcp_parallel_{streams}"), |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            let dict_regs = dict_regs.to_vec();
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let total_tables = iters * streams as u64;
+
+                let server = tokio::spawn(async move {
+                    let reader =
+                        TcpParallelTableReader::accept(&listener, streams, SortBehaviour::Ordered)
+                            .await
+                            .unwrap();
+                    let tables = reader.read_all_tables().await.unwrap();
+                    std::hint::black_box(&tables);
+                    tables.len() as u64
+                });
+
+                let mut writer =
+                    TcpParallelTableWriter::connect(addr, streams, schema, dict_regs, None)
+                        .await
+                        .unwrap();
+
+                let start = std::time::Instant::now();
+                for _ in 0..total_tables {
+                    writer.write_table((*table).clone()).await.unwrap();
+                }
+                writer.finish().await.unwrap();
+                let received = server.await.unwrap();
+                let elapsed = start.elapsed();
+                assert_eq!(received, total_tables);
+                elapsed
+            }
+        });
+    });
+}
+
+// lightstream Lightstream protocol across N concurrent connections to one
+// endpoint. The protocol multiplexes control and data on a connection like
+// Flight, without the gRPC framing. The reader merges the connections in global
+// write order under `Ordered`, matching Flight's ordered DoGet streams.
+#[cfg(feature = "protocol")]
+fn bench_lightstream_protocol_parallel(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+    streams: usize,
+) {
+    use lightstream::models::readers::parallel::lightstream::LightstreamParallelReader;
+    use lightstream::models::writers::parallel::lightstream::LightstreamParallelWriter;
+    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
+    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+
+    const TYPE_NAME: &str = "bench";
+
+    group.bench_function(format!("lightstream_protocol_parallel_{streams}"), |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let total_tables = iters * streams as u64;
+
+                let server_schema = schema.clone();
+                let server = tokio::spawn(async move {
+                    let reader = LightstreamParallelReader::accept(
+                        &listener,
+                        streams,
+                        TYPE_NAME,
+                        server_schema,
+                        SortBehaviour::Ordered,
+                    )
+                    .await
+                    .unwrap();
+                    let tables = reader.read_all_tables().await.unwrap();
+                    std::hint::black_box(&tables);
+                    tables.len() as u64
+                });
+
+                let mut writer =
+                    LightstreamParallelWriter::connect(addr, streams, TYPE_NAME, schema)
+                        .await
+                        .unwrap();
+
+                let start = std::time::Instant::now();
+                for _ in 0..total_tables {
+                    writer.write_table((*table).clone()).await.unwrap();
+                }
+                writer.finish().await.unwrap();
+                let received = server.await.unwrap();
+                let elapsed = start.elapsed();
+                assert_eq!(received, total_tables);
                 elapsed
             }
         });

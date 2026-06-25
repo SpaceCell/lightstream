@@ -328,6 +328,10 @@ pub mod models {
             /// Parallel HTTP/2 table reader.
             #[cfg(feature = "http")]
             pub mod http;
+
+            /// Parallel Lightstream protocol reader.
+            #[cfg(all(feature = "protocol", feature = "tcp"))]
+            pub mod lightstream;
         }
 
         /// UDS table reader
@@ -418,6 +422,10 @@ pub mod models {
             /// Parallel HTTP/2 table writer.
             #[cfg(feature = "http")]
             pub mod http;
+
+            /// Parallel Lightstream protocol writer.
+            #[cfg(all(feature = "protocol", feature = "tcp"))]
+            pub mod lightstream;
         }
 
         /// UDS table writer
