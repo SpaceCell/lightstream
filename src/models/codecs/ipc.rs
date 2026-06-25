@@ -93,8 +93,9 @@ impl<B: StreamBuffer + Unpin> ArrowIpcCodec<B> {
         table: &minarrow::Table,
         out: &mut B,
         base_offset: usize,
+        custom_metadata: Option<&[(String, String)]>,
     ) -> io::Result<usize> {
-        encode_record_batch(&mut self.encoder, table, out, base_offset)
+        encode_record_batch(&mut self.encoder, table, out, base_offset, custom_metadata)
     }
 
     /// Decode a contiguous IPC payload containing schema + dicts + record batch.
@@ -267,7 +268,7 @@ impl Encoder for ArrowIpcCodec<Vec64<u8>> {
 
     fn encode(&mut self, table: &Table) -> io::Result<Vec64<u8>> {
         let mut out: Vec64<u8> = Vec64::new();
-        self.encode_stream_batch(table, &mut out, 0)?;
+        self.encode_stream_batch(table, &mut out, 0, None)?;
         self.finish(&mut out)?;
         Ok(out)
     }

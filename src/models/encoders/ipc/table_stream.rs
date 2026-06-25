@@ -139,6 +139,7 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
             &layout.fb_buffers,
             layout.body_size,
             fb_compression,
+            None,
         )?;
         Ok((meta, body))
     }

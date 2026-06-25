@@ -442,7 +442,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperTable {
         let mut codec = fresh_codec(schema);
         let mut out: Vec64<u8> = Vec64::new();
         for batch in self.batches() {
-            codec.encode_stream_batch(batch.as_ref(), &mut out, 0)?;
+            codec.encode_stream_batch(batch.as_ref(), &mut out, 0, None)?;
         }
         codec.finish(&mut out)?;
         Ok(out)
@@ -494,7 +494,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperArray {
                 "super_array".into(),
                 Some(vec![chunk.clone().fa(name.clone())]),
             );
-            codec.encode_stream_batch(&table, &mut out, 0)?;
+            codec.encode_stream_batch(&table, &mut out, 0, None)?;
         }
         codec.finish(&mut out)?;
         Ok(out)

@@ -99,6 +99,33 @@ where
     pub fn sink_mut(&mut self) -> &mut W {
         &mut self.destination
     }
+
+    /// Encode `table` into the pending frame buffer, attaching `custom_metadata`
+    /// to its record batch message.
+    pub(crate) fn encode_frame(
+        &mut self,
+        table: &Table,
+        custom_metadata: Option<&[(String, String)]>,
+    ) -> io::Result<()> {
+        if self.protocol == IPCMessageProtocol::Stream {
+            // The Stream protocol encodes into a pooled buffer reused across
+            // sends.
+            let mut buf = std::mem::replace(&mut self.encode_buf, B::with_capacity(0));
+            let len = buf.len();
+            if len > 0 {
+                buf.drain(0..len);
+            }
+            self.codec
+                .encode_stream_batch(table, &mut buf, 0, custom_metadata)?;
+            self.frame_buf = Some(buf);
+            self.frame_pos = 0;
+        } else if let Some(writer) = &mut self.file_writer {
+            // The File protocol routes through the frame-by-frame writer that
+            // tracks footer blocks.
+            writer.write(table)?;
+        }
+        Ok(())
+    }
 }
 
 impl<W, B> Sink<Table> for GTableSink<W, B>
@@ -113,26 +140,7 @@ where
     }
 
     fn start_send(self: Pin<&mut Self>, table: Table) -> Result<(), Self::Error> {
-        let this = self.get_mut();
-
-        if this.protocol == IPCMessageProtocol::Stream {
-            // Stream protocol: encode directly into a pooled buffer
-            let mut buf = std::mem::replace(&mut this.encode_buf, B::with_capacity(0));
-            let len = buf.len();
-            if len > 0 {
-                buf.drain(0..len);
-            }
-            this.codec.encode_stream_batch(&table, &mut buf, 0)?;
-            this.frame_buf = Some(buf);
-            this.frame_pos = 0;
-        } else {
-            // File protocol: use the writer for frame-by-frame encoding
-            // with footer block tracking
-            if let Some(writer) = &mut this.file_writer {
-                writer.write(&table)?;
-            }
-        }
-        Ok(())
+        self.get_mut().encode_frame(&table, None)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

@@ -173,7 +173,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
         out.extend_from_slice(&0u32.to_le_bytes());
 
         // Append IPC frames after the TLV header
-        let ipc_len = codec.encode_stream_batch(table, out, 0)?;
+        let ipc_len = codec.encode_stream_batch(table, out, 0, None)?;
 
         // Patch the TLV payload length
         let len_bytes = (ipc_len as u32).to_le_bytes();

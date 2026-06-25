@@ -15,7 +15,7 @@ use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
 use lightstream::models::streams::quic::QuicByteStream;
 use lightstream::models::writers::quic::QuicTableWriter;
 use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
-use lightstream::traits::parallel_transport_reader::ParallelTransportReader;
+use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
 use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 use lightstream::traits::transport_reader::IPCTransportReader;
 use lightstream::traits::transport_writer::IPCTransportWriter;
@@ -366,7 +366,7 @@ async fn test_quic_parallel_roundtrip() {
             vec!["red".to_string(), "green".to_string(), "blue".to_string()],
         )];
         let mut writer =
-            QuicParallelTableWriter::open(&conn, STREAMS, write_schema, dictionaries, None)
+            QuicParallelTableWriter::open_ordered(&conn, STREAMS, write_schema, dictionaries, None)
                 .await
                 .unwrap();
         for _ in 0..TABLES {
@@ -377,7 +377,9 @@ async fn test_quic_parallel_roundtrip() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Auto)
+        .await
+        .unwrap();
     assert_eq!(reader.stream_count(), STREAMS);
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
@@ -385,9 +387,12 @@ async fn test_quic_parallel_roundtrip() {
     writer_handle.await.unwrap();
 
     assert_eq!(tables.len(), TABLES);
-    for t in &tables {
+    // open_ordered tags each table with a monotonic key 0..TABLES; Auto
+    // returns them sorted by that key.
+    for (i, (t, seq)) in tables.iter().enumerate() {
         assert_eq!(t.n_rows, 4);
         assert_eq!(t.cols.len(), 4);
+        assert_eq!(*seq, Some(i as u64));
     }
 }
 
@@ -532,12 +537,14 @@ async fn test_quic_parallel_ordering_and_round_robin() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None)
+        .await
+        .unwrap();
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
     writer_handle.await.unwrap();
 
-    let markers: Vec<i32> = tables.iter().map(marker_of).collect();
+    let markers: Vec<i32> = tables.iter().map(|(t, _)| marker_of(t)).collect();
     assert_eq!(markers.len(), TABLES as usize);
 
     // Every marker arrives once.
@@ -595,13 +602,15 @@ async fn test_quic_parallel_dictionary_per_stream() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None)
+        .await
+        .unwrap();
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
     writer_handle.await.unwrap();
 
     assert_eq!(tables.len(), TABLES);
-    for t in &tables {
+    for (t, _) in &tables {
         assert_eq!(category_labels(t), vec!["red", "green", "blue", "red"]);
     }
 }
@@ -644,12 +653,14 @@ async fn test_quic_parallel_backpressure_under_load() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS).await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None)
+        .await
+        .unwrap();
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
     writer_handle.await.unwrap();
 
-    let mut markers: Vec<i32> = tables.iter().map(marker_of).collect();
+    let mut markers: Vec<i32> = tables.iter().map(|(t, _)| marker_of(t)).collect();
     assert_eq!(markers.len(), TABLES as usize);
     markers.sort();
     assert_eq!(markers, (0..TABLES).collect::<Vec<_>>());

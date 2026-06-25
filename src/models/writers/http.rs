@@ -123,6 +123,18 @@ impl HttpTableWriter {
         let sink = TableSink64::new(write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
     }
+
+    /// Write a single table with Arrow custom_metadata key/value pairs
+    /// attached to its record batch message, then flush.
+    pub async fn write_table_with_metadata(
+        &mut self,
+        table: Table,
+        metadata: Vec<(String, String)>,
+    ) -> io::Result<()> {
+        self.sink.encode_frame(&table, Some(metadata.as_slice()))?;
+        SinkExt::flush(&mut self.sink).await?;
+        Ok(())
+    }
 }
 
 impl IPCTransportWriter for HttpTableWriter {

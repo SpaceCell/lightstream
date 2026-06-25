@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 
 use crate::compression::Compression;
 use crate::models::writers::http::HttpTableWriter;
-use crate::traits::parallel_transport_writer::ParallelTransportWriter;
+use crate::traits::parallel_transport_writer::{ParallelTransportWriter, SEQ_ID_META_KEY};
 use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Bounded depth per stream channel. Lets the producer pipeline a few
@@ -35,9 +35,12 @@ const STREAM_CHANNEL_DEPTH: usize = 8;
 /// stream.
 pub struct HttpParallelTableWriter {
     schema: Vec<Field>,
-    senders: Vec<mpsc::Sender<Table>>,
+    senders: Vec<mpsc::Sender<(Table, Option<u64>)>>,
     tasks: Vec<JoinHandle<io::Result<()>>>,
     next: usize,
+    /// When set, each table is tagged with a monotonic sequence id on its
+    /// record batch message so the receiver can recover global write order.
+    ordered: bool,
 }
 
 impl HttpParallelTableWriter {
@@ -96,17 +99,44 @@ impl HttpParallelTableWriter {
             for (dict_id, values) in &dictionaries {
                 writer.register_dictionary(*dict_id, values.clone());
             }
-            let (tx, mut rx) = mpsc::channel::<Table>(STREAM_CHANNEL_DEPTH);
+            let (tx, mut rx) = mpsc::channel::<(Table, Option<u64>)>(STREAM_CHANNEL_DEPTH);
             let task = tokio::spawn(async move {
-                while let Some(table) = rx.recv().await {
-                    writer.write_table(table).await?;
+                while let Some((table, seq)) = rx.recv().await {
+                    match seq {
+                        Some(seq) => {
+                            writer
+                                .write_table_with_metadata(
+                                    table,
+                                    vec![(SEQ_ID_META_KEY.to_string(), seq.to_string())],
+                                )
+                                .await?
+                        }
+                        None => writer.write_table(table).await?,
+                    }
                 }
                 writer.finish().await
             });
             senders.push(tx);
             tasks.push(task);
         }
-        Ok(Self { schema, senders, tasks, next: 0 })
+        Ok(Self { schema, senders, tasks, next: 0, ordered: false })
+    }
+
+    /// As [`connect`](Self::connect), but tags each table with a monotonic
+    /// sequence id carried on its record batch message envelope as Arrow
+    /// custom_metadata (`ls.seq_id`). The receiver reads the id and sorts on
+    /// it to recover the global write order across streams.
+    pub async fn connect_ordered(
+        url: &str,
+        stream_count: usize,
+        schema: Vec<Field>,
+        dictionaries: Vec<(i64, Vec<String>)>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let mut writer =
+            Self::connect(url, stream_count, schema, dictionaries, compression).await?;
+        writer.ordered = true;
+        Ok(writer)
     }
 }
 
@@ -120,10 +150,11 @@ impl ParallelTransportWriter for HttpParallelTableWriter {
     }
 
     async fn write_table(&mut self, table: Table) -> io::Result<()> {
+        let seq = if self.ordered { Some(self.next as u64) } else { None };
         let idx = self.next % self.senders.len();
         self.next = self.next.wrapping_add(1);
         self.senders[idx]
-            .send(table)
+            .send((table, seq))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream task closed"))
     }

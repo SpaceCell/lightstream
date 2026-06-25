@@ -30,6 +30,16 @@ use crate::traits::stream_buffer::StreamBuffer;
 
 const DEFAULT_CHUNK: usize = 64 * 1024;
 
+/// An owned Arrow `custom_metadata` key/value pair decoded from a record
+/// batch message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyValue {
+    /// Metadata key.
+    pub key: String,
+    /// Metadata value.
+    pub value: String,
+}
+
 /// Two-step read state machine.
 enum Phase {
     /// Accumulating frame headers and metadata.
@@ -41,6 +51,7 @@ enum Phase {
         body_filled: usize,
         body_len: usize,
         body_pad: usize,
+        custom_metadata: Option<Vec<KeyValue>>,
     },
     /// Discarding body padding bytes after a body read.
     SkipPad { remaining: usize },
@@ -188,7 +199,13 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
     /// Start a body read phase: copy overread bytes from the metadata
     /// accumulation buffer into the arena, then transition to
     /// Phase::Body for the remaining bytes.
-    fn begin_body_read(&mut self, meta_bytes: Vec<u8>, body_len: usize, body_pad: usize) {
+    fn begin_body_read(
+        &mut self,
+        meta_bytes: Vec<u8>,
+        body_len: usize,
+        body_pad: usize,
+        custom_metadata: Option<Vec<KeyValue>>,
+    ) {
         // Ensure arena has room for this body
         if self.arena.remaining() < body_len {
             self.arena.recycle_or_reset();
@@ -216,15 +233,19 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
             body_filled: overread,
             body_len,
             body_pad: body_pad - pad_overread,
+            custom_metadata,
         };
     }
 }
 
-impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
-    type Item = io::Result<Table>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
+impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
+    /// Poll for the next decoded table paired with the single custom_metadata
+    /// pair from its record batch message.
+    fn poll_next_keyed(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<io::Result<(Table, Option<Vec<KeyValue>>)>>> {
+        let this = self;
 
         loop {
             match &mut this.phase {
@@ -260,15 +281,29 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                 Phase::Body { .. } => {
                     // Take the phase to avoid borrow conflicts with poll_read_body
                     let phase = std::mem::replace(&mut this.phase, Phase::Metadata);
-                    let (meta_bytes, body_start, mut body_filled, body_len, body_pad) = match phase
-                    {
+                    let (
+                        meta_bytes,
+                        body_start,
+                        mut body_filled,
+                        body_len,
+                        body_pad,
+                        custom_metadata,
+                    ) = match phase {
                         Phase::Body {
                             meta_bytes,
                             body_start,
                             body_filled,
                             body_len,
                             body_pad,
-                        } => (meta_bytes, body_start, body_filled, body_len, body_pad),
+                            custom_metadata,
+                        } => (
+                            meta_bytes,
+                            body_start,
+                            body_filled,
+                            body_len,
+                            body_pad,
+                            custom_metadata,
+                        ),
                         _ => unreachable!(),
                     };
 
@@ -295,7 +330,7 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                                 };
                             }
 
-                            return Poll::Ready(Some(Ok(batch)));
+                            return Poll::Ready(Some(Ok((batch, custom_metadata))));
                         }
                         Poll::Ready(Ok(false)) => {
                             this.phase = Phase::Body {
@@ -304,6 +339,7 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                                 body_filled,
                                 body_len,
                                 body_pad,
+                                custom_metadata,
                             };
                             continue;
                         }
@@ -318,6 +354,7 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                                 body_filled,
                                 body_len,
                                 body_pad,
+                                custom_metadata,
                             };
                             return Poll::Pending;
                         }
@@ -360,13 +397,34 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                                 }
                                 fb::MessageHeader::RecordBatch => {
                                     // Record batch - read body into a dedicated
-                                    // Vec64 for zero-copy SharedBuffer decode
+                                    // Vec64 for zero-copy SharedBuffer decode.
+                                    // Carry the message's first custom_metadata
+                                    // pair coupled with the table. No key is
+                                    // interpreted here.
+                                    let custom_metadata = match af_msg.custom_metadata() {
+                                        None => None,
+                                        Some(kvs) => Some(
+                                            kvs.iter()
+                                                .filter_map(|kv| match (kv.key(), kv.value()) {
+                                                    (Some(k), Some(v)) => Some(KeyValue {
+                                                        key: k.to_string(),
+                                                        value: v.to_string(),
+                                                    }),
+                                                    _ => None,
+                                                })
+                                                .collect(),
+                                        ),
+                                    };
                                     let meta_saved = msg_bytes.to_vec();
                                     let body_pad = consumed - frame.body_range.end;
                                     let body_start = frame.body_range.start;
-                                    let _ = af_msg;
                                     this.drain_consumed(body_start);
-                                    this.begin_body_read(meta_saved, body_len, body_pad);
+                                    this.begin_body_read(
+                                        meta_saved,
+                                        body_len,
+                                        body_pad,
+                                        custom_metadata,
+                                    );
                                     continue;
                                 }
                                 fb::MessageHeader::NONE => {
@@ -400,7 +458,26 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                             let meta_bytes = this.buf[message_range].to_vec();
                             this.drain_consumed(header_consumed);
 
-                            this.begin_body_read(meta_bytes, body_len, body_pad);
+                            // Carry the message's first custom_metadata pair
+                            // coupled with the table. No key is interpreted here.
+                            let kvs = flatbuffers::root::<fb::Message>(&meta_bytes)
+                                .ok()
+                                .and_then(|m| m.custom_metadata());
+                            let custom_metadata = match kvs {
+                                None => None,
+                                Some(kvs) => Some(
+                                    kvs.iter()
+                                        .filter_map(|kv| match (kv.key(), kv.value()) {
+                                            (Some(k), Some(v)) => Some(KeyValue {
+                                                key: k.to_string(),
+                                                value: v.to_string(),
+                                            }),
+                                            _ => None,
+                                        })
+                                        .collect(),
+                                ),
+                            };
+                            this.begin_body_read(meta_bytes, body_len, body_pad, custom_metadata);
                             continue;
                         }
 
@@ -425,5 +502,21 @@ impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
                 }
             }
         }
+    }
+
+    /// Read the next decoded table paired with the single custom_metadata pair
+    /// from its record batch message.
+    pub async fn read_keyed(&mut self) -> Option<io::Result<(Table, Option<Vec<KeyValue>>)>> {
+        std::future::poll_fn(|cx| self.poll_next_keyed(cx)).await
+    }
+}
+
+impl<B: StreamBuffer + Unpin> Stream for TableStreamDecoder<B> {
+    type Item = io::Result<Table>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut()
+            .poll_next_keyed(cx)
+            .map(|opt| opt.map(|res| res.map(|(table, _)| table)))
     }
 }

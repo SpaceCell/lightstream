@@ -8,6 +8,11 @@ use std::io;
 
 use minarrow::{Field, Table};
 
+/// Arrow `custom_metadata` key carrying the per-table sequence id that the
+/// ordered parallel writers attach and the parallel readers surface. The
+/// receiver sorts on it to recover global write order across streams.
+pub(crate) const SEQ_ID_META_KEY: &str = "ls.seq_id";
+
 /// Writes tables across multiple concurrent transport streams.
 pub trait ParallelTransportWriter {
     /// Returns the schema used by all streams.

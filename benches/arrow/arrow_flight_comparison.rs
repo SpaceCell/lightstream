@@ -649,6 +649,7 @@ fn bench_lightstream_http2_parallel(
 ) {
     use lightstream::models::readers::parallel::http::HttpParallelTableReader;
     use lightstream::models::writers::parallel::http::HttpParallelTableWriter;
+    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
     group.bench_function(format!("lightstream_http2_parallel_{streams}"), |b| {
@@ -665,15 +666,13 @@ fn bench_lightstream_http2_parallel(
 
                 let server = tokio::spawn(async move {
                     let (tcp, _peer) = listener.accept().await.unwrap();
-                    let reader = HttpParallelTableReader::from_tcp(tcp, streams).await.unwrap();
-                    let mut reader = std::pin::pin!(reader);
-                    let mut received = 0u64;
-                    while let Some(item) = reader.next().await {
-                        let table = item.unwrap();
-                        std::hint::black_box(&table.cols);
-                        received += 1;
-                    }
-                    received
+                    let reader =
+                        HttpParallelTableReader::from_tcp(tcp, streams, SortBehaviour::Auto)
+                            .await
+                            .unwrap();
+                    let tables = reader.read_all_tables().await.unwrap();
+                    std::hint::black_box(&tables);
+                    tables.len() as u64
                 });
 
                 let mut writer =
@@ -711,6 +710,7 @@ fn bench_lightstream_quic_parallel(
 
     use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
     use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
+    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
     group.bench_function(format!("lightstream_quic_parallel_{streams}"), |b| {
@@ -758,19 +758,17 @@ fn bench_lightstream_quic_parallel(
                 let server = tokio::spawn(async move {
                     let incoming = endpoint.accept().await.unwrap();
                     let conn = incoming.await.unwrap();
-                    let reader = QuicParallelTableReader::accept(&conn, streams).await.unwrap();
-                    let mut reader = std::pin::pin!(reader);
-                    let mut received = 0u64;
-                    while let Some(item) = reader.next().await {
-                        let table = item.unwrap();
-                        std::hint::black_box(&table.cols);
-                        received += 1;
-                    }
-                    // The streams end when the writer FINs them, so the drain
-                    // completes here. The connection and endpoint close on drop
-                    // at the end of this task, keeping the QUIC idle-drain out
-                    // of the timed region.
-                    received
+                    let reader =
+                        QuicParallelTableReader::accept(&conn, streams, SortBehaviour::Auto)
+                            .await
+                            .unwrap();
+                    // read_all_tables collects every stream and reassembles the
+                    // global write order from the sequence keys. The connection
+                    // and endpoint close on drop at the end of this task,
+                    // keeping the QUIC idle-drain out of the timed region.
+                    let tables = reader.read_all_tables().await.unwrap();
+                    std::hint::black_box(&tables);
+                    tables.len() as u64
                 });
 
                 let mut client_ep =

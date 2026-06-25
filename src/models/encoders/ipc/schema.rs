@@ -342,6 +342,7 @@ pub(crate) fn build_flatbuf_recordbatch(
     fb_buffers: &[fbm::Buffer],
     body_len: usize,
     compression: Option<fbm::CompressionType>,
+    custom_metadata: Option<&[(String, String)]>,
 ) -> io::Result<Vec<u8>> {
     fbb.reset();
     let fb_nodes_vec = fbb.create_vector(fb_field_nodes);
@@ -365,6 +366,25 @@ pub(crate) fn build_flatbuf_recordbatch(
             variadicBufferCounts: None,
         },
     );
+    // Attach the supplied key/value pairs as Arrow custom_metadata on the
+    // message envelope.
+    let custom_metadata = match custom_metadata {
+        None => None,
+        Some(pairs) => {
+            let kvs: Vec<_> = pairs
+                .iter()
+                .map(|(key, value)| {
+                    let key = fbb.create_string(key);
+                    let value = fbb.create_string(value);
+                    fbm::KeyValue::create(
+                        fbb,
+                        &fbm::KeyValueArgs { key: Some(key), value: Some(value) },
+                    )
+                })
+                .collect();
+            Some(fbb.create_vector(&kvs))
+        }
+    };
     let meta = fbm::Message::create(
         fbb,
         &fbm::MessageArgs {
@@ -372,7 +392,7 @@ pub(crate) fn build_flatbuf_recordbatch(
             header_type: fbm::MessageHeader::RecordBatch,
             header: Some(rb.as_union_value()),
             bodyLength: body_len as i64,
-            custom_metadata: None,
+            custom_metadata,
         },
     );
     fbb.finish(meta, None);

@@ -328,6 +328,7 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
     table: &minarrow::Table,
     out: &mut B,
     base_offset: usize,
+    custom_metadata: Option<&[(String, String)]>,
 ) -> io::Result<usize> {
     // Register dictionary values from categorical columns
     for (i, col) in table.cols.iter().enumerate() {
@@ -423,6 +424,7 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
         &fb_buffers,
         body_size,
         compression_type,
+        custom_metadata,
     )?;
 
     // Compute IPC frame sizes with alignment
