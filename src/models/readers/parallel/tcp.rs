@@ -1,16 +1,17 @@
-//! # Parallel QUIC table reader
+//! # Parallel TCP table reader
 //!
-//! Accepts several concurrent QUIC streams on a single
-//! [`quinn::Connection`] and decodes them across cores, one task per
-//! stream. Each task feeds its own channel, and the reader merges the
-//! channels into a single table stream. Each table is paired with its
-//! sequence key - `Some` when the peer used an ordered writer, `None`
-//! otherwise.
+//! Accepts several concurrent TCP connections on a [`TcpListener`] and decodes
+//! them across cores, one task per connection. Each task feeds its own
+//! channel, and the reader merges the channels into a single table stream.
+//! Each table is paired with its sequence key - `Some` when the peer used an
+//! ordered writer, `None` otherwise.
 //!
 //! Under [`SortBehaviour::None`] and [`SortBehaviour::RequestKeys`] tables
-//! surface in the order the streams produce them. Under
-//! [`SortBehaviour::Ordered`] the reader pulls the streams in the writer's
-//! round-robin rotation, so tables surface in global write order.
+//! surface in the order the connections produce them. Under
+//! [`SortBehaviour::Ordered`] the reader pulls the connections in the writer's
+//! round-robin rotation, so tables surface in global write order. Connections
+//! are accepted in order, so the `i`-th accepted connection pairs with the
+//! writer's `i`-th connection.
 
 use std::io;
 use std::pin::Pin;
@@ -19,44 +20,44 @@ use std::task::{Context, Poll};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use minarrow::{Table, Vec64};
-use quinn::Connection;
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::decoders::ipc::table_stream_decoder::TableStreamDecoder;
-use crate::models::streams::quic::QuicByteStream;
 use crate::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
 use crate::traits::parallel_transport_writer::SEQ_ID_META_KEY;
 
-/// Bounded depth of each per-stream channel. Lets a stream task decode a few
-/// tables ahead of the consumer without unbounded buffering, and applies
-/// backpressure to a stream that runs ahead of the rotation.
+/// Bounded depth of each per-connection channel. Lets a connection task decode
+/// a few tables ahead of the consumer without unbounded buffering, and applies
+/// backpressure to a connection that runs ahead of the rotation.
 const STREAM_CHANNEL_DEPTH: usize = 8;
 
 type StreamItem = io::Result<(Table, Option<u64>)>;
 
-/// Async Arrow IPC reader that decodes several concurrent QUIC streams on
-/// one connection in parallel and merges them into a single table stream.
-pub struct QuicParallelTableReader {
+/// Async Arrow IPC reader that decodes several concurrent TCP connections in
+/// parallel and merges them into a single table stream.
+pub struct TcpParallelTableReader {
     streams: Vec<mpsc::Receiver<StreamItem>>,
     tasks: Vec<JoinHandle<()>>,
     stream_count: usize,
     sort: SortBehaviour,
-    /// Next stream to pull. Under `Ordered` this walks the writer's rotation;
-    /// otherwise it rotates the starting point so no stream is starved.
+    /// Next connection to pull. Under `Ordered` this walks the writer's
+    /// rotation; otherwise it rotates the starting point so no connection is
+    /// starved.
     cursor: usize,
-    /// Tracks which streams have closed, used by the arrival-order merge to
-    /// end once every stream is drained.
+    /// Tracks which connections have closed, used by the arrival-order merge to
+    /// end once every connection is drained.
     closed: Vec<bool>,
 }
 
-impl QuicParallelTableReader {
-    /// Accept `stream_count` unidirectional QUIC streams on `conn` and decode
-    /// each on its own task. `sort` selects whether sequence keys are surfaced
-    /// and whether tables are emitted in global write order.
+impl TcpParallelTableReader {
+    /// Accept `stream_count` TCP connections on `listener` and decode each on
+    /// its own task. `sort` selects whether sequence keys are surfaced and
+    /// whether tables are emitted in global write order.
     pub async fn accept(
-        conn: &Connection,
+        listener: &TcpListener,
         stream_count: usize,
         sort: SortBehaviour,
     ) -> io::Result<Self> {
@@ -64,10 +65,10 @@ impl QuicParallelTableReader {
         let mut streams = Vec::with_capacity(stream_count);
         let mut tasks = Vec::with_capacity(stream_count);
         for _ in 0..stream_count {
-            let recv = conn.accept_uni().await.map_err(io::Error::other)?;
+            let (tcp, _peer) = listener.accept().await?;
             let mut decoder = TableStreamDecoder::<Vec64<u8>>::new(
-                QuicByteStream::new(recv, BufferChunkSize::WebTransport),
-                BufferChunkSize::WebTransport.chunk_size(),
+                tcp,
+                BufferChunkSize::Http.chunk_size(),
                 IPCMessageProtocol::Stream,
                 None,
             );
@@ -112,14 +113,14 @@ impl QuicParallelTableReader {
     }
 }
 
-impl Stream for QuicParallelTableReader {
+impl Stream for TcpParallelTableReader {
     type Item = StreamItem;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         if this.sort == SortBehaviour::Ordered {
-            // Pull the streams in the writer's rotation. The next sequence id
-            // is always the head of stream `cursor % stream_count`, so a
+            // Pull the connections in the writer's rotation. The next sequence
+            // id is always the head of connection `cursor % stream_count`, so a
             // single targeted recv yields the next table in global order. A
             // closed target means that sequence will never arrive, ending the
             // merged stream.
@@ -134,9 +135,9 @@ impl Stream for QuicParallelTableReader {
             };
         }
 
-        // Arrival-order merge. Scan the streams from a rotating start so a
-        // single busy stream cannot starve the others, returning the first
-        // ready table and ending once every stream has closed.
+        // Arrival-order merge. Scan the connections from a rotating start so a
+        // single busy connection cannot starve the others, returning the first
+        // ready table and ending once every connection has closed.
         let n = this.stream_count;
         let mut any_pending = false;
         for offset in 0..n {
@@ -161,7 +162,7 @@ impl Stream for QuicParallelTableReader {
     }
 }
 
-impl ParallelTransportReader for QuicParallelTableReader {
+impl ParallelTransportReader for TcpParallelTableReader {
     fn stream_count(&self) -> usize {
         self.stream_count
     }
@@ -175,7 +176,7 @@ impl ParallelTransportReader for QuicParallelTableReader {
     }
 }
 
-impl Drop for QuicParallelTableReader {
+impl Drop for TcpParallelTableReader {
     fn drop(&mut self) {
         for task in &self.tasks {
             task.abort();

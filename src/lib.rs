@@ -317,6 +317,10 @@ pub mod models {
         /// Parallel transport readers - merge several concurrent streams
         /// on one connection into a single table stream.
         pub mod parallel {
+            /// Parallel TCP table reader.
+            #[cfg(feature = "tcp")]
+            pub mod tcp;
+
             /// Parallel QUIC table reader.
             #[cfg(feature = "quic")]
             pub mod quic;
@@ -403,6 +407,10 @@ pub mod models {
         /// Parallel transport writers - fan a table sequence across
         /// several concurrent streams on one connection.
         pub mod parallel {
+            /// Parallel TCP table writer.
+            #[cfg(feature = "tcp")]
+            pub mod tcp;
+
             /// Parallel QUIC table writer.
             #[cfg(feature = "quic")]
             pub mod quic;

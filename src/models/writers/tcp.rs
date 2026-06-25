@@ -72,6 +72,18 @@ impl TcpTableWriter {
         Ok(Self { sink })
     }
 
+    /// Write a single table with Arrow custom_metadata key/value pairs
+    /// attached to its record batch message, then flush.
+    pub async fn write_table_with_metadata(
+        &mut self,
+        table: Table,
+        metadata: Vec<(String, String)>,
+    ) -> io::Result<()> {
+        self.sink.encode_frame(&table, Some(metadata.as_slice()))?;
+        SinkExt::flush(&mut self.sink).await?;
+        Ok(())
+    }
+
     /// Connect to a TCP server, upgrade the channel to TLS via the supplied
     /// `rustls::ClientConfig`, and return a table writer over the encrypted
     /// channel. Pass `None` for `compression` to write uncompressed batches.

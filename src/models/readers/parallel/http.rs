@@ -1,15 +1,17 @@
 //! # Parallel HTTP/2 table reader
 //!
 //! Accepts several concurrent HTTP/2 request streams on one server
-//! connection and decodes them across cores, one task per stream, merging
-//! the results through a channel into a single table stream. Each table is
-//! paired with its sequence key - `Some` when the peer used an ordered
-//! writer, `None` otherwise.
+//! connection and decodes them across cores, one task per stream. Each task
+//! feeds its own channel, and the reader merges the channels into a single
+//! table stream. Each table is paired with its sequence key - `Some` when the
+//! peer used an ordered writer, `None` otherwise.
 //!
 //! The h2 server connection is the I/O driver for the in-flight request
 //! bodies, so a background task keeps it polled while the accepted streams
-//! decode. Tables arrive in the order the streams produce them; read with
-//! [`SortBehaviour::Auto`] or sort on the keys to recover global write order.
+//! decode. Under [`SortBehaviour::None`] and [`SortBehaviour::RequestKeys`]
+//! tables surface in the order the streams produce them. Under
+//! [`SortBehaviour::Ordered`] the reader pulls the streams in the writer's
+//! round-robin rotation, so tables surface in global write order.
 
 use std::io;
 use std::pin::Pin;
@@ -17,6 +19,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_core::Stream;
+use futures_util::StreamExt;
 use http::Response;
 use minarrow::{Table, Vec64};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -37,19 +40,28 @@ use crate::traits::parallel_transport_writer::SEQ_ID_META_KEY;
 /// few-millisecond cross-host link would otherwise dominate the transfer.
 const STREAM_WINDOW_BYTES: u32 = 8 * 1024 * 1024;
 
-/// Bounded depth of the merge channel. Lets each stream task decode a few
-/// tables ahead of the consumer without unbounded buffering.
-const MERGE_CHANNEL_DEPTH: usize = 8;
+/// Bounded depth of each per-stream channel. Lets a stream task decode a few
+/// tables ahead of the consumer without unbounded buffering, and applies
+/// backpressure to a stream that runs ahead of the rotation.
+const STREAM_CHANNEL_DEPTH: usize = 8;
+
+type StreamItem = io::Result<(Table, Option<u64>)>;
 
 /// Async Arrow IPC reader that decodes several concurrent HTTP/2 request
 /// streams on one server connection in parallel and merges them into a
 /// single table stream.
 pub struct HttpParallelTableReader {
-    rx: mpsc::Receiver<io::Result<(Table, Option<u64>)>>,
+    streams: Vec<mpsc::Receiver<StreamItem>>,
     tasks: Vec<JoinHandle<()>>,
     driver: JoinHandle<()>,
     stream_count: usize,
     sort: SortBehaviour,
+    /// Next stream to pull. Under `Ordered` this walks the writer's rotation;
+    /// otherwise it rotates the starting point so no stream is starved.
+    cursor: usize,
+    /// Tracks which streams have closed, used by the arrival-order merge to
+    /// end once every stream is drained.
+    closed: Vec<bool>,
 }
 
 impl HttpParallelTableReader {
@@ -57,7 +69,7 @@ impl HttpParallelTableReader {
     /// `connection` and decode each on its own task. A headers-only 200 is
     /// returned on each stream so the client's response drain resolves while
     /// the request body keeps uploading. `sort` selects whether sequence keys
-    /// are surfaced and whether `read_all_tables` returns them sorted.
+    /// are surfaced and whether tables are emitted in global write order.
     pub async fn accept<T>(
         mut connection: h2::server::Connection<T, Bytes>,
         stream_count: usize,
@@ -67,7 +79,7 @@ impl HttpParallelTableReader {
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         assert!(stream_count >= 1, "stream_count must be at least 1");
-        let (tx, rx) = mpsc::channel(MERGE_CHANNEL_DEPTH);
+        let mut streams = Vec::with_capacity(stream_count);
         let mut tasks = Vec::with_capacity(stream_count);
         for _ in 0..stream_count {
             let (request, mut respond) = connection
@@ -93,7 +105,7 @@ impl HttpParallelTableReader {
                 IPCMessageProtocol::Stream,
                 None,
             );
-            let tx = tx.clone();
+            let (tx, rx) = mpsc::channel(STREAM_CHANNEL_DEPTH);
             let task = tokio::spawn(async move {
                 loop {
                     match decoder.read_keyed().await {
@@ -120,13 +132,22 @@ impl HttpParallelTableReader {
                     }
                 }
             });
+            streams.push(rx);
             tasks.push(task);
         }
         // Keep polling the connection so the accepted request bodies receive
         // their data frames. The loop ends when the peer closes; Drop aborts
         // it otherwise.
         let driver = tokio::spawn(async move { while connection.accept().await.is_some() {} });
-        Ok(Self { rx, tasks, driver, stream_count, sort })
+        Ok(Self {
+            streams,
+            tasks,
+            driver,
+            stream_count,
+            sort,
+            cursor: 0,
+            closed: vec![false; stream_count],
+        })
     }
 
     /// Run the h2 server handshake on an accepted TCP stream with
@@ -152,10 +173,51 @@ impl HttpParallelTableReader {
 }
 
 impl Stream for HttpParallelTableReader {
-    type Item = io::Result<(Table, Option<u64>)>;
+    type Item = StreamItem;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut().rx.poll_recv(cx)
+        let this = self.get_mut();
+        if this.sort == SortBehaviour::Ordered {
+            // Pull the streams in the writer's rotation. The next sequence id
+            // is always the head of stream `cursor % stream_count`, so a
+            // single targeted recv yields the next table in global order. A
+            // closed target means that sequence will never arrive, ending the
+            // merged stream.
+            let idx = this.cursor % this.stream_count;
+            return match this.streams[idx].poll_recv(cx) {
+                Poll::Ready(Some(item)) => {
+                    this.cursor += 1;
+                    Poll::Ready(Some(item))
+                }
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            };
+        }
+
+        // Arrival-order merge. Scan the streams from a rotating start so a
+        // single busy stream cannot starve the others, returning the first
+        // ready table and ending once every stream has closed.
+        let n = this.stream_count;
+        let mut any_pending = false;
+        for offset in 0..n {
+            let idx = (this.cursor + offset) % n;
+            if this.closed[idx] {
+                continue;
+            }
+            match this.streams[idx].poll_recv(cx) {
+                Poll::Ready(Some(item)) => {
+                    this.cursor = (idx + 1) % n;
+                    return Poll::Ready(Some(item));
+                }
+                Poll::Ready(None) => this.closed[idx] = true,
+                Poll::Pending => any_pending = true,
+            }
+        }
+        if any_pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(None)
+        }
     }
 }
 
@@ -166,11 +228,8 @@ impl ParallelTransportReader for HttpParallelTableReader {
 
     async fn read_all_tables(mut self) -> io::Result<Vec<(Table, Option<u64>)>> {
         let mut out = Vec::new();
-        while let Some(item) = self.rx.recv().await {
+        while let Some(item) = self.next().await {
             out.push(item?);
-        }
-        if self.sort == SortBehaviour::Auto {
-            out.sort_by_key(|(_, seq)| (*seq).unwrap_or(u64::MAX));
         }
         Ok(out)
     }

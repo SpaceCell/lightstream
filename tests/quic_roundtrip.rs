@@ -377,7 +377,7 @@ async fn test_quic_parallel_roundtrip() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Auto)
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Ordered)
         .await
         .unwrap();
     assert_eq!(reader.stream_count(), STREAMS);
@@ -387,8 +387,8 @@ async fn test_quic_parallel_roundtrip() {
     writer_handle.await.unwrap();
 
     assert_eq!(tables.len(), TABLES);
-    // open_ordered tags each table with a monotonic key 0..TABLES; Auto
-    // returns them sorted by that key.
+    // open_ordered tags each table with a monotonic key 0..TABLES; Ordered
+    // emits them in ascending key order across the streams.
     for (i, (t, seq)) in tables.iter().enumerate() {
         assert_eq!(t.n_rows, 4);
         assert_eq!(t.cols.len(), 4);
@@ -560,6 +560,63 @@ async fn test_quic_parallel_ordering_and_round_robin() {
         let mut ascending = stream_markers.clone();
         ascending.sort();
         assert_eq!(stream_markers, ascending, "stream {residue} arrived out of order");
+    }
+}
+
+/// The Ordered merge emits tables in global write order even when the streams
+/// carry uneven counts. With 42 tables over 4 streams the streams hold
+/// 11/11/10/10 tables, so the rotation must terminate on the short streams
+/// without dropping or reordering. Each table's surfaced key equals its write
+/// index.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_quic_parallel_ordered_uneven_streams() {
+    let schema = vec![Field {
+        name: "marker".into(),
+        dtype: ArrowType::Int32,
+        nullable: false,
+        metadata: Default::default(),
+    }];
+
+    let server_config = make_server_config();
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    const STREAMS: usize = 4;
+    const TABLES: i32 = 42;
+
+    let write_schema = schema.clone();
+    let writer_handle = tokio::spawn(async move {
+        let client_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let conn = client_endpoint
+            .connect_with(make_client_config(), addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let mut writer =
+            QuicParallelTableWriter::open_ordered(&conn, STREAMS, write_schema, Vec::new(), None)
+                .await
+                .unwrap();
+        for i in 0..TABLES {
+            writer.write_table(make_marked_table(i)).await.unwrap();
+        }
+        writer.finish().await.unwrap();
+        conn.closed().await;
+    });
+
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Ordered)
+        .await
+        .unwrap();
+    let tables = reader.read_all_tables().await.unwrap();
+    conn.close(0u32.into(), b"done");
+    writer_handle.await.unwrap();
+
+    assert_eq!(tables.len(), TABLES as usize);
+    // Ordered emits in global write order, and the surfaced key matches the
+    // write index of each table.
+    for (i, (table, seq)) in tables.iter().enumerate() {
+        assert_eq!(marker_of(table), i as i32, "table {i} arrived out of order");
+        assert_eq!(*seq, Some(i as u64));
     }
 }
 

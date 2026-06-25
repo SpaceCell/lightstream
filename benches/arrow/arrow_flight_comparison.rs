@@ -667,7 +667,7 @@ fn bench_lightstream_http2_parallel(
                 let server = tokio::spawn(async move {
                     let (tcp, _peer) = listener.accept().await.unwrap();
                     let reader =
-                        HttpParallelTableReader::from_tcp(tcp, streams, SortBehaviour::Auto)
+                        HttpParallelTableReader::from_tcp(tcp, streams, SortBehaviour::Ordered)
                             .await
                             .unwrap();
                     let tables = reader.read_all_tables().await.unwrap();
@@ -759,7 +759,7 @@ fn bench_lightstream_quic_parallel(
                     let incoming = endpoint.accept().await.unwrap();
                     let conn = incoming.await.unwrap();
                     let reader =
-                        QuicParallelTableReader::accept(&conn, streams, SortBehaviour::Auto)
+                        QuicParallelTableReader::accept(&conn, streams, SortBehaviour::Ordered)
                             .await
                             .unwrap();
                     // read_all_tables collects every stream and reassembles the
