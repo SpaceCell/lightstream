@@ -19,6 +19,7 @@ use minarrow::Field;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::models::codecs::lightstream::LightstreamCodec;
+use crate::models::frames::lightstream_message::LightstreamMessage;
 use crate::traits::stream_buffer::StreamBuffer;
 
 /// Async writer for the Lightstream protocol.
@@ -83,6 +84,23 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
         })?;
         self.codec.encode_table(tag, table, &mut self.encode_buf)?;
         self.dest.write_all(self.encode_buf.as_ref()).await?;
+        Ok(())
+    }
+
+    /// Send a frame - a message payload or an Arrow table - by its type tag.
+    /// Mirrors the [`LightstreamMessage`] the reader produces, so a frame can be
+    /// forwarded without re-resolving its type name.
+    pub async fn send_frame(&mut self, frame: &LightstreamMessage) -> io::Result<()> {
+        match frame {
+            LightstreamMessage::Message { tag, payload } => {
+                let encoded = self.codec.encode_message(*tag, payload)?;
+                self.dest.write_all(encoded.as_ref()).await?;
+            }
+            LightstreamMessage::Table { tag, table } => {
+                self.codec.encode_table(*tag, table, &mut self.encode_buf)?;
+                self.dest.write_all(self.encode_buf.as_ref()).await?;
+            }
+        }
         Ok(())
     }
 

@@ -708,8 +708,7 @@ fn bench_lightstream_protocol_parallel(
 ) {
     use lightstream::models::readers::parallel::lightstream::LightstreamParallelReader;
     use lightstream::models::writers::parallel::lightstream::LightstreamParallelWriter;
-    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
-    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+    use lightstream::traits::parallel_transport_reader::SortBehaviour;
 
     const TYPE_NAME: &str = "bench";
 
@@ -725,28 +724,31 @@ fn bench_lightstream_protocol_parallel(
 
                 let server_schema = schema.clone();
                 let server = tokio::spawn(async move {
+                    let table_types = [(TYPE_NAME, server_schema)];
                     let reader = LightstreamParallelReader::accept(
                         &listener,
                         streams,
-                        TYPE_NAME,
-                        server_schema,
+                        &[],
+                        &table_types,
                         SortBehaviour::Ordered,
                     )
                     .await
                     .unwrap();
-                    let tables = reader.read_all_tables().await.unwrap();
-                    std::hint::black_box(&tables);
-                    tables.len() as u64
+                    let frames = reader.read_all().await.unwrap();
+                    let received = frames.iter().filter(|m| m.is_table()).count() as u64;
+                    std::hint::black_box(&frames);
+                    received
                 });
 
+                let table_types = [(TYPE_NAME, schema)];
                 let mut writer =
-                    LightstreamParallelWriter::connect(addr, streams, TYPE_NAME, schema)
+                    LightstreamParallelWriter::connect(addr, streams, &[], &table_types)
                         .await
                         .unwrap();
 
                 let start = std::time::Instant::now();
                 for _ in 0..total_tables {
-                    writer.write_table((*table).clone()).await.unwrap();
+                    writer.send_table(TYPE_NAME, (*table).clone()).await.unwrap();
                 }
                 writer.finish().await.unwrap();
                 let received = server.await.unwrap();

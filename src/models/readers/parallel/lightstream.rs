@@ -3,16 +3,17 @@
 //! Accepts several concurrent Lightstream protocol connections on a
 //! [`TcpListener`] and decodes them across cores, one task per connection.
 //! Each task feeds its own channel, and the reader merges the channels into a
-//! single table stream.
+//! single frame stream of [`LightstreamMessage`] values, so protobuf messages
+//! and Arrow tables share the wire.
 //!
-//! A single table type is registered on every connection at
-//! [`accept`](LightstreamParallelReader::accept). Tables pair with a key of
-//! `None`, since the protocol frame carries no per-table sequence. Under
-//! [`SortBehaviour::None`] and [`SortBehaviour::RequestKeys`] tables surface in
-//! the order the connections produce them. Under [`SortBehaviour::Ordered`] the
-//! reader pulls the connections in the writer's round-robin rotation, so tables
-//! surface in global write order. Connections are accepted in order, so the
-//! `i`-th accepted connection pairs with the writer's `i`-th connection.
+//! Message and table types are registered on every connection at
+//! [`accept`](LightstreamParallelReader::accept). Under [`SortBehaviour::None`]
+//! and [`SortBehaviour::RequestKeys`] frames surface in the order the
+//! connections produce them. Under [`SortBehaviour::Ordered`] the reader pulls
+//! the connections in the writer's round-robin rotation, so frames surface in
+//! global send order. Each connection announces its index before any frames,
+//! so it is placed by that index rather than by accept order - the global order
+//! holds regardless of the order the connections are established.
 
 use std::io;
 use std::pin::Pin;
@@ -20,23 +21,25 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use minarrow::{Field, Table, Vec64};
+use minarrow::{Field, Vec64};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::models::frames::lightstream_message::LightstreamMessage;
 use crate::models::readers::lightstream::LightstreamReader;
-use crate::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
+use crate::traits::parallel_transport_reader::SortBehaviour;
 
 /// Bounded depth of each per-connection channel. Lets a connection task decode
-/// a few tables ahead of the consumer without unbounded buffering, and applies
+/// a few frames ahead of the consumer without unbounded buffering, and applies
 /// backpressure to a connection that runs ahead of the rotation.
 const STREAM_CHANNEL_DEPTH: usize = 8;
 
-type StreamItem = io::Result<(Table, Option<u64>)>;
+type StreamItem = io::Result<LightstreamMessage>;
 
 /// Async Lightstream protocol reader that decodes several concurrent
-/// connections in parallel and merges them into a single table stream.
+/// connections in parallel and merges them into a single frame stream.
 pub struct LightstreamParallelReader {
     streams: Vec<mpsc::Receiver<StreamItem>>,
     tasks: Vec<JoinHandle<()>>,
@@ -53,34 +56,55 @@ pub struct LightstreamParallelReader {
 
 impl LightstreamParallelReader {
     /// Accept `stream_count` Lightstream protocol connections on `listener`,
-    /// register `type_name` with `schema` on each, and decode each on its own
-    /// task. `sort` selects whether tables are emitted in global write order.
+    /// registering each name in `messages` and each `(name, schema)` in
+    /// `tables` on every connection in that order, and decode each on its own
+    /// task. `sort` selects whether frames are emitted in global send order.
     pub async fn accept(
         listener: &TcpListener,
         stream_count: usize,
-        type_name: &str,
-        schema: Vec<Field>,
+        messages: &[&str],
+        tables: &[(&str, Vec<Field>)],
         sort: SortBehaviour,
     ) -> io::Result<Self> {
         assert!(stream_count >= 1, "stream_count must be at least 1");
-        let mut streams = Vec::with_capacity(stream_count);
+        let mut slots: Vec<Option<mpsc::Receiver<StreamItem>>> =
+            (0..stream_count).map(|_| None).collect();
         let mut tasks = Vec::with_capacity(stream_count);
         for _ in 0..stream_count {
             let (socket, _peer) = listener.accept().await?;
-            let (read_half, _write_half) = socket.into_split();
+            let (mut read_half, _write_half) = socket.into_split();
+            // Read the connection's announced index, then slot it by that index
+            // so the writer-to-reader connection mapping does not depend on the
+            // order connections were accepted.
+            let mut index_byte = [0u8; 1];
+            read_half.read_exact(&mut index_byte).await?;
+            let index = index_byte[0] as usize;
+            if index >= stream_count {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("connection index {index} out of range for {stream_count} streams"),
+                ));
+            }
+            if slots[index].is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("duplicate connection index {index}"),
+                ));
+            }
             let mut reader = LightstreamReader::<Vec64<u8>>::new(read_half);
-            reader.register_table(type_name, schema.clone());
+            for name in messages {
+                reader.register_message(*name);
+            }
+            for (name, schema) in tables {
+                reader.register_table(*name, schema.clone());
+            }
             let (tx, rx) = mpsc::channel(STREAM_CHANNEL_DEPTH);
             let task = tokio::spawn(async move {
                 while let Some(item) = reader.next().await {
                     match item {
                         Ok(message) => {
-                            // Only tables are part of the merged table stream;
-                            // other message types are skipped.
-                            if let Some(table) = message.into_table() {
-                                if tx.send(Ok((table, None))).await.is_err() {
-                                    break;
-                                }
+                            if tx.send(Ok(message)).await.is_err() {
+                                break;
                             }
                         }
                         Err(e) => {
@@ -90,9 +114,11 @@ impl LightstreamParallelReader {
                     }
                 }
             });
-            streams.push(rx);
+            slots[index] = Some(rx);
             tasks.push(task);
         }
+        let streams: Vec<mpsc::Receiver<StreamItem>> =
+            slots.into_iter().map(|slot| slot.expect("every connection index filled")).collect();
         Ok(Self {
             streams,
             tasks,
@@ -102,6 +128,20 @@ impl LightstreamParallelReader {
             closed: vec![false; stream_count],
         })
     }
+
+    /// Number of connections being merged.
+    pub fn stream_count(&self) -> usize {
+        self.stream_count
+    }
+
+    /// Read every connection to completion and return the merged frames.
+    pub async fn read_all(mut self) -> io::Result<Vec<LightstreamMessage>> {
+        let mut out = Vec::new();
+        while let Some(item) = self.next().await {
+            out.push(item?);
+        }
+        Ok(out)
+    }
 }
 
 impl Stream for LightstreamParallelReader {
@@ -110,7 +150,7 @@ impl Stream for LightstreamParallelReader {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         if this.sort == SortBehaviour::Ordered {
-            // Pull the connections in the writer's rotation. The next table in
+            // Pull the connections in the writer's rotation. The next frame in
             // global order is always the head of connection
             // `cursor % stream_count`, so a single targeted recv yields it. A
             // closed target means that position will never arrive, ending the
@@ -128,7 +168,7 @@ impl Stream for LightstreamParallelReader {
 
         // Arrival-order merge. Scan the connections from a rotating start so a
         // single busy connection cannot starve the others, returning the first
-        // ready table and ending once every connection has closed.
+        // ready frame and ending once every connection has closed.
         let n = this.stream_count;
         let mut any_pending = false;
         for offset in 0..n {
@@ -150,20 +190,6 @@ impl Stream for LightstreamParallelReader {
         } else {
             Poll::Ready(None)
         }
-    }
-}
-
-impl ParallelTransportReader for LightstreamParallelReader {
-    fn stream_count(&self) -> usize {
-        self.stream_count
-    }
-
-    async fn read_all_tables(mut self) -> io::Result<Vec<(Table, Option<u64>)>> {
-        let mut out = Vec::new();
-        while let Some(item) = self.next().await {
-            out.push(item?);
-        }
-        Ok(out)
     }
 }
 

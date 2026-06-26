@@ -233,6 +233,11 @@ path = "examples/lightstream/protocol.rs"
 required-features = ["protocol", "tcp", "msgpack"]
 
 [[example]]
+name = "protobuf_arrow_lightstream"
+path = "examples/lightstream/protobuf_arrow.rs"
+required-features = ["protocol", "tcp", "protobuf"]
+
+[[example]]
 name = "tcp_lightstream"
 path = "examples/tcp/lightstream.rs"
 required-features = ["protocol", "tcp", "msgpack"]
