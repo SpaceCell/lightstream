@@ -2,7 +2,7 @@
 //!
 //! Each [`BenchMatrix`] cell runs the same workload over Arrow Flight and
 //! Lightstream TCP on loopback. Both servers run in-process and listen on
-//! `127.0.0.1`. Only the client receive loop is timed; connection setup,
+//! `127.0.0.1`. Only the client receive loop is timed. Connection setup,
 //! schema negotiation and per-iteration buffer construction are excluded.
 //!
 //! Arrow Flight uses 8 MiB HTTP/2 flow-control windows and increased gRPC
@@ -641,9 +641,8 @@ fn bench_flight_parallel(
 }
 
 // lightstream TCP across N concurrent connections to one endpoint. TCP has no
-// in-band multiplexing, so each stream is its own connection. The reader merges
-// the connections in global write order under `Ordered`, matching Flight's
-// ordered DoGet streams.
+// in-band multiplexing, so each connection carries its own stream. The reader
+// merges the connections in global write order under `Ordered`.
 fn bench_lightstream_tcp_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
@@ -697,10 +696,8 @@ fn bench_lightstream_tcp_parallel(
     });
 }
 
-// lightstream Lightstream protocol across N concurrent connections to one
-// endpoint. The protocol multiplexes control and data on a connection like
-// Flight, without the gRPC framing. The reader merges the connections in global
-// write order under `Ordered`, matching Flight's ordered DoGet streams.
+// Lightstream protocol across N concurrent connections to one endpoint. The
+// reader merges the connections in global write order under `Ordered`.
 #[cfg(feature = "protocol")]
 fn bench_lightstream_protocol_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,

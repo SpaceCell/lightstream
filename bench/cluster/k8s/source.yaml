@@ -1,0 +1,69 @@
+# Source deployment and ClusterIP service for the cross-host throughput benchmark. The
+# source serves Arrow Flight DoGet and a latency echo, and pushes the matched
+# Lightstream protocol workload to the sink. The sink reaches it by DNS.
+# `run.sh` substitutes the template variables before applying the manifest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-vpc-source
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: source
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bench
+      role: source
+  template:
+    metadata:
+      labels:
+        app: bench
+        role: source
+    spec:
+      containers:
+        - name: source
+          image: ${IMAGE}
+          imagePullPolicy: ${IMAGE_PULL_POLICY}
+          command: ["bench_vpc_source"]
+          args:
+            - "--shape"
+            - "${SHAPE}"
+            - "--rows"
+            - "${ROWS}"
+            - "--batches-per-stream"
+            - "${BATCHES_PER_STREAM}"
+            - "--streams"
+            - "${STREAMS}"
+            - "--flight-bind"
+            - "0.0.0.0:${FLIGHT_PORT}"
+            - "--echo-bind"
+            - "0.0.0.0:${ECHO_PORT}"
+            - "--sink-ls-addr"
+            - "bench-vpc-sink.${NAMESPACE}.svc.cluster.local:${LS_PORT}"
+          ports:
+            - containerPort: ${FLIGHT_PORT}
+              name: flight
+            - containerPort: ${ECHO_PORT}
+              name: echo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-vpc-source
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: source
+spec:
+  selector:
+    app: bench
+    role: source
+  ports:
+    - name: flight
+      port: ${FLIGHT_PORT}
+      targetPort: ${FLIGHT_PORT}
+    - name: echo
+      port: ${ECHO_PORT}
+      targetPort: ${ECHO_PORT}

@@ -30,3 +30,6 @@ target
 # Pyarrow roundtrip testing
 python
 .vscode/
+
+# Cross-host benchmark result captures written by bench/cluster/run.sh
+bench/cluster/results-*.txt

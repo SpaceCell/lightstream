@@ -253,6 +253,16 @@ path = "bench/aws/receiver.rs"
 required-features = ["tcp"]
 
 [[example]]
+name = "bench_vpc_source"
+path = "bench/cluster/source.rs"
+required-features = ["bench_arrow_flight", "tcp", "protocol"]
+
+[[example]]
+name = "bench_vpc_sink"
+path = "bench/cluster/sink.rs"
+required-features = ["bench_arrow_flight", "tcp", "protocol"]
+
+[[example]]
 name = "tcp_arrow_tls"
 path = "examples/tcp/arrow_tls.rs"
 required-features = ["tcp", "tls"]

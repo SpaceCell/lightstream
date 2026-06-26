@@ -1,0 +1,75 @@
+# Sink job and ClusterIP service for the cross-host throughput benchmark. For
+# each stream count the sink receives the same workload twice and times each
+# transfer independently. One transfer arrives over Arrow Flight, the other over
+# the Lightstream protocol parallel reader. It writes one RESULT line per
+# transport to standard output. `run.sh` substitutes the template variables
+# before applying.
+#
+# Required pod anti-affinity places the sink on a different node from the source
+# so traffic crosses the pod-to-pod network rather than the local loopback path.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-vpc-sink
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: sink
+spec:
+  selector:
+    app: bench
+    role: sink
+  ports:
+    - name: lightstream
+      port: ${LS_PORT}
+      targetPort: ${LS_PORT}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bench-vpc-sink
+  namespace: ${NAMESPACE}
+  labels:
+    app: bench
+    role: sink
+spec:
+  backoffLimit: 2
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app: bench
+        role: sink
+    spec:
+      restartPolicy: Never
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: bench
+                  role: source
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: sink
+          image: ${IMAGE}
+          imagePullPolicy: ${IMAGE_PULL_POLICY}
+          command: ["bench_vpc_sink"]
+          args:
+            - "--shape"
+            - "${SHAPE}"
+            - "--rows"
+            - "${ROWS}"
+            - "--batches-per-stream"
+            - "${BATCHES_PER_STREAM}"
+            - "--streams"
+            - "${STREAMS}"
+            - "--source-flight-addr"
+            - "bench-vpc-source.${NAMESPACE}.svc.cluster.local:${FLIGHT_PORT}"
+            - "--source-echo-addr"
+            - "bench-vpc-source.${NAMESPACE}.svc.cluster.local:${ECHO_PORT}"
+            - "--ls-bind"
+            - "0.0.0.0:${LS_PORT}"
+          ports:
+            - containerPort: ${LS_PORT}
+              name: lightstream
