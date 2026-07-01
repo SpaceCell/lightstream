@@ -1,3 +1,9 @@
+// Copyright Peter G. Bower 2025-2026.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! # Parallel TCP table reader
 //!
 //! Accepts several concurrent TCP connections on a [`TcpListener`] and decodes

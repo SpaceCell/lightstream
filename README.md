@@ -2,18 +2,19 @@
 
 Move Arrow tables between processes, services and storage without adding a gRPC stack or writing transport-specific framing.
 
-Lightstream provides a common table API across TCP, UDS, WebSocket, HTTP/2, QUIC, WebTransport, standard I/O, files, memory maps and chunked datasets. It preserves Minarrow’s SIMD (64-byte) aligned buffers through the supported fast paths and keeps encoding, framing and transport concerns separate.
+Lightstream provides a consistent table API across TCP, Unix domain sockets, WebSocket, HTTP/2, QUIC, WebTransport, standard I/O, files, memory maps and chunked datasets. It preserves Minarrow's 64-byte-aligned buffers through supported fast paths while keeping encoding, framing and transport concerns separate.
 
 Representative local benchmark results:
 
 | Workload                     | Throughput |
 | ---------------------------- | ---------: |
-| TCP streaming                | ~5.0 GiB/s |
+| TCP streaming (parallel)                | ~8.0 GiB/s |
+| TCP streaming (serial)                | ~5.0 GiB/s |
 | UDS with `io_uring`          | ~5.5 GiB/s |
 | Arrow IPC file read          |   ~9 GiB/s |
-| Warm memory-mapped Arrow IPC | ~170 GiB/s |
+| Warm memory-mapped Arrow IPC (RAM speed) | ~170 GiB/s |
 
-The practical benefit is straightforward: use the same schema-aware reader and writer interfaces for local IPC, service-to-service streaming and persistent storage, while retaining access to the lower-level codecs and framing layers when needed.
+The same schema-aware interfaces cover local IPC, service-to-service streaming and persistent storage. Lower-level codecs, frames and byte streams remain available when an application needs direct control.
 
 ```rust
 use lightstream::models::readers::tcp::TcpTableReader;
@@ -25,50 +26,24 @@ let writer = TcpTableWriter::connect("data.feed:9000", schema.clone(), None).awa
 let upload = HttpTableWriter::post("https://api/ingest", schema, None).await?;
 ```
 
-Lightstream supports Arrow IPC, CSV, JSON, Parquet, TLV framing, the Lightstream multiplexed protocol, configurable compression, memory-mapped reads, chunked datasets, parallel QUIC and HTTP/2 streams, and decode limits for untrusted input.
-
 ## Capabilities
 
-### Formats and protocols
+Lightstream includes:
 
-* Arrow IPC stream and file formats
-* Lightstream framed protocol
-* TLV framing
-* CSV
-* JSON arrays and NDJSON
-* Parquet
-* Chunked Arrow IPC, CSV and Parquet datasets
+- Arrow IPC stream and file formats
+- CSV, JSON, NDJSON and Parquet
+- TCP, Unix domain sockets, standard I/O, WebSocket, HTTP/2, QUIC and WebTransport
+- Linux `io_uring` support
+- Memory-mapped Arrow IPC reads
+- Chunked Arrow IPC, CSV and Parquet datasets
+- Parallel TCP, QUIC and HTTP/2 streams with optional ordering
+- TLV framing and the multiplexed Lightstream protocol
+- Optional zstd and Snappy compression
+- Configurable decode limits for untrusted input
 
-### Transports
+The table encoding and framing layers are independent of the transport, so applications can move the same table model and protocol between connection types without changing the analytical data structures.
 
-* TCP
-* Unix domain sockets
-* Standard input and output
-* WebSocket
-* HTTP/2
-* QUIC
-* WebTransport
-* Linux `io_uring`
-
-The table encoding and framing layers are independent of the transport. Applications can therefore use the same table model and protocol over different connection types.
-
-### Storage
-
-* Synchronous and asynchronous Arrow IPC readers and writers
-* Memory-mapped Arrow IPC reads
-* Chunked-directory readers and writers
-* Serial and parallel chunk loading
-* Asynchronous disk streams
-* Standard input and output
-
-### Buffering and decoding
-
-* Minarrow `Vec64` buffers with 64-byte alignment
-* Buffer-backed decoded columns where the selected path permits it
-* Configurable limits for decoding untrusted input
-* Checked offsets, lengths and allocation sizes
-* Optional zstd and Snappy compression
-* Schema and dictionary handling for Arrow IPC data
+Applications can also work at any layer directly, replacing or extending the framing, buffering or transport logic where required.
 
 ## Installation
 
@@ -82,7 +57,7 @@ lightstream = {
 }
 ```
 
-Available feature flags are listed in [Feature flags](#feature-flags).
+See [Feature flags](#feature-flags) for the complete list.
 
 ## TCP table streaming
 
@@ -113,7 +88,7 @@ writer.write_table(batch_2).await?;
 writer.finish().await?;
 ```
 
-Equivalent table readers and writers are available for the other supported transports. Constructors differ where required by the underlying protocol, but the table-oriented read and write interfaces remain consistent.
+Equivalent table readers and writers are available for the other supported transports. Constructors vary where required by the underlying protocol, while the table-oriented read and write interfaces remain consistent.
 
 ## Compression
 
@@ -130,9 +105,9 @@ let writer = TcpTableWriter::connect(
 ).await?;
 ```
 
-Compression variants are controlled by Cargo features such as `zstd` and `snappy`. Readers inspect the stream metadata and apply the declared decompression mode automatically.
+Compression variants are enabled through Cargo features such as `zstd` and `snappy`. Readers inspect the stream metadata and apply the declared decompression mode automatically.
 
-## Memory-mapped Arrow IPC reads
+## Memory-mapped Arrow IPC
 
 ```rust
 use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
@@ -145,14 +120,14 @@ for index in 0..reader.num_batches() {
 }
 ```
 
-Where alignment and file layout permit it, column buffers refer directly to the mapped file region.
+Where the file layout and alignment permit it, column buffers refer directly to the mapped file region.
 
 ## Writing an Arrow IPC file
 
 ```rust
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::writers::ipc::table::TableWriter;
-use minarrow::{FieldArray, Table, arr_i32, arr_str32};
+use minarrow::{arr_i32, arr_str32, FieldArray, Table};
 use tokio::fs::File;
 
 let table = Table::new(
@@ -176,13 +151,13 @@ writer.finish().await?;
 
 ## Lightstream protocol
 
-The `protocol` feature enables a framed connection that carries named messages and Arrow tables over the same transport.
+The `protocol` feature enables framed connections that carry named messages and Arrow tables over the same transport.
 
-Each peer registers the same channel definitions in the same order. Once registered, the connection can exchange raw messages, MessagePack values, Protobuf messages and tables.
+Both peers register the same channel definitions in the same order. The connection can then exchange raw messages, MessagePack values, Protobuf messages and tables.
 
 ```rust
-use lightstream::models::protocol::LightstreamMessage;
 use lightstream::models::protocol::connection::TcpLightstreamConnection;
+use lightstream::models::protocol::LightstreamMessage;
 
 let mut connection = TcpLightstreamConnection::from_tcp(stream);
 
@@ -213,17 +188,17 @@ Frames use a compact TLV header:
 [tag: u8][length: u32 little-endian][payload]
 ```
 
-The first table frame includes its schema and dictionaries. Later frames on the same table channel contain record batches.
+The first frame for a table channel includes its schema and dictionaries. Subsequent frames contain record batches.
 
 MessagePack support requires `msgpack`. Protobuf support requires `protobuf`. Both features enable `protocol`.
 
+Message and table channels can also be distributed across several connections, with their original order restored on read. See [Parallel streams](#parallel-streams).
+
 ## Parallel streams
 
-QUIC and HTTP/2 provide parallel table readers and writers.
+TCP, QUIC and HTTP/2 provide parallel readers and writers that distribute a table sequence across several connections. This can increase throughput when one connection is the limiting factor.
 
-A parallel writer distributes tables across several streams in round-robin order. A parallel reader merges those streams into one table stream. Ordering is preserved within an individual stream, but not between streams.
-
-This interface is useful when one transport stream does not provide sufficient throughput or when independent table sequences can be processed concurrently.
+The Lightstream protocol also has a parallel form, allowing messages and tables to travel across the same group of connections. Readers can restore send order or return items in arrival order when ordering is unnecessary.
 
 ## Transports
 
@@ -236,7 +211,7 @@ This interface is useful when one transport stream does not provide sufficient t
 | HTTP/2              | `http`         | Stable       | Direct `h2` integration for streaming request and response bodies. |
 | QUIC                | `quic`         | Stable       | Multiplexed QUIC transport with protocol-level TLS.                |
 | WebTransport        | `webtransport` | Experimental | WebTransport support through the `wtransport` crate.               |
-| `io_uring`          | `io_uring`     | Experimental | Linux-only asynchronous I/O support.                               |
+| `io_uring` | `io_uring` | Experimental | Linux-only asynchronous I/O. Because `io_uring` exposes a broad kernel interface and increases the host attack surface, it should be enabled only in trusted environments. |
 
 Lightstream handles table encoding, framing and decoding. Applications remain responsible for listener setup, authentication, authorisation, routing and connection lifecycle.
 
@@ -244,7 +219,9 @@ Readers and writers can wrap accepted connections or protocol-specific stream ha
 
 ## TLS
 
-The `tls` feature enables TLS support for TCP, WebSocket and HTTP/2.
+Lightstream is primarily intended for controlled environments, such as private Kubernetes networks where TLS is terminated at the ingress or service-mesh boundary and internal services exchange data with minimal overhead.
+
+Where transport-level encryption is required, the `tls` feature enables TLS for TCP, WebSocket and HTTP/2.
 
 ```rust
 use std::sync::Arc;
@@ -266,21 +243,21 @@ let writer = TcpTableWriter::connect_tls(
 .await?;
 ```
 
-Use an explicit `rustls::ClientConfig` when the application requires custom roots, certificate pinning, client authentication or a custom verifier.
+Use `rustls::ClientConfig` for custom roots, certificate pinning, client authentication or a custom verifier.
 
-QUIC and WebTransport use TLS as part of their protocols and accept their corresponding security configuration through their own constructors.
+QUIC and WebTransport include TLS at the protocol level and accept their corresponding security configuration through their own constructors.
 
 ## File and chunked I/O
 
-Lightstream includes readers and writers for:
+Lightstream provides readers and writers for:
 
-* Arrow IPC files and streams
-* CSV
-* JSON arrays and NDJSON
-* Parquet
-* Chunked Arrow IPC directories
-* Chunked CSV directories
-* Chunked Parquet directories
+- Arrow IPC files and streams
+- CSV
+- JSON arrays and NDJSON
+- Parquet
+- Chunked Arrow IPC directories
+- Chunked CSV directories
+- Chunked Parquet directories
 
 Chunked datasets store each table in a numbered file:
 
@@ -290,43 +267,43 @@ Chunked datasets store each table in a numbered file:
 <base>-0000000002.<extension>
 ```
 
-The corresponding readers expose ordered serial iteration and parallel loading where supported.
+The corresponding readers provide ordered serial iteration and parallel loading where supported.
 
 ## Architecture
 
-Lightstream separates transport, framing, buffering and format handling.
+Lightstream separates table access, protocols, formats, framing, buffering and transport.
 
 | Layer     | Components                                                                               |
 | --------- | ---------------------------------------------------------------------------------------- |
 | Table API | Transport readers and writers, parallel readers and writers, chunked readers and writers |
 | Protocol  | Lightstream message multiplexing                                                         |
 | Formats   | Arrow IPC, CSV, JSON, Parquet and TLV                                                    |
-| Framing   | IPC messages, TLV frames, WebSocket frames                                               |
+| Framing   | IPC messages, TLV frames and WebSocket frames                                            |
 | Encoding  | One-shot codecs, stream encoders and stream decoders                                     |
 | Buffering | `Vec<u8>`, Minarrow `Vec64<u8>` and stream arenas                                        |
 | Transport | TCP, UDS, standard I/O, WebSocket, HTTP/2, QUIC, WebTransport and `io_uring`             |
 | Storage   | Files, memory maps, chunked directories and asynchronous disk streams                    |
 
-Applications may use the complete table readers and writers or assemble lower-level encoders, decoders, frames and byte streams directly.
+Applications can use complete table readers and writers or assemble lower-level encoders, decoders, frames and byte streams directly.
 
-## Decode limits
+## Buffering and decode safety
 
-Byte-oriented decoders accept configurable limits through `DecodeLimits`.
+Supported paths use Minarrow `Vec64` buffers with 64-byte alignment and can expose buffer-backed decoded columns where the underlying format and transport permit it.
 
-Limits cover values derived from input metadata, including:
+Byte-oriented decoders accept configurable limits through `DecodeLimits`. These limits cover values derived from input metadata, including:
 
-* Frame size
-* Row count
-* Field count
-* Buffer count
-* Dictionary entries
-* String data
-* Decompressed data
-* Allocation size
+- Frame size
+- Row count
+- Field count
+- Buffer count
+- Dictionary entries
+- String data
+- Decompressed data
+- Allocation size
 
-The decode paths validate signed descriptors before converting them to `usize`, use checked arithmetic for offsets and lengths, and return structured errors for malformed input.
+Decode paths validate signed descriptors before converting them to `usize`, use checked arithmetic for offsets and lengths, and return structured errors for malformed input.
 
-Applications processing untrusted data should set limits appropriate to their expected workload rather than relying solely on the defaults.
+Applications processing untrusted data should set limits appropriate to the expected workload rather than relying solely on the defaults.
 
 ## Performance
 
@@ -334,6 +311,7 @@ Representative results from the repository benchmarks:
 
 | Workload                                 | Throughput |
 | ---------------------------------------- | ---------: |
+| Lightstream TCP with epoll parallelism   | ~8 GiB/s   |
 | Lightstream TCP with epoll               | ~5.0 GiB/s |
 | Lightstream UDS with epoll               | ~5.1 GiB/s |
 | Lightstream UDS with `io_uring`          | ~5.5 GiB/s |
@@ -344,7 +322,7 @@ Representative results from the repository benchmarks:
 | Arrow IPC memory-mapped read, cold pages |   ~6 GiB/s |
 | Arrow IPC file write                     |   ~1 GiB/s |
 
-On the same file-read fixture:
+Results from the same file-read fixture:
 
 | Implementation                    | Throughput |
 | --------------------------------- | ---------: |
@@ -352,18 +330,18 @@ On the same file-read fixture:
 | Arrow-rs                          |   ~7 GiB/s |
 | Polars                            | ~1.3 GiB/s |
 
-These figures were produced on a single consumer-class lap. Results depend on the processor, operating system, transport, storage device, workload shape, enabled features and page-cache state.
+These figures were produced on a single consumer-class laptop. Results depend on the processor, operating system, transport, storage device, workload shape, enabled features and page-cache state.
 
 The repository includes Criterion benchmarks for:
 
-* Transport throughput
-* Lightstream protocol throughput
-* Arrow IPC streaming
-* Arrow IPC file reads and writes
-* Memory-mapped reads
-* Chunked Arrow IPC, CSV and Parquet
-* JSON encoding and decoding
-* Apache Arrow Flight comparison
+- Transport throughput
+- Lightstream protocol throughput
+- Arrow IPC streaming
+- Arrow IPC file reads and writes
+- Memory-mapped reads
+- Chunked Arrow IPC, CSV and Parquet
+- JSON encoding and decoding
+- Apache Arrow Flight comparison
 
 Cross-host benchmark rigs are also provided for EC2 and EKS.
 
@@ -379,14 +357,14 @@ LIGHTSTREAM_FILE_IO_CHUNK_SIZE=1048576
 LIGHTSTREAM_INMEMORY_CHUNK_SIZE=524288
 ```
 
-## Formats
+## Format support
 
 | Format           | Support                                                              |
 | ---------------- | -------------------------------------------------------------------- |
 | Arrow IPC        | File and stream protocols, schemas, dictionaries and aligned buffers |
 | TLV              | Compact framed messages                                              |
-| CSV              | Table and supertable encoding and decoding                           |
-| JSON             | Array-of-objects and NDJSON                                          |
+| CSV              | Table ("RecordBatch") and SuperTable (Vec<"RecordBatch">) encoding and decoding                           |
+| JSON             | Arrays of objects and NDJSON                                          |
 | Parquet          | Feature-gated reader and writer support                              |
 | Memory maps      | Arrow IPC batch access through mapped files                          |
 | Chunked datasets | Arrow IPC, CSV and Parquet directory layouts                         |
@@ -420,7 +398,7 @@ LIGHTSTREAM_INMEMORY_CHUNK_SIZE=524288
 | `lbuffer`                | LBuffer integration                                          |
 | `bench_arrow_flight`     | Apache Arrow Flight benchmark support                        |
 | `bench_arrow`            | Arrow-rs benchmark comparison                                |
-| `bench_polars`           | Polars benchmark comparison                                  |
+| `bench_polars`           | Polars benchmark comparison (file IO)                                  |
 
 ## Examples
 
@@ -449,12 +427,18 @@ cargo run --example quic_arrow \
   --features quic
 ```
 
-## License
+## Licence
 
-Copyright Peter Garfield Bower 2025–2026.
+Copyright © 2025–2026 Peter Garfield Bower.
+
+Licensed under the Mozilla Public License 2.0. See [`LICENSE`](LICENSE) for the full terms.
 
 ## Affiliation notice
 
 Lightstream is not affiliated with Apache Arrow or the Apache Software Foundation.
 
 It implements public Arrow formats through Minarrow and uses FlatBuffers schema definitions derived from Arrow-rs. See `THIRD_PARTY_LICENSES` for the applicable third-party licences.
+
+## SpaceCell
+
+`lightstream` is maintained by [SpaceCell](https://spacecell.com) and forms part of its open-source foundation for high-performance data computing.

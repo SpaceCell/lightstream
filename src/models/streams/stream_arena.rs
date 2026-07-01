@@ -1,3 +1,9 @@
+// Copyright Peter G. Bower 2025-2026.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Zero-allocation stream arena for network I/O.
 //!
 //! Pre-allocates a single Vec64 and writes network data into it

@@ -1,3 +1,9 @@
+// Copyright Peter G. Bower 2025-2026.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Arrow IPC serialisation for minarrow value types.
 //!
 //! [`Table`] provides the base implementation. Other value types are converted
@@ -72,7 +78,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for FieldArray {
     type Error = IoError;
 
     fn encode(&self) -> Result<Vec64<u8>, IoError> {
-        let table = Table::new("field_array".into(), Some(vec![self.clone()]));
+        let table = Table::new("field_array", Some(vec![self.clone()]));
         <Table as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&table)
     }
 
@@ -107,7 +113,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for Array {
     type Error = IoError;
 
     fn encode(&self) -> Result<Vec64<u8>, IoError> {
-        let table = Table::new("array".into(), Some(vec![self.clone().fa("col")]));
+        let table = Table::new("array", Some(vec![self.clone().fa("col")]));
         <Table as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&table)
     }
 
@@ -491,7 +497,7 @@ impl Serialise<ArrowIpcCodec<Vec64<u8>>> for SuperArray {
             .unwrap_or_else(|| "col".into());
         for chunk in self.chunks() {
             let table = Table::new(
-                "super_array".into(),
+                "super_array",
                 Some(vec![chunk.clone().fa(name.clone())]),
             );
             codec.encode_stream_batch(&table, &mut out, 0, None)?;

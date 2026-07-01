@@ -1,3 +1,9 @@
+// Copyright Peter G. Bower 2025-2026.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! ASCII-to-integer parsing with overflow detection, used by the CSV decoder
 //! to validate column types and to fill numeric column buffers without going
 //! through `str::from_utf8` + `str::parse`.
