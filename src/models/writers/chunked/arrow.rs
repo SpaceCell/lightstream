@@ -117,14 +117,14 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let mut w = ChunkedArrowWriter::new(&dir, "part").unwrap();
         let p0 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 1, 2, 3)])))
+            .write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 1, 2, 3)])))
             .unwrap();
         let p1 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 4, 5)])))
+            .write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 4, 5)])))
             .unwrap();
         let p2 = w
             .write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!("n", 6, 7, 8, 9)]),
             ))
             .unwrap();
@@ -152,7 +152,7 @@ mod tests {
 
         let w = ChunkedArrowWriter::new(&dir, "part").unwrap();
         let tables: Vec<Table> = (0..8i32)
-            .map(|i| Table::new("b".into(), Some(vec![fa_i32!("n", i, i + 100)])))
+            .map(|i| Table::new("b", Some(vec![fa_i32!("n", i, i + 100)])))
             .collect();
         let refs: Vec<&Table> = tables.iter().collect();
 

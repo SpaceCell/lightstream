@@ -539,7 +539,7 @@ mod tests {
         let ids = FieldArray::from_arr("ids", arr_i32![1, 2, 3, 4]);
         let vals = FieldArray::from_arr("vals", arr_f64![0.5, 1.5, 2.5, 3.5]);
         let labels = FieldArray::from_arr("labels", arr_str32!["a", "b", "c", "d"]);
-        Table::new("t".into(), Some(vec![ids, vals, labels]))
+        Table::new("t", Some(vec![ids, vals, labels]))
     }
 
     #[test]
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn empty_table_round_trip() {
         let t = Table::new(
-            "empty".into(),
+            "empty",
             Some(vec![FieldArray::from_arr("c", arr_i32![])]),
         );
         let bytes = <Table as Serialise<ArrowIpcCodec<Vec64<u8>>>>::encode(&t).unwrap();

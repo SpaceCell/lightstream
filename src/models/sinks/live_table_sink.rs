@@ -20,6 +20,11 @@
 //! the caller [`roll`](LiveTableSink::roll)s, so readers never see past the
 //! last complete row.
 //!
+//! The typed pushes ([`push_i64`](LiveTableSink::push_i64),
+//! [`push_str`](LiveTableSink::push_str), and siblings) serve sources
+//! whose records arrive already typed. Columns land one at a time in
+//! schema order and the row publishes when its last column lands.
+//!
 //! The caller owns the batch policy. It checks
 //! [`is_full`](LiveTableSink::is_full) and decides when to roll. A roll seals
 //! every buffer, freezing the published lengths, opens fresh ones, and
@@ -28,6 +33,8 @@
 
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit;
@@ -178,6 +185,40 @@ impl LiveColumn {
     }
 }
 
+/// Published row count of the live batch.
+///
+/// Readers poll this handle for row visibility. A count of `n` means
+/// `n` complete rows are readable in every column. The count resets
+/// to zero when the sink rolls, and a reader observing a decrease
+/// refreshes its batch handle from the channel.
+#[repr(align(64))]
+pub struct LiveRowCount {
+    rows: AtomicUsize,
+    /// Advertised reader poll gap in nanoseconds. The publisher owns
+    /// and may retune it, and readers take it from the handle they
+    /// already poll.
+    poll_gap_nanos: AtomicU64,
+}
+
+impl LiveRowCount {
+    /// Default gap between reader polls. A shorter gap tightens the
+    /// reader's view of the live tail. Consumers tune this to their
+    /// freshness requirement.
+    pub const DEFAULT_POLL_GAP: Duration = Duration::from_nanos(250);
+
+    /// Rows currently visible in the live batch.
+    #[inline]
+    pub fn rows(&self) -> usize {
+        self.rows.load(Ordering::Acquire)
+    }
+
+    /// The gap the publisher advertises between reader polls.
+    #[inline]
+    pub fn poll_gap(&self) -> Duration {
+        Duration::from_nanos(self.poll_gap_nanos.load(Ordering::Relaxed))
+    }
+}
+
 /// Live LBuffer-backed table sink.
 ///
 /// Construct with the destination schema and a per-batch row capacity,
@@ -186,6 +227,9 @@ impl LiveColumn {
 /// [`is_full`](Self::is_full) after each push and calling
 /// [`roll`](Self::roll) at the boundary to forward the returned table to
 /// consumers.
+///
+/// Readers poll [`live_row_count`](Self::live_row_count) for
+/// live-batch row visibility.
 pub struct LiveTableSink {
     columns: Vec<LiveColumn>,
     fields: Vec<Field>,
@@ -193,13 +237,19 @@ pub struct LiveTableSink {
     name: String,
     rows_per_batch: usize,
     rows_in_batch: usize,
+    /// Column position of the in-flight row. Zero between rows.
+    cursor: usize,
+    row_count: Arc<LiveRowCount>,
 }
 
 impl LiveTableSink {
     /// Construct a sink for the destination `fields` and their per-column
     /// `read_as` forms, sizing each batch to `rows_per_batch` rows.
     /// `rows_per_batch` controls batch memory granularity rather than
-    /// latency, and tens of thousands is typical. Fails on a schema type
+    /// latency, and tens of thousands is typical. `poll_gap` is the
+    /// reader poll gap advertised through
+    /// [`live_row_count`](Self::live_row_count), with `None` taking
+    /// [`LiveRowCount::DEFAULT_POLL_GAP`]. Fails on a schema type
     /// outside the live column set or a categorical column without a
     /// [`ReadAs::Dictionary`].
     pub fn new(
@@ -207,6 +257,7 @@ impl LiveTableSink {
         read_as: &[ReadAs],
         rows_per_batch: usize,
         name: impl Into<String>,
+        poll_gap: Option<Duration>,
     ) -> io::Result<Self> {
         if rows_per_batch == 0 {
             return Err(io::Error::new(
@@ -236,7 +287,35 @@ impl LiveTableSink {
             })
             .collect();
         let columns = Self::build_live_columns(&fields, &read_as, rows_per_batch, &initial_caps)?;
-        Ok(Self { columns, fields, read_as, name: name.into(), rows_per_batch, rows_in_batch: 0 })
+        Ok(Self {
+            columns,
+            fields,
+            read_as,
+            name: name.into(),
+            rows_per_batch,
+            rows_in_batch: 0,
+            cursor: 0,
+            row_count: Arc::new(LiveRowCount {
+                rows: AtomicUsize::new(0),
+                poll_gap_nanos: AtomicU64::new(
+                    poll_gap.unwrap_or(LiveRowCount::DEFAULT_POLL_GAP).as_nanos() as u64,
+                ),
+            }),
+        })
+    }
+
+    /// Retune the advertised reader poll gap, e.g. adaptively against
+    /// received throughput. Readers observe the change on their next
+    /// poll.
+    pub fn set_poll_gap(&self, gap: Duration) {
+        self.row_count.poll_gap_nanos.store(gap.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// The published row count readers poll for live-batch visibility.
+    /// The handle is stable across rolls - the count resets to zero
+    /// when a fresh batch opens.
+    pub fn live_row_count(&self) -> Arc<LiveRowCount> {
+        Arc::clone(&self.row_count)
     }
 
     /// Build the typed live columns for one batch from the schema fields and
@@ -489,18 +568,270 @@ impl LiveTableSink {
         self.rows_in_batch >= self.rows_per_batch
     }
 
-    /// Push one decoded record as a row. Every column is appended before
-    /// returning, so readable rows advance only over complete records.
+    /// Push one decoded record as a whole row. Every column is appended
+    /// before returning, so readable rows advance only over complete
+    /// records. A whole-row push requires the previous row to be
+    /// complete.
     pub fn push_record(&mut self, record: &JsonRecord<'_, '_>) -> Result<(), PushRecordError> {
-        let mut partial = false;
-        for (idx, col) in self.columns.iter_mut().enumerate() {
+        if self.cursor != 0 {
+            return Err(PushRecordError {
+                partial: true,
+                reason: "push_record requires a row boundary".into(),
+            });
+        }
+        for idx in 0..self.columns.len() {
             let value = record
                 .value(idx)
-                .map_err(|e| PushRecordError { partial, reason: e.to_string() })?;
-            push_value(col, value, partial)?;
-            partial = true;
+                .map_err(|e| PushRecordError { partial: idx > 0, reason: e.to_string() })?;
+            push_value(&mut self.columns[idx], value, idx > 0)?;
+            self.advance_row();
         }
-        self.rows_in_batch += 1;
+        Ok(())
+    }
+
+    /// Advance the row cursor, publishing the row when its last
+    /// column has landed.
+    fn advance_row(&mut self) {
+        self.cursor += 1;
+        if self.cursor == self.columns.len() {
+            self.cursor = 0;
+            self.rows_in_batch += 1;
+            self.row_count.rows.store(self.rows_in_batch, Ordering::Release);
+        }
+    }
+
+    /// The typed-push mismatch error for the cursor column.
+    fn typed_mismatch(&self, method: &str) -> PushRecordError {
+        PushRecordError {
+            partial: self.cursor > 0,
+            reason: format!(
+                "{method} on column '{}' of type {:?}",
+                self.fields[self.cursor].name, self.fields[self.cursor].dtype,
+            ),
+        }
+    }
+
+    /// Append the next column of the current row as `i32`. Accepts
+    /// Int32 and 32-bit temporal columns, whose value is the raw
+    /// offset already in the column's time unit.
+    ///
+    /// Typed pushes land columns in schema order. The row publishes
+    /// when its last column lands, so readable rows advance only over
+    /// complete rows - the same contract as
+    /// [`push_record`](Self::push_record).
+    pub fn push_i32(&mut self, value: i32) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::Int32 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "int32 column buffer full".into() })?,
+            #[cfg(feature = "datetime")]
+            LiveColumn::Datetime32 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "datetime32 column buffer full".into() })?,
+            _ => return Err(self.typed_mismatch("push_i32")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as `i64`. Accepts
+    /// Int64 and 64-bit temporal columns, whose value is the raw
+    /// offset already in the column's time unit.
+    pub fn push_i64(&mut self, value: i64) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::Int64 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "int column buffer full".into() })?,
+            #[cfg(feature = "datetime")]
+            LiveColumn::Datetime64 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "datetime column buffer full".into() })?,
+            _ => return Err(self.typed_mismatch("push_i64")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as `u32`.
+    pub fn push_u32(&mut self, value: u32) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::UInt32 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "uint32 column buffer full".into() })?,
+            _ => return Err(self.typed_mismatch("push_u32")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as `u64`.
+    pub fn push_u64(&mut self, value: u64) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::UInt64 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "uint64 column buffer full".into() })?,
+            _ => return Err(self.typed_mismatch("push_u64")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as `f32`.
+    pub fn push_f32(&mut self, value: f32) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::Float32 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "float32 column buffer full".into() })?,
+            _ => return Err(self.typed_mismatch("push_f32")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as `f64`.
+    pub fn push_f64(&mut self, value: f64) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::Float64 { buf, .. } => buf
+                .push(value)
+                .map_err(|_| PushRecordError { partial, reason: "float column buffer full".into() })?,
+            _ => return Err(self.typed_mismatch("push_f64")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as `bool`.
+    pub fn push_bool(&mut self, value: bool) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::Bool { buf, .. } => {
+                // The masked channel carries the bit: push lands true,
+                // push_null a false bit.
+                let pushed = if value { buf.push(1).map_err(|_| ()) } else { buf.push_null() };
+                pushed.map_err(|_| PushRecordError { partial, reason: "bool column buffer full".into() })?;
+            }
+            _ => return Err(self.typed_mismatch("push_bool")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as a dictionary code.
+    /// Accepts categorical columns. The code indexes the column's
+    /// fixed dictionary, and a code outside the dictionary is an
+    /// error.
+    pub fn push_dict_code(&mut self, code: u32) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            #[cfg(feature = "default_categorical_8")]
+            LiveColumn::Categorical8 { codes, dictionary } => {
+                if code as usize >= dictionary.len() {
+                    return Err(PushRecordError {
+                        partial,
+                        reason: format!(
+                            "dictionary code {code} out of range for {} entries",
+                            dictionary.len(),
+                        ),
+                    });
+                }
+                let code = u8::try_from(code).map_err(|_| PushRecordError {
+                    partial,
+                    reason: format!("dictionary code {code} overflows u8"),
+                })?;
+                codes
+                    .push(code)
+                    .map_err(|_| PushRecordError { partial, reason: "categorical column buffer full".into() })?;
+            }
+            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            LiveColumn::Categorical32 { codes, dictionary } => {
+                if code as usize >= dictionary.len() {
+                    return Err(PushRecordError {
+                        partial,
+                        reason: format!(
+                            "dictionary code {code} out of range for {} entries",
+                            dictionary.len(),
+                        ),
+                    });
+                }
+                codes
+                    .push(code)
+                    .map_err(|_| PushRecordError { partial, reason: "categorical column buffer full".into() })?;
+            }
+            _ => return Err(self.typed_mismatch("push_dict_code")),
+        }
+        self.advance_row();
+        Ok(())
+    }
+
+    /// Append the next column of the current row as UTF-8 text.
+    /// Accepts string columns and categorical columns, where the value
+    /// encodes to its dictionary code and a value outside the
+    /// dictionary is an error.
+    pub fn push_str(&mut self, value: &str) -> Result<(), PushRecordError> {
+        let partial = self.cursor > 0;
+        match &mut self.columns[self.cursor] {
+            LiveColumn::String32 { offsets, bytes } => {
+                bytes
+                    .push_slice(value.as_bytes())
+                    .map_err(|_| PushRecordError { partial, reason: "string bytes buffer full".into() })?;
+                // The bytes are in but unpublished until the offset
+                // lands, so a failure past this point poisons the row.
+                let end = u32::try_from(bytes.len()).map_err(|_| PushRecordError {
+                    partial: true,
+                    reason: "string data exceeds u32 offsets".into(),
+                })?;
+                offsets
+                    .push(end)
+                    .map_err(|_| PushRecordError { partial: true, reason: "string offsets buffer full".into() })?;
+            }
+            #[cfg(feature = "large_string")]
+            LiveColumn::String64 { offsets, bytes } => {
+                bytes
+                    .push_slice(value.as_bytes())
+                    .map_err(|_| PushRecordError { partial, reason: "string bytes buffer full".into() })?;
+                offsets
+                    .push(bytes.len() as u64)
+                    .map_err(|_| PushRecordError { partial: true, reason: "string offsets buffer full".into() })?;
+            }
+            #[cfg(feature = "default_categorical_8")]
+            LiveColumn::Categorical8 { codes, dictionary } => {
+                let position = dictionary
+                    .iter()
+                    .position(|entry| entry == value)
+                    .ok_or_else(|| PushRecordError {
+                        partial,
+                        reason: format!("value '{value}' not in the column's dictionary"),
+                    })?;
+                let code = u8::try_from(position).map_err(|_| PushRecordError {
+                    partial,
+                    reason: format!("dictionary code {position} overflows u8"),
+                })?;
+                codes
+                    .push(code)
+                    .map_err(|_| PushRecordError { partial, reason: "categorical column buffer full".into() })?;
+            }
+            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            LiveColumn::Categorical32 { codes, dictionary } => {
+                let code = dictionary
+                    .iter()
+                    .position(|entry| entry == value)
+                    .ok_or_else(|| PushRecordError {
+                        partial,
+                        reason: format!("value '{value}' not in the column's dictionary"),
+                    })? as u32;
+                codes
+                    .push(code)
+                    .map_err(|_| PushRecordError { partial, reason: "categorical column buffer full".into() })?;
+            }
+            _ => return Err(self.typed_mismatch("push_str")),
+        }
+        self.advance_row();
         Ok(())
     }
 
@@ -527,6 +858,9 @@ impl LiveTableSink {
         self.columns =
             Self::build_live_columns(&self.fields, &self.read_as, self.rows_per_batch, &byte_caps)?;
         self.rows_in_batch = 0;
+        // An in-flight row dies with the sealed batch.
+        self.cursor = 0;
+        self.row_count.rows.store(0, Ordering::Release);
         Ok(self.live_table())
     }
 
@@ -759,7 +1093,7 @@ mod tests {
     fn pushes_every_live_column_type() {
         let spec = full_type_spec();
         let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
-        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "full.TEST").unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "full.TEST", None).unwrap();
         let table = sink.live_table();
 
         let mut frame = full_type_frame("sell");
@@ -850,7 +1184,7 @@ mod tests {
     fn rows_accumulate_and_roll_at_capacity() {
         let spec = full_type_spec();
         let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
-        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 2, "full.TEST").unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 2, "full.TEST", None).unwrap();
         let first = sink.live_table();
 
         let mut rolled = Vec::new();
@@ -886,7 +1220,7 @@ mod tests {
             ReadAs::Dictionary(vec!["buy".into(), "sell".into()]),
         );
         let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
-        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t").unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t", None).unwrap();
         let mut frame = br#"{"side":"hold"}"#.to_vec();
         let err = push_frame(&mut decoder, &mut sink, &mut frame, 0).unwrap_err();
         assert!(err.reason.contains("dictionary"), "unexpected error: {err}");
@@ -910,7 +1244,7 @@ mod tests {
                 ReadAs::Verbatim,
             );
         let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
-        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t").unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t", None).unwrap();
         // `a` lands, then `b` is missing, leaving the row incomplete.
         let mut frame = br#"{"a":1}"#.to_vec();
         let err = push_frame(&mut decoder, &mut sink, &mut frame, 0).unwrap_err();
@@ -942,7 +1276,7 @@ mod tests {
             )
             .with_record_path("data.0.bids");
         let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
-        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "book10_bids.BTC/USD").unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "book10_bids.BTC/USD", None).unwrap();
         let table = sink.live_table();
 
         // The snapshot's envelope timestamp lands on both levels.
@@ -990,7 +1324,7 @@ mod tests {
             )
             .with_record_path("data");
         let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
-        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t").unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t", None).unwrap();
         let mut heartbeat = br#"{"channel":"heartbeat"}"#.to_vec();
         push_frame(&mut decoder, &mut sink, &mut heartbeat, 0).unwrap();
         assert_eq!(sink.rows_in_batch(), 0);
@@ -999,6 +1333,206 @@ mod tests {
     #[test]
     fn a_categorical_without_a_dictionary_fails_at_construction() {
         let fields = vec![Field::new("side", ArrowType::Dictionary(CAT_INDEX), false, None)];
-        assert!(LiveTableSink::new(&fields, &[ReadAs::Verbatim], 16, "t").is_err());
+        assert!(LiveTableSink::new(&fields, &[ReadAs::Verbatim], 16, "t", None).is_err());
+    }
+
+    /// A trade-shaped schema for the typed-push protocol: temporal,
+    /// integer, categorical and string columns, no JSON anywhere.
+    fn typed_sink(rows_per_batch: usize) -> LiveTableSink {
+        let fields = vec![
+            Field::new("ts_event", ArrowType::Timestamp(TimeUnit::Nanoseconds, None), false, None),
+            Field::new("price", ArrowType::Int64, false, None),
+            Field::new("size", ArrowType::UInt32, false, None),
+            Field::new("side", ArrowType::Dictionary(CAT_INDEX), false, None),
+            Field::new("symbol", ArrowType::String, false, None),
+        ];
+        let read_as = vec![
+            ReadAs::Verbatim,
+            ReadAs::Verbatim,
+            ReadAs::Verbatim,
+            ReadAs::Dictionary(vec!["A".into(), "B".into(), "N".into()]),
+            ReadAs::Verbatim,
+        ];
+        LiveTableSink::new(&fields, &read_as, rows_per_batch, "typed.TEST", None).unwrap()
+    }
+
+    #[test]
+    fn typed_pushes_land_a_row_and_publish_on_the_last_column() {
+        let mut sink = typed_sink(16);
+        let table = sink.live_table();
+
+        sink.push_i64(1_700_000_000_000_000_000).unwrap();
+        sink.push_i64(63_245_100_000_000).unwrap();
+        sink.push_u32(2).unwrap();
+        // The row is invisible until its last column lands.
+        assert_eq!(table.n_rows(), 0);
+        sink.push_str("B").unwrap();
+        sink.push_str("ESH6").unwrap();
+        assert_eq!(table.n_rows(), 1);
+        assert_eq!(sink.rows_in_batch(), 1);
+
+        let col = |name: &str| table.cols.iter().find(|c| c.field.name == name).unwrap();
+        match &col("ts_event").array {
+            Array::TemporalArray(TemporalArray::Datetime64(a)) => {
+                assert_eq!(a.data.as_slice()[0], 1_700_000_000_000_000_000);
+                assert_eq!(a.time_unit, TimeUnit::Nanoseconds);
+            }
+            _ => panic!("ts_event should be Datetime64"),
+        }
+        match &col("price").array {
+            Array::NumericArray(NumericArray::Int64(a)) => {
+                assert_eq!(a.data.as_slice()[0], 63_245_100_000_000)
+            }
+            _ => panic!("price should be Int64"),
+        }
+        match &col("size").array {
+            Array::NumericArray(NumericArray::UInt32(a)) => assert_eq!(a.data.as_slice()[0], 2),
+            _ => panic!("size should be UInt32"),
+        }
+        match &col("symbol").array {
+            Array::TextArray(TextArray::String32(a)) => assert_eq!(a.get_str(0), Some("ESH6")),
+            _ => panic!("symbol should be String32"),
+        }
+    }
+
+    #[test]
+    fn typed_push_type_mismatch_reports_partial_state() {
+        let mut sink = typed_sink(16);
+        // First column is Datetime64, so push_u32 misses before any
+        // write and the row is intact.
+        let err = sink.push_u32(7).unwrap_err();
+        assert!(!err.partial);
+        assert!(err.reason.contains("push_u32"), "unexpected: {err}");
+
+        // Land the first column, then miss - the row is now partial.
+        sink.push_i64(1).unwrap();
+        let err = sink.push_str("oops").unwrap_err();
+        assert!(err.partial);
+        assert_eq!(sink.rows_in_batch(), 0);
+    }
+
+    #[test]
+    fn typed_push_categorical_rejects_a_value_outside_the_dictionary() {
+        let mut sink = typed_sink(16);
+        sink.push_i64(1).unwrap();
+        sink.push_i64(2).unwrap();
+        sink.push_u32(3).unwrap();
+        let err = sink.push_str("hold").unwrap_err();
+        assert!(err.partial);
+        assert!(err.reason.contains("dictionary"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn push_dict_code_lands_a_code_and_bounds_checks() {
+        let mut sink = typed_sink(16);
+        let table = sink.live_table();
+        sink.push_i64(1).unwrap();
+        sink.push_i64(2).unwrap();
+        sink.push_u32(3).unwrap();
+        // Code 2 is "N" in the dictionary declared by typed_sink.
+        sink.push_dict_code(2).unwrap();
+        sink.push_str("ESH6").unwrap();
+        assert_eq!(table.n_rows(), 1);
+        let side = table.cols.iter().find(|c| c.field.name == "side").unwrap();
+        match &side.array {
+            #[cfg(feature = "default_categorical_8")]
+            Array::TextArray(TextArray::Categorical8(a)) => assert_eq!(a.get_str(0), Some("N")),
+            #[cfg(not(feature = "default_categorical_8"))]
+            Array::TextArray(TextArray::Categorical32(a)) => assert_eq!(a.get_str(0), Some("N")),
+            _ => panic!("side should be categorical"),
+        }
+
+        // A code past the dictionary is refused mid-row.
+        sink.push_i64(1).unwrap();
+        sink.push_i64(2).unwrap();
+        sink.push_u32(3).unwrap();
+        let err = sink.push_dict_code(3).unwrap_err();
+        assert!(err.partial);
+        assert!(err.reason.contains("out of range"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn poll_gap_defaults_and_retunes_through_the_handle() {
+        let sink = typed_sink(16);
+        let count = sink.live_row_count();
+        assert_eq!(count.poll_gap(), LiveRowCount::DEFAULT_POLL_GAP);
+
+        let fields = vec![Field::new("x", ArrowType::Int64, false, None)];
+        let sink = LiveTableSink::new(
+            &fields,
+            &[ReadAs::Verbatim],
+            16,
+            "t",
+            Some(Duration::from_micros(2)),
+        )
+        .unwrap();
+        let count = sink.live_row_count();
+        assert_eq!(count.poll_gap(), Duration::from_micros(2));
+
+        // Retuning reaches readers through the handle they hold.
+        sink.set_poll_gap(Duration::from_nanos(500));
+        assert_eq!(count.poll_gap(), Duration::from_nanos(500));
+    }
+
+    #[test]
+    fn live_row_count_tracks_rows_and_resets_on_roll() {
+        let mut sink = typed_sink(2);
+        let count = sink.live_row_count();
+        assert_eq!(count.rows(), 0);
+
+        sink.push_i64(1).unwrap();
+        sink.push_i64(2).unwrap();
+        sink.push_u32(3).unwrap();
+        sink.push_str("A").unwrap();
+        // The count advances only when the row's last column lands.
+        assert_eq!(count.rows(), 0);
+        sink.push_str("ESH6").unwrap();
+        assert_eq!(count.rows(), 1);
+
+        sink.push_i64(1).unwrap();
+        sink.push_i64(2).unwrap();
+        sink.push_u32(3).unwrap();
+        sink.push_str("B").unwrap();
+        sink.push_str("ESH6").unwrap();
+        assert_eq!(count.rows(), 2);
+
+        // The handle survives the roll and reads the fresh batch.
+        sink.roll().unwrap();
+        assert_eq!(count.rows(), 0);
+    }
+
+    #[test]
+    fn typed_rows_fill_and_roll_like_records() {
+        let mut sink = typed_sink(2);
+        let first = sink.live_table();
+        for row in 0..2 {
+            sink.push_i64(row).unwrap();
+            sink.push_i64(100 + row).unwrap();
+            sink.push_u32(1).unwrap();
+            sink.push_str("A").unwrap();
+            sink.push_str("ESH6").unwrap();
+        }
+        assert!(sink.is_full());
+        let second = sink.roll().unwrap();
+        assert_eq!(first.n_rows(), 2);
+        assert_eq!(second.n_rows(), 0);
+        assert_eq!(sink.rows_in_batch(), 0);
+    }
+
+    #[test]
+    fn push_record_requires_a_row_boundary() {
+        let spec = full_type_spec();
+        let mut decoder = JsonInterface::new(&spec, DecodeLimits::default()).unwrap();
+        let mut sink = LiveTableSink::new(spec.fields(), spec.read_as(), 16, "t", None).unwrap();
+
+        // Open a typed row on the first column, then attempt a JSON
+        // record push mid-row.
+        sink.push_i64(1_780_991_316_123_456).unwrap();
+        let mut frame = full_type_frame("buy");
+        let mut parsed = decoder.parse_frame(&mut frame, 0).unwrap().unwrap();
+        let record = parsed.next_record().unwrap();
+        let err = sink.push_record(&record).unwrap_err();
+        assert!(err.partial);
+        assert!(err.reason.contains("row boundary"), "unexpected: {err}");
     }
 }

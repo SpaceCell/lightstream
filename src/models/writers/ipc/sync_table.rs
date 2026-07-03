@@ -172,7 +172,7 @@ mod tests {
 
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_path_buf();
-        let table = Table::new("t".into(), Some(vec![fa_i32!["n", 1, 2, 3]]));
+        let table = Table::new("t", Some(vec![fa_i32!["n", 1, 2, 3]]));
         let schema: Vec<Field> = table.cols.iter().map(|c| (*c.field).clone()).collect();
 
         write_tables_to_file_sync(&path, std::slice::from_ref(&table), schema).unwrap();
@@ -189,9 +189,9 @@ mod tests {
 
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_path_buf();
-        let t1 = Table::new("t".into(), Some(vec![fa_i32!["n", 1, 2, 3]]));
-        let t2 = Table::new("t".into(), Some(vec![fa_i32!["n", 4, 5]]));
-        let t3 = Table::new("t".into(), Some(vec![fa_i32!["n", 6, 7, 8, 9]]));
+        let t1 = Table::new("t", Some(vec![fa_i32!["n", 1, 2, 3]]));
+        let t2 = Table::new("t", Some(vec![fa_i32!["n", 4, 5]]));
+        let t3 = Table::new("t", Some(vec![fa_i32!["n", 6, 7, 8, 9]]));
         let schema: Vec<Field> = t1.cols.iter().map(|c| (*c.field).clone()).collect();
 
         let mut writer = SyncTableWriter::<_, Vec64<u8>>::new(
@@ -217,8 +217,8 @@ mod tests {
         use crate::models::readers::ipc::table::TableReader;
         use futures_util::StreamExt;
 
-        let t1 = Table::new("t".into(), Some(vec![fa_i32!["n", 10, 20, 30]]));
-        let t2 = Table::new("t".into(), Some(vec![fa_i32!["n", 40, 50]]));
+        let t1 = Table::new("t", Some(vec![fa_i32!["n", 10, 20, 30]]));
+        let t2 = Table::new("t", Some(vec![fa_i32!["n", 40, 50]]));
         let schema: Vec<Field> = t1.cols.iter().map(|c| (*c.field).clone()).collect();
 
         let mut buf: Vec<u8> = Vec::new();

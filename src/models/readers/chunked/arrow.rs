@@ -152,7 +152,7 @@ mod tests {
         let mut w = ChunkedArrowWriter::new(&dir, "part").unwrap();
         for i in 0..16i32 {
             w.write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!("n", i, i + 100)]),
             ))
             .unwrap();
