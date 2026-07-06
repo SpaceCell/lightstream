@@ -37,6 +37,8 @@ use log::warn;
 use tracing::debug;
 
 use flatbuffers::Vector;
+#[cfg(feature = "datetime")]
+use minarrow::enums::time_units::TimeUnit as MnTimeUnit;
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use minarrow::*;
 
@@ -453,7 +455,7 @@ impl RecordBatchParser {
                     }
                 }
                 #[cfg(feature = "datetime")]
-                ArrowType::Date32 => {
+                ArrowType::Date32 | ArrowType::Time32(_) => {
                     let (slice, _) = Self::extract_buffer_slice(
                         &fbuf_meta,
                         &mut buffer_idx,
@@ -468,7 +470,10 @@ impl RecordBatchParser {
                     ))))
                 }
                 #[cfg(feature = "datetime")]
-                ArrowType::Date64 => {
+                ArrowType::Date64
+                | ArrowType::Timestamp(_, _)
+                | ArrowType::Time64(_)
+                | ArrowType::Duration64(_) => {
                     let (slice, _) = Self::extract_buffer_slice(
                         &fbuf_meta,
                         &mut buffer_idx,
@@ -1238,7 +1243,12 @@ pub fn decode_record_batch(
             }
 
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 | ArrowType::Date64 => {
+            ArrowType::Date32
+            | ArrowType::Date64
+            | ArrowType::Timestamp(_, _)
+            | ArrowType::Time32(_)
+            | ArrowType::Time64(_)
+            | ArrowType::Duration64(_) => {
                 let (off, len) = consume_buffer(
                     &buffers,
                     &mut buffer_idx,
@@ -1557,6 +1567,18 @@ fn make_numeric_array(
             data: minarrow::Buffer::from_shared(data),
             null_mask,
         }))),
+        #[cfg(feature = "datetime")]
+        ArrowType::Time32(_) => Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
+            data: minarrow::Buffer::from_shared(data),
+            null_mask,
+        }))),
+        #[cfg(feature = "datetime")]
+        ArrowType::Timestamp(_, _) | ArrowType::Time64(_) | ArrowType::Duration64(_) => {
+            Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+                data: minarrow::Buffer::from_shared(data),
+                null_mask,
+            })))
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1758,6 +1780,39 @@ fn convert_date_unit_fb(unit: fb::DateUnit) -> io::Result<ArrowType> {
     }
 }
 
+/// Convert the stream message schema's FlatBuffer TimeUnit to Minarrow's.
+#[cfg(feature = "datetime")]
+fn convert_time_unit_fb(unit: fb::TimeUnit) -> io::Result<MnTimeUnit> {
+    match unit {
+        fb::TimeUnit::SECOND => Ok(MnTimeUnit::Seconds),
+        fb::TimeUnit::MILLISECOND => Ok(MnTimeUnit::Milliseconds),
+        fb::TimeUnit::MICROSECOND => Ok(MnTimeUnit::Microseconds),
+        fb::TimeUnit::NANOSECOND => Ok(MnTimeUnit::Nanoseconds),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported time unit {unit:?}"),
+        )),
+    }
+}
+
+/// Convert the file footer schema's FlatBuffer TimeUnit to Minarrow's.
+#[cfg(feature = "datetime")]
+fn convert_time_unit_fbf(
+    unit: crate::arrow::file::org::apache::arrow::flatbuf::TimeUnit,
+) -> io::Result<MnTimeUnit> {
+    use crate::arrow::file::org::apache::arrow::flatbuf::TimeUnit;
+    match unit {
+        TimeUnit::SECOND => Ok(MnTimeUnit::Seconds),
+        TimeUnit::MILLISECOND => Ok(MnTimeUnit::Milliseconds),
+        TimeUnit::MICROSECOND => Ok(MnTimeUnit::Microseconds),
+        TimeUnit::NANOSECOND => Ok(MnTimeUnit::Nanoseconds),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported time unit {unit:?}"),
+        )),
+    }
+}
+
 /// Convert FlatBuffer DateUnit to ArrowType for the file footer schema.
 #[cfg(feature = "datetime")]
 fn convert_date_unit_fbf(
@@ -1822,6 +1877,38 @@ fn extract_base_type(fb_field: &fb::Field) -> io::Result<ArrowType> {
                 .type__as_date()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Date type"))?;
             convert_date_unit_fb(d.unit())
+        }
+        #[cfg(feature = "datetime")]
+        fb::Type::Timestamp => {
+            let t = fb_field.type__as_timestamp().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing Timestamp type")
+            })?;
+            Ok(ArrowType::Timestamp(
+                convert_time_unit_fb(t.unit())?,
+                t.timezone().map(|s| s.to_string()),
+            ))
+        }
+        #[cfg(feature = "datetime")]
+        fb::Type::Time => {
+            let t = fb_field
+                .type__as_time()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Time type"))?;
+            let unit = convert_time_unit_fb(t.unit())?;
+            match t.bitWidth() {
+                32 => Ok(ArrowType::Time32(unit)),
+                64 => Ok(ArrowType::Time64(unit)),
+                w => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported Time bit width {w}"),
+                )),
+            }
+        }
+        #[cfg(feature = "datetime")]
+        fb::Type::Duration => {
+            let d = fb_field.type__as_duration().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing Duration type")
+            })?;
+            Ok(ArrowType::Duration64(convert_time_unit_fb(d.unit())?))
         }
         fb::Type::Bool => Ok(ArrowType::Boolean),
         other => {
@@ -1966,6 +2053,40 @@ pub fn convert_fb_field_to_arrow(
                     io::Error::new(io::ErrorKind::InvalidData, "missing Date type")
                 })?;
                 convert_date_unit_fbf(d.unit())?
+            }
+            #[cfg(feature = "datetime")]
+            fbf::Type::Timestamp => {
+                let t = fbf_field.type__as_timestamp().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing Timestamp type")
+                })?;
+                ArrowType::Timestamp(
+                    convert_time_unit_fbf(t.unit())?,
+                    t.timezone().map(|s| s.to_string()),
+                )
+            }
+            #[cfg(feature = "datetime")]
+            fbf::Type::Time => {
+                let t = fbf_field.type__as_time().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing Time type")
+                })?;
+                let unit = convert_time_unit_fbf(t.unit())?;
+                match t.bitWidth() {
+                    32 => ArrowType::Time32(unit),
+                    64 => ArrowType::Time64(unit),
+                    w => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unsupported Time bit width {w}"),
+                        ));
+                    }
+                }
+            }
+            #[cfg(feature = "datetime")]
+            fbf::Type::Duration => {
+                let d = fbf_field.type__as_duration().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing Duration type")
+                })?;
+                ArrowType::Duration64(convert_time_unit_fbf(d.unit())?)
             }
             other => {
                 return Err(io::Error::new(

@@ -183,6 +183,48 @@ mod tests {
         assert_eq!(got.n_rows, 3);
     }
 
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn timestamp_columns_round_trip_with_unit_and_timezone() {
+        use minarrow::enums::time_units::TimeUnit;
+        use minarrow::{Array, ArrowType, DatetimeArray, FieldArray, NumericArray};
+
+        use crate::models::readers::ipc::file_table::FileTableReader;
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_path_buf();
+        let ts = FieldArray::new(
+            Field::new(
+                "ts_event",
+                ArrowType::Timestamp(TimeUnit::Nanoseconds, Some("UTC".into())),
+                false,
+                None,
+            ),
+            Array::from_datetime_i64(DatetimeArray::from_slice(
+                &[1_782_999_000_000_000_000, 1_782_999_000_000_000_001],
+                Some(TimeUnit::Nanoseconds),
+            )),
+        );
+        let table = Table::new("t", Some(vec![ts]));
+        let schema: Vec<Field> = table.cols.iter().map(|c| (*c.field).clone()).collect();
+
+        write_tables_to_file_sync(&path, std::slice::from_ref(&table), schema).unwrap();
+
+        let reader = FileTableReader::open(&path).unwrap();
+        let got = reader.read_batch(0).unwrap();
+        assert_eq!(got.n_rows, 2);
+        assert_eq!(
+            got.cols[0].field.dtype,
+            ArrowType::Timestamp(TimeUnit::Nanoseconds, Some("UTC".into())),
+        );
+        match &got.cols[0].array {
+            Array::NumericArray(NumericArray::Int64(a)) => {
+                assert_eq!(a.data.as_slice(), &[1_782_999_000_000_000_000, 1_782_999_000_000_000_001]);
+            }
+            other => panic!("timestamp column decoded as {other:?}"),
+        }
+    }
+
     #[test]
     fn writes_multiple_tables_via_file_protocol() {
         use crate::models::readers::ipc::file_table::FileTableReader;

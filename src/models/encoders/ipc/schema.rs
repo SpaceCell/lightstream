@@ -17,6 +17,8 @@
 use std::io::{self};
 
 use minarrow::ffi::arrow_dtype::CategoricalIndexType;
+#[cfg(feature = "datetime")]
+use minarrow::enums::time_units::TimeUnit;
 use minarrow::{ArrowType, Field};
 
 use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
@@ -260,6 +262,60 @@ fn build_flatbuf_field<'fbb>(
                 },
             );
             (fbm::Type::Date, Some(date.as_union_value()), None)
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::Timestamp(unit, tz) => {
+            let unit = match unit {
+                TimeUnit::Seconds => fbm::TimeUnit::SECOND,
+                TimeUnit::Milliseconds => fbm::TimeUnit::MILLISECOND,
+                TimeUnit::Microseconds => fbm::TimeUnit::MICROSECOND,
+                TimeUnit::Nanoseconds => fbm::TimeUnit::NANOSECOND,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Timestamp field '{}' has non-clock unit {other:?}", field.name),
+                    ));
+                }
+            };
+            let timezone = tz.as_ref().map(|s| fbb.create_string(s));
+            let ts = fbm::Timestamp::create(fbb, &fbm::TimestampArgs { unit, timezone });
+            (fbm::Type::Timestamp, Some(ts.as_union_value()), None)
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::Time32(unit) | ArrowType::Time64(unit) => {
+            let bit_width: i32 =
+                if matches!(&field.dtype, ArrowType::Time32(_)) { 32 } else { 64 };
+            let unit = match unit {
+                TimeUnit::Seconds => fbm::TimeUnit::SECOND,
+                TimeUnit::Milliseconds => fbm::TimeUnit::MILLISECOND,
+                TimeUnit::Microseconds => fbm::TimeUnit::MICROSECOND,
+                TimeUnit::Nanoseconds => fbm::TimeUnit::NANOSECOND,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Time field '{}' has non-clock unit {other:?}", field.name),
+                    ));
+                }
+            };
+            let time = fbm::Time::create(fbb, &fbm::TimeArgs { unit, bitWidth: bit_width });
+            (fbm::Type::Time, Some(time.as_union_value()), None)
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::Duration64(unit) => {
+            let unit = match unit {
+                TimeUnit::Seconds => fbm::TimeUnit::SECOND,
+                TimeUnit::Milliseconds => fbm::TimeUnit::MILLISECOND,
+                TimeUnit::Microseconds => fbm::TimeUnit::MICROSECOND,
+                TimeUnit::Nanoseconds => fbm::TimeUnit::NANOSECOND,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Duration field '{}' has non-clock unit {other:?}", field.name),
+                    ));
+                }
+            };
+            let duration = fbm::Duration::create(fbb, &fbm::DurationArgs { unit });
+            (fbm::Type::Duration, Some(duration.as_union_value()), None)
         }
         ArrowType::Dictionary(idx_ty) => {
             // Build index type for dictionary
@@ -700,6 +756,60 @@ fn build_flatbuf_field_file<'fbb>(
                 },
             );
             (fbf::Type::Date, Some(date.as_union_value()), None)
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::Timestamp(unit, tz) => {
+            let unit = match unit {
+                TimeUnit::Seconds => fbf::TimeUnit::SECOND,
+                TimeUnit::Milliseconds => fbf::TimeUnit::MILLISECOND,
+                TimeUnit::Microseconds => fbf::TimeUnit::MICROSECOND,
+                TimeUnit::Nanoseconds => fbf::TimeUnit::NANOSECOND,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Timestamp field '{}' has non-clock unit {other:?}", field.name),
+                    ));
+                }
+            };
+            let timezone = tz.as_ref().map(|s| fbb.create_string(s));
+            let ts = fbf::Timestamp::create(fbb, &fbf::TimestampArgs { unit, timezone });
+            (fbf::Type::Timestamp, Some(ts.as_union_value()), None)
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::Time32(unit) | ArrowType::Time64(unit) => {
+            let bit_width: i32 =
+                if matches!(&field.dtype, ArrowType::Time32(_)) { 32 } else { 64 };
+            let unit = match unit {
+                TimeUnit::Seconds => fbf::TimeUnit::SECOND,
+                TimeUnit::Milliseconds => fbf::TimeUnit::MILLISECOND,
+                TimeUnit::Microseconds => fbf::TimeUnit::MICROSECOND,
+                TimeUnit::Nanoseconds => fbf::TimeUnit::NANOSECOND,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Time field '{}' has non-clock unit {other:?}", field.name),
+                    ));
+                }
+            };
+            let time = fbf::Time::create(fbb, &fbf::TimeArgs { unit, bitWidth: bit_width });
+            (fbf::Type::Time, Some(time.as_union_value()), None)
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::Duration64(unit) => {
+            let unit = match unit {
+                TimeUnit::Seconds => fbf::TimeUnit::SECOND,
+                TimeUnit::Milliseconds => fbf::TimeUnit::MILLISECOND,
+                TimeUnit::Microseconds => fbf::TimeUnit::MICROSECOND,
+                TimeUnit::Nanoseconds => fbf::TimeUnit::NANOSECOND,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Duration field '{}' has non-clock unit {other:?}", field.name),
+                    ));
+                }
+            };
+            let duration = fbf::Duration::create(fbb, &fbf::DurationArgs { unit });
+            (fbf::Type::Duration, Some(duration.as_union_value()), None)
         }
         ArrowType::Dictionary(idx_ty) => {
             let idx_width = match idx_ty {
