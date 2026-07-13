@@ -494,7 +494,11 @@ pub(crate) fn encode_record_batch<B: StreamBuffer + Unpin>(
 /// Record a null mask region into the body layout.
 ///
 /// When the column is nullable and has a mask, pushes the mask bytes.
-/// Otherwise records a zero-length buffer in the flatbuffer metadata.
+/// Otherwise records a zero-length buffer in the flatbuffer metadata and
+/// an empty region, keeping regions and buffer metadata index-aligned.
+/// The compression path rebuilds the buffer metadata one entry per
+/// region, so a metadata-only placeholder would shift every buffer that
+/// follows it.
 fn push_null_region<'a, B: StreamBuffer>(
     nullable: bool,
     mask: Option<&'a Bitmask>,
@@ -512,6 +516,7 @@ fn push_null_region<'a, B: StreamBuffer>(
             return;
         }
     fb_buffers.push(fbm::Buffer::new(0, 0));
+    regions.push(WireRegion { data: &[], pad: 0 });
 }
 
 /// Record a data region into the body layout.

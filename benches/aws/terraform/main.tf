@@ -6,7 +6,7 @@
 #
 # Each instance is configured with chrony and increased resource limits.
 # Lightstream binaries must be copied to the instances after `terraform apply`,
-# then the benchmark can be run with `bench/aws/run.sh`.
+# then the benchmark can be run with `benches/aws/run.sh`.
 #
 # Outputs provide the public IP addresses for SSH access and the sender's private
 # IP address for the receiver connection.
@@ -57,14 +57,14 @@ data "aws_subnet" "selected" {
   id = local.subnet_id
 }
 
-# Latest Amazon Linux 2023 AMI for the chosen architecture.
-data "aws_ami" "al2023" {
+# Latest Ubuntu 24.04 LTS AMI for the chosen architecture.
+data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["amazon"]
+  owners      = ["099720109477"]
 
   filter {
     name   = "name"
-    values = ["al2023-ami-2023.*-${var.architecture}"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-${var.architecture == "x86_64" ? "amd64" : "arm64"}-server-*"]
   }
 
   filter {
@@ -101,16 +101,17 @@ resource "aws_security_group" "bench" {
   }
 }
 
-# Separate rule so the group can reference itself. The bench port is open
-# from any instance in this SG to any other
+# Separate rule so the group can reference itself. All traffic is open
+# between SG members, covering the bench port, the Flight comparison
+# ports and iperf3.
 resource "aws_security_group_rule" "bench_self_ingress" {
   type                     = "ingress"
-  from_port                = var.bench_port
-  to_port                  = var.bench_port
-  protocol                 = "tcp"
+  from_port                = 0
+  to_port                  = 0
+  protocol                 = "-1"
   security_group_id        = aws_security_group.bench.id
   source_security_group_id = aws_security_group.bench.id
-  description              = "lightstream bench port between SG members"
+  description              = "all traffic between SG members"
 }
 
 resource "random_id" "suffix" {
@@ -138,7 +139,7 @@ resource "aws_placement_group" "bench" {
 }
 
 resource "aws_instance" "sender" {
-  ami                         = data.aws_ami.al2023.id
+  ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
   subnet_id                   = local.subnet_id
   key_name                    = aws_key_pair.bench.key_name
@@ -155,7 +156,7 @@ resource "aws_instance" "sender" {
 }
 
 resource "aws_instance" "receiver" {
-  ami                         = data.aws_ami.al2023.id
+  ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
   subnet_id                   = local.subnet_id
   key_name                    = aws_key_pair.bench.key_name
@@ -171,13 +172,17 @@ resource "aws_instance" "receiver" {
   }
 }
 
-# Enable chrony for accurate benchmark timing and increase the open-file limit
-# to support the benchmark's sockets and buffers.
+# Enable chrony for accurate benchmark timing, install iperf3 for the
+# line-rate baseline, and increase the open-file limit to support the
+# benchmark's sockets and buffers.
 locals {
   bootstrap_user_data = <<-EOT
     #!/bin/bash
     set -eu
-    systemctl enable --now chronyd
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq chrony iperf3
+    systemctl enable --now chrony
     echo '*  soft  nofile  65536' >> /etc/security/limits.conf
     echo '*  hard  nofile  65536' >> /etc/security/limits.conf
   EOT
@@ -244,7 +249,7 @@ variable "bench_port" {
 }
 
 ################################################################################
-# Outputs used by `bench/aws/run.sh`.
+# Outputs used by `benches/aws/run.sh`.
 ################################################################################
 
 output "sender_public_ip" {
@@ -269,17 +274,17 @@ output "availability_zone" {
 
 output "ssh_user" {
   description = "SSH username for Amazon Linux 2023."
-  value       = "ec2-user"
+  value       = "ubuntu"
 }
 
 output "run_sh_invocation" {
   description = "Command for running the benchmark with the provisioned instances."
   value = <<-EOT
-    SENDER_HOST=ec2-user@${aws_instance.sender.public_ip} \
-    RECEIVER_HOST=ec2-user@${aws_instance.receiver.public_ip} \
+    SENDER_HOST=ubuntu@${aws_instance.sender.public_ip} \
+    RECEIVER_HOST=ubuntu@${aws_instance.receiver.public_ip} \
     SENDER_PRIVATE_IP=${aws_instance.sender.private_ip} \
     SSH_OPTS="-i <your-private-key.pem> -o StrictHostKeyChecking=accept-new" \
-    bench/aws/run.sh
+    benches/aws/run.sh
   EOT
 }
 

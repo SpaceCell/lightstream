@@ -8,8 +8,8 @@
 //!
 //! Core data structures for Arrow IPC frame encoding.
 //!
-//! - [`ArrowIPCMessage`] wraps a FlatBuffers metadata message and its associated body buffer.
-//! - [`IPCFrameMetadata`] tracks byte lengths and padding for all frame sections, used to compute
+//! - [`ArrowIPCMessage`](crate::models::frames::ipc_message::ArrowIPCMessage) wraps a FlatBuffers metadata message and its associated body buffer.
+//! - [`IPCFrameMetadata`](crate::models::frames::ipc_message::IPCFrameMetadata) tracks byte lengths and padding for all frame sections, used to compute
 //!   total frame size and to ensure compliance with Arrow IPC alignment rules.
 //!
 //! These are internal, low-level components used by the IPC encoders and writers.

@@ -9,7 +9,7 @@
 //! High-level async reader that connects to a UDS endpoint streaming
 //! Arrow IPC data and decodes it into MinArrow tables.
 //!
-//! Wraps [`TableReader`] over a [`UdsByteStream`], hiding the wiring
+//! Wraps [`TableReader`](crate::models::readers::ipc::table::TableReader) over a [`UdsByteStream`](crate::models::streams::uds::UdsByteStream), hiding the wiring
 //! so callers get a one-liner API.
 //!
 //! ## Continuous streaming

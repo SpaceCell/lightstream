@@ -41,11 +41,11 @@ pub fn push_value_into(
         ColumnBuilder::Int32(a) => {
             push_int(a, value, policy, row, field, |v| i32::try_from(v).ok())?
         }
-        ColumnBuilder::Int64(a) => push_int(a, value, policy, row, field, |v| Some(v))?,
+        ColumnBuilder::Int64(a) => push_int(a, value, policy, row, field, Some)?,
         ColumnBuilder::UInt32(a) => {
             push_uint(a, value, policy, row, field, |v| u32::try_from(v).ok())?
         }
-        ColumnBuilder::UInt64(a) => push_uint(a, value, policy, row, field, |v| Some(v))?,
+        ColumnBuilder::UInt64(a) => push_uint(a, value, policy, row, field, Some)?,
         ColumnBuilder::Float32(a) => push_float(a, value, policy, row, field, |v| v as f32)?,
         ColumnBuilder::Float64(a) => push_float(a, value, policy, row, field, |v| v)?,
         ColumnBuilder::Boolean(a) => push_bool(a, value, policy, row, field)?,

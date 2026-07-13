@@ -8,7 +8,7 @@
 //!
 //! Tables from all streams are exposed through a single merged stream. Order
 //! within a source stream is always preserved. Global write order across
-//! streams is recovered with [`SortBehaviour::Ordered`], which pulls the
+//! streams is recovered with [`SortBehaviour::Ordered`](crate::traits::parallel_transport_reader::SortBehaviour::Ordered), which pulls the
 //! streams in the writer's round-robin rotation.
 
 use std::future::Future;

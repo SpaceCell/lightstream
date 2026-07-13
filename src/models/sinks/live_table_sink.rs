@@ -7,26 +7,26 @@
 //! # Live-table sink
 //!
 //! The live counterpart of [`TableSink`](crate::models::sinks::table_sink).
-//! Records push into a set of [`LBuffer`]-backed columns one row at a time,
-//! and any number of consumers read the live [`Table`] while it is written.
+//! Records push into a set of [`LBuffer`](minarrow::LBuffer)-backed columns one row at a time,
+//! and any number of consumers read the live [`Table`](minarrow::Table) while it is written.
 //! The table wraps the buffers zero-copy via `Buffer::from_lbuffer`, and a
 //! row becomes visible once its last column's atomic length advances.
 //!
-//! [`push_record`](LiveTableSink::push_record) takes one record of a decoded
+//! [`push_record`](crate::models::sinks::live_table_sink::LiveTableSink::push_record) takes one record of a decoded
 //! frame and appends all of its columns before returning, converting each
-//! value into the column type per its [`ReadAs`]. Readable rows advance only
+//! value into the column type per its [`ReadAs`](crate::models::interfaces::json::schema::ReadAs). Readable rows advance only
 //! over complete records. When a column write fails partway through a
-//! record, [`PushRecordError::partial`] reports the row as incomplete and
-//! the caller [`roll`](LiveTableSink::roll)s, so readers never see past the
+//! record, [`PushRecordError::partial`](crate::models::sinks::live_table_sink::PushRecordError::partial) reports the row as incomplete and
+//! the caller [`roll`](crate::models::sinks::live_table_sink::LiveTableSink::roll)s, so readers never see past the
 //! last complete row.
 //!
-//! The typed pushes ([`push_i64`](LiveTableSink::push_i64),
-//! [`push_str`](LiveTableSink::push_str), and siblings) serve sources
+//! The typed pushes ([`push_i64`](crate::models::sinks::live_table_sink::LiveTableSink::push_i64),
+//! [`push_str`](crate::models::sinks::live_table_sink::LiveTableSink::push_str), and siblings) serve sources
 //! whose records arrive already typed. Columns land one at a time in
 //! schema order and the row publishes when its last column lands.
 //!
 //! The caller owns the batch policy. It checks
-//! [`is_full`](LiveTableSink::is_full) and decides when to roll. A roll seals
+//! [`is_full`](crate::models::sinks::live_table_sink::LiveTableSink::is_full) and decides when to roll. A roll seals
 //! every buffer, freezing the published lengths, opens fresh ones, and
 //! returns the new live table. The sealed batch lives on in whichever
 //! `Arc<Table>` handle consumers hold.

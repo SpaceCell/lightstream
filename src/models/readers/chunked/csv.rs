@@ -12,7 +12,7 @@
 //! rows). The reader sorts files by their numeric index so consumers see
 //! batches in write order.
 //!
-//! Inherits [`ChunkedTableReader::par_load_batched`] for sync parallel
+//! Inherits [`ChunkedTableReader::par_load_batched`](crate::traits::chunked_table_reader::ChunkedTableReader::par_load_batched) for sync parallel
 //! decode across chunk files.
 
 use std::fs::{self, File};
@@ -109,18 +109,13 @@ impl ChunkedTableReader for ChunkedCsvReader {
         // accumulate batches if the chunk is large enough that the reader
         // splits internally) into one Table.
         let mut accumulated: Option<Table> = None;
-        loop {
-            match csv.next_batch()? {
-                Some(batch) => {
-                    accumulated = Some(match accumulated {
-                        None => batch,
-                        Some(existing) => existing.concat(batch).map_err(|e| {
-                            io::Error::new(io::ErrorKind::InvalidData, format!("concat: {e}"))
-                        })?,
-                    });
-                }
-                None => break,
-            }
+        while let Some(batch) = csv.next_batch()? {
+            accumulated = Some(match accumulated {
+                None => batch,
+                Some(existing) => existing.concat(batch).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("concat: {e}"))
+                })?,
+            });
         }
         Ok(accumulated.unwrap_or_default())
     }
@@ -178,12 +173,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
-        w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 1, 2, 3)])))
+        w.write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 1, 2, 3)])))
             .unwrap();
-        w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 4, 5)])))
+        w.write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 4, 5)])))
             .unwrap();
         w.write_chunk(&Table::new(
-            "b".into(),
+            "b",
             Some(vec![fa_i32!("n", 6, 7, 8, 9)]),
         ))
         .unwrap();
@@ -212,7 +207,7 @@ mod tests {
         let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
         for i in 0..12i32 {
             w.write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!["n", i, i + 100]]),
             ))
             .unwrap();
@@ -251,9 +246,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
-        w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 10)])))
+        w.write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 10)])))
             .unwrap();
-        w.write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 20, 21)])))
+        w.write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 20, 21)])))
             .unwrap();
 
         let reader = ChunkedCsvReader::open(

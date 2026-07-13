@@ -74,6 +74,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -118,6 +119,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -163,6 +165,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -237,6 +240,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -300,6 +304,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -358,6 +363,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -402,6 +408,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 
@@ -479,6 +486,7 @@ fn bench_throughput(c: &mut Criterion) {
                 for _ in 0..n {
                     let msg = conn.recv().await.unwrap().unwrap();
                     assert!(msg.is_table());
+                    std::hint::black_box(&msg);
                 }
                 let elapsed = start.elapsed();
 

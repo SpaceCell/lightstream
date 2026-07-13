@@ -6,7 +6,7 @@
 
 //! Buffer wrapper for tokio-uring compatibility.
 //!
-//! Wraps Vec64<u8> in a newtype so we can implement IoBuf/IoBufMut
+//! Wraps `Vec64<u8>` in a newtype so we can implement IoBuf/IoBufMut
 //! without hitting orphan rules. Used for both reads and writes where
 //! we need 64-byte alignment and io_uring compatibility.
 

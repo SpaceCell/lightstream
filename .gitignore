@@ -33,3 +33,8 @@ python
 
 # Cross-host benchmark result captures written by bench/cluster/run.sh
 bench/cluster/results-*.txt
+bench/aws/results*
+bench/aws/terraform/.terraform.lock.hcl
+bench/aws/terraform/.terraform/
+bench/aws/terraform/terraform.tfstate
+bench/aws/terraform/terraform.tfstate.backup

@@ -6,7 +6,7 @@
 
 //! # TLV Frame Decoder
 //!
-//! Provides a [`FrameDecoder`] implementation for Type-Length-Value (TLV) encoded frames.
+//! Provides a [`FrameDecoder`](crate::traits::frame_decoder::FrameDecoder) implementation for Type-Length-Value (TLV) encoded frames.
 //!
 //! ## Format
 //! - **Type**: 1 byte (`u8`)
@@ -15,7 +15,7 @@
 //!
 //! Example frame layout: `[type][length][value...]`
 //!
-//! Produces [`TLVDecodedFrame`] instances for downstream consumers.
+//! Produces [`TLVDecodedFrame`](crate::models::frames::tlv_frame::TLVDecodedFrame) instances for downstream consumers.
 
 use std::convert::TryInto;
 use std::io;

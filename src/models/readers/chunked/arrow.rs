@@ -23,7 +23,7 @@
 //!
 //! Across files the picture changes: chunk files are independent, so
 //! parallel reads scale roughly with disk queue depth and core count.
-//! [`ChunkedTableReader::par_load_batched`] (inherited from the trait) uses
+//! [`ChunkedTableReader::par_load_batched`](crate::traits::chunked_table_reader::ChunkedTableReader::par_load_batched) (inherited from the trait) uses
 //! `std::thread::scope` to fan per-chunk work (open + footer + body +
 //! decode) across worker threads and returns a `SuperTable` with batches
 //! in write order.

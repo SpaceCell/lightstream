@@ -7,7 +7,7 @@
 //! # Asynchronous TLV sink
 //!
 //! Wraps any `AsyncWrite` and streams Type-Length-Value (TLV) frames produced
-//! by [`TLVStreamWriter`].
+//! by [`TLVStreamWriter`](crate::models::encoders::tlv::tlv_stream::TLVStreamWriter).
 //!
 //! ## Overview:
 //! - Encodes frames as `[type: u8][length: u32 LE][value: bytes]`.

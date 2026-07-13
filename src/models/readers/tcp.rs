@@ -9,7 +9,7 @@
 //! High-level async reader that connects to a TCP endpoint streaming
 //! Arrow IPC data and decodes it into MinArrow tables.
 //!
-//! Wraps [`TableReader`] over a [`TcpByteStream`], hiding the wiring
+//! Wraps [`TableReader`](crate::models::readers::ipc::table::TableReader) over a [`TcpByteStream`](crate::models::streams::tcp::TcpByteStream), hiding the wiring
 //! so callers get a one-liner API.
 //!
 //! ## Continuous streaming

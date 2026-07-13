@@ -18,9 +18,24 @@ categories = [
     "network-programming",
 ]
 description = "Composable, zero-copy Arrow IPC and native data streaming for Rust with SIMD-aligned I/O, async support, and memory-mapping."
-repository = "https://github.com/pbower/lightstream"
-homepage = "https://github.com/pbower/lightstream"
+repository = "https://github.com/SpaceCell/lightstream"
+homepage = "https://github.com/SpaceCell/lightstream"
 documentation = "https://docs.rs/lightstream"
+# Deployment infrastructure for the cross-host benchmark rigs. The bench
+# binaries themselves ship as examples. The provisioning files do not
+# belong in the published library crate.
+exclude = [
+    ".github/",
+    "benches/aws/Dockerfile",
+    "benches/aws/run.sh",
+    "benches/aws/terraform/",
+    "benches/ecs/Dockerfile",
+    "benches/ecs/.dockerignore",
+    "benches/ecs/terraform/",
+    "benches/ecs/run.sh",
+    "benches/ecs/run-local-docker.sh",
+    "run-lightstream-industry-bench-local.sh",
+]
 
 [dependencies]
 tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros", "sync"] }
@@ -30,7 +45,7 @@ flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
 log = "0.4"
-minarrow = { path = "../../minarrow", version = "0.15.0", features = ["chunked", "views", "select", "large_string", "size"], default-features = false }
+minarrow = { path = "../minarrow", version = "0.15.0", features = ["chunked", "views", "select", "large_string", "size"], default-features = false }
 vec64 = { version = "0.4.3" }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
@@ -249,23 +264,23 @@ required-features = ["tcp"]
 
 [[example]]
 name = "bench_sender"
-path = "bench/aws/sender.rs"
+path = "benches/aws/sender.rs"
 required-features = ["tcp"]
 
 [[example]]
 name = "bench_receiver"
-path = "bench/aws/receiver.rs"
+path = "benches/aws/receiver.rs"
 required-features = ["tcp"]
 
 [[example]]
-name = "bench_vpc_source"
-path = "bench/cluster/source.rs"
-required-features = ["bench_arrow_flight", "tcp", "protocol"]
+name = "bench_ecs_source"
+path = "benches/ecs/source.rs"
+required-features = ["bench_arrow_flight", "tcp", "mmap"]
 
 [[example]]
-name = "bench_vpc_sink"
-path = "bench/cluster/sink.rs"
-required-features = ["bench_arrow_flight", "tcp", "protocol"]
+name = "bench_ecs_sink"
+path = "benches/ecs/sink.rs"
+required-features = ["bench_arrow_flight", "tcp", "mmap"]
 
 [[example]]
 name = "tcp_arrow_tls"

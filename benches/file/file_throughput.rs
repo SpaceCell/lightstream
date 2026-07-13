@@ -200,9 +200,10 @@ fn bench_file_throughput(c: &mut Criterion) {
         });
     });
 
-    // arrow-rs zero-copy mmap reader via FileDecoder
+    // arrow-rs zero-copy FileDecoder over a buffer preloaded outside the
+    // timed region. Excludes file I/O, so compare with warm reads only.
     #[cfg(feature = "bench_arrow")]
-    group.bench_function("read_arrow_rs_mmap", |b| {
+    group.bench_function("read_arrow_rs_inmemory", |b| {
         use arrow::buffer::Buffer;
         use arrow::ipc::convert::fb_to_schema;
         use arrow::ipc::reader::{FileDecoder, read_footer_length};
@@ -210,7 +211,7 @@ fn bench_file_throughput(c: &mut Criterion) {
         use std::fs::File as StdFile;
         use std::io::Read as _;
 
-        // Read file into an arrow Buffer once for the mmap-like path
+        // Read the file into an arrow Buffer once, outside the timed region
         let mut file = StdFile::open(&read_path).unwrap();
         let mut data = Vec::new();
         file.read_to_end(&mut data).unwrap();

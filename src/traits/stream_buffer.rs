@@ -104,7 +104,7 @@ pub trait StreamBuffer:
     fn from_slice(data: &[u8]) -> Self;
 
     /// Convert into a SharedBuffer for zero-copy Arrow decode.
-    /// Both Vec<u8> and Vec64<u8> are wrapped without copying data.
+    /// Both `Vec<u8>` and `Vec64<u8>` are wrapped without copying data.
     fn into_shared_buffer(self) -> SharedBuffer;
 }
 

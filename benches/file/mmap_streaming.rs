@@ -4,8 +4,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// TODO: Fix - Lightstream has column projection
-
 //! Benchmarks memory-mapped streaming with cold and warm page-cache states.
 //! Linux only.
 //!
@@ -25,17 +23,17 @@
 //!
 //! - Polars uses `IpcReader::memory_mapped(None).with_columns(["values"])`.
 //! - Arrow-rs uses `FileReader::try_new(file, Some(vec![1]))`.
-//! - Lightstream currently reads the complete batch because `MmapTableReader`
-//!   does not expose column projection.
+//! - Lightstream uses `MmapTableReader::read_batch_cols` and
+//!   `FileTableReader::read_batch_cols`.
 //!
-//! Projected results should not be compared directly with Lightstream results,
-//! because the amount of data read differs.
+//! Projected results should only be compared with other projected results,
+//! because the amount of data read differs from the full-batch variants.
 //!
 //! ## Benchmark file
 //!
 //! `LIGHTSTREAM_MMAP_BENCH_DIR` sets the file directory. The default is
-//! `/tmp/lightstream_mmap_bench`. Use a disk-backed directory such as
-//! `/var/tmp` when `/tmp` is mounted as `tmpfs`.
+//! `/var/tmp/lightstream_mmap_bench`. `/tmp` is avoided because it is commonly
+//! mounted as `tmpfs`, where cache eviction produces no cold storage read.
 //!
 //! `LIGHTSTREAM_MMAP_BENCH_SIZE_GIB` sets the file size in GiB and defaults to
 //! 2. An existing file is reused when its size matches the requested size.
@@ -96,7 +94,7 @@ fn bench_mmap_streaming(c: &mut Criterion) {
     let path = state.path.clone();
     let n_batches = state.n_batches;
 
-    // ---- lightstream mmap (no projection - matches what minarrow ships today) -
+    // ---- lightstream mmap, full batch -----------------------------------------
     group.bench_function("lightstream_mmap_cold", |b| {
         b.iter_batched(
             || evict_file_cache(&path),
@@ -131,6 +129,42 @@ fn bench_mmap_streaming(c: &mut Criterion) {
         std::hint::black_box(sum_lightstream_file(&path, n_batches));
         b.iter(|| {
             let s = sum_lightstream_file(&path, n_batches);
+            std::hint::black_box(s);
+        });
+    });
+
+    // ---- lightstream mmap and file, projected to the `values` column ----------
+    group.bench_function("lightstream_mmap_projected_cold", |b| {
+        b.iter_batched(
+            || evict_file_cache(&path),
+            |_| {
+                let s = sum_lightstream_mmap_projected(&path, n_batches);
+                std::hint::black_box(s);
+            },
+            criterion::BatchSize::PerIteration,
+        );
+    });
+    group.bench_function("lightstream_mmap_projected_warm", |b| {
+        std::hint::black_box(sum_lightstream_mmap_projected(&path, n_batches));
+        b.iter(|| {
+            let s = sum_lightstream_mmap_projected(&path, n_batches);
+            std::hint::black_box(s);
+        });
+    });
+    group.bench_function("lightstream_file_projected_cold", |b| {
+        b.iter_batched(
+            || evict_file_cache(&path),
+            |_| {
+                let s = sum_lightstream_file_projected(&path, n_batches);
+                std::hint::black_box(s);
+            },
+            criterion::BatchSize::PerIteration,
+        );
+    });
+    group.bench_function("lightstream_file_projected_warm", |b| {
+        std::hint::black_box(sum_lightstream_file_projected(&path, n_batches));
+        b.iter(|| {
+            let s = sum_lightstream_file_projected(&path, n_batches);
             std::hint::black_box(s);
         });
     });
@@ -288,7 +322,7 @@ fn sum_lightstream_mmap(path: &PathBuf, n_batches: usize) -> f64 {
     let mut sum = 0.0f64;
     for i in 0..n_batches {
         let batch = reader.read_batch(i).unwrap();
-        sum += sum_values_column(&batch);
+        sum += sum_values_column(&batch, VALUES_COL_INDEX);
     }
     sum
 }
@@ -298,20 +332,43 @@ fn sum_lightstream_file(path: &PathBuf, n_batches: usize) -> f64 {
     let mut sum = 0.0f64;
     for i in 0..n_batches {
         let batch = reader.read_batch(i).unwrap();
-        sum += sum_values_column(&batch);
+        sum += sum_values_column(&batch, VALUES_COL_INDEX);
     }
     sum
 }
 
-fn sum_values_column(batch: &Table) -> f64 {
-    if let Array::NumericArray(NumericArray::Float64(arr)) = &batch.cols[VALUES_COL_INDEX].array {
+// Projected variants read only the `values` column, which lands at index 0
+// of the projected batch.
+
+fn sum_lightstream_mmap_projected(path: &PathBuf, n_batches: usize) -> f64 {
+    let reader = MmapTableReader::open(path).unwrap();
+    let mut sum = 0.0f64;
+    for i in 0..n_batches {
+        let batch = reader.read_batch_cols(i, &[VALUES_COL_NAME]).unwrap();
+        sum += sum_values_column(&batch, 0);
+    }
+    sum
+}
+
+fn sum_lightstream_file_projected(path: &PathBuf, n_batches: usize) -> f64 {
+    let reader = FileTableReader::open(path).unwrap();
+    let mut sum = 0.0f64;
+    for i in 0..n_batches {
+        let batch = reader.read_batch_cols(i, &[VALUES_COL_NAME]).unwrap();
+        sum += sum_values_column(&batch, 0);
+    }
+    sum
+}
+
+fn sum_values_column(batch: &Table, col: usize) -> f64 {
+    if let Array::NumericArray(NumericArray::Float64(arr)) = &batch.cols[col].array {
         let mut acc = 0.0f64;
         for v in arr.data.iter() {
             acc += *v;
         }
         acc
     } else {
-        panic!("expected Float64 array at col {VALUES_COL_INDEX}");
+        panic!("expected Float64 array at col {col}");
     }
 }
 
@@ -419,7 +476,7 @@ fn sum_polars_mmap(path: &PathBuf, projection: Option<Vec<String>>) -> f64 {
 fn generate_file() -> FileState {
     let dir = std::env::var("LIGHTSTREAM_MMAP_BENCH_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/lightstream_mmap_bench"));
+        .unwrap_or_else(|_| PathBuf::from("/var/tmp/lightstream_mmap_bench"));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!(
         "{}_{}GiB.arrow",
@@ -432,13 +489,14 @@ fn generate_file() -> FileState {
     let target_bytes = (target_file_size_gib() as u64) * (1 << 30);
     let n_batches = ((target_bytes + bytes_per_batch - 1) / bytes_per_batch) as usize;
 
-    // Reuse existing file when the size matches the active
+    // Reuse the existing file when it covers the active
     // `LIGHTSTREAM_MMAP_BENCH_SIZE_GIB`. This keeps multi-GiB writes
-    // from happening on every `cargo bench`. The check is exact-size
-    // rather than greater-equal so changing the size variable forces
-    // a regen rather than reusing a too-large file from a prior run.
+    // from happening on every `cargo bench`. The file name encodes the
+    // target size, so a different size setting resolves to its own file.
+    // Encoded files carry framing overhead above the logical payload,
+    // so the check is at-least-target rather than exact.
     if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() == target_bytes {
+        if meta.len() >= target_bytes {
             eprintln!(
                 "[mmap_streaming] reusing existing {} GiB bench file at {}",
                 target_file_size_gib(),
@@ -450,11 +508,11 @@ fn generate_file() -> FileState {
                 bytes_per_batch,
             };
         }
-        // Existing path with the wrong size - remove it before
+        // Existing path is smaller than the target - remove it before
         // writing a fresh one so we never leave two multi-GiB files
         // sitting next to each other.
         eprintln!(
-            "[mmap_streaming] existing file at {} is {} bytes (wanted {}); removing before regen",
+            "[mmap_streaming] existing file at {} is {} bytes (wanted at least {}); removing before regen",
             path.display(),
             meta.len(),
             target_bytes

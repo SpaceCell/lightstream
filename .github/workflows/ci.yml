@@ -1,12 +1,10 @@
 name: CI
 
 on:
-  # Automatic push and pull_request triggers are paused. Re-enable by
-  # uncommenting the two blocks below.
-  # push:
-  #   branches: [main]
-  # pull_request:
-  #   branches: [main]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -80,6 +78,18 @@ jobs:
       - name: cargo test --lib
         run: cargo test --lib
 
+  test-all-targets:
+    name: test (all targets, full features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      # io_uring is excluded because completion-queue support varies across
+      # hosted CI kernels. The build-test matrix covers its lib tests.
+      - name: cargo test --all-targets
+        run: cargo test --all-targets --features "tcp,uds,stdio,websocket,http,quic,webtransport,mmap,csv,json,parquet,zstd,snappy,protocol,msgpack,protobuf,tls"
+
   doc:
     name: cargo doc
     runs-on: ubuntu-latest
@@ -89,6 +99,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc
         run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   package:
     name: cargo package (smoke)

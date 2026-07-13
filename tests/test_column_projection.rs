@@ -240,7 +240,6 @@ async fn mmap_read_batch_cols_all_equals_read_batch() {
 
 #[cfg(feature = "parquet")]
 mod parquet {
-    use lightstream::compression::Compression;
     use lightstream::models::readers::parquet::{load_parquet_table_cols, load_parquet_table};
     use lightstream::models::writers::parquet::write_parquet_table;
     use minarrow::{

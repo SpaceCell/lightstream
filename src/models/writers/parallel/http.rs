@@ -8,7 +8,7 @@
 //!
 //! Fans one table sequence across several concurrent HTTP/2 request
 //! streams on a single h2 client connection. Each stream runs its own
-//! [`HttpTableWriter`] driven by a dedicated task, so the streams upload
+//! [`HttpTableWriter`](crate::models::writers::http::HttpTableWriter) driven by a dedicated task, so the streams upload
 //! in parallel and aggregate throughput is the sum across them.
 //!
 //! Each stream carries an independent ordered sequence of batches;

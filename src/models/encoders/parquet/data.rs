@@ -92,7 +92,7 @@ pub fn encode_bool_bitpacked(
     let mut byte = 0u8;
     let mut bit = 0;
     for i in 0..len {
-        let valid = null_mask.map_or(true, |m| m.get(i));
+        let valid = null_mask.is_none_or(|m| m.get(i));
         let v = if valid { values.get(i) } else { false };
         if v {
             byte |= 1 << bit;
@@ -123,7 +123,7 @@ pub fn encode_string_plain(
 ) -> Result<(), IoError> {
     for i in 0..len {
         // always emit a 4-byte length prefix
-        let valid = null_mask.map_or(true, |m| m.get(i));
+        let valid = null_mask.is_none_or(|m| m.get(i));
         let start = offsets[i] as usize;
         let end = offsets[i + 1] as usize;
         let s_len = if valid { end - start } else { 0 };
@@ -148,7 +148,7 @@ pub fn encode_large_string_plain(
     out: &mut Vec<u8>,
 ) -> Result<(), IoError> {
     for i in 0..len {
-        let valid = null_mask.map_or(true, |m| m.get(i));
+        let valid = null_mask.is_none_or(|m| m.get(i));
         let start = offsets[i] as usize;
         let end = offsets[i + 1] as usize;
         let s_len = if valid { end - start } else { 0 };
@@ -197,7 +197,7 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
     }
 
     // ---------- bit-width ------------------------------------------------
-    let bit_width = (32 - indices.iter().max().unwrap().leading_zeros()) as u8;
+    let bit_width = (32 - indices.iter().max().unwrap().leading_zeros()).max(1) as u8;
     debug_assert!(bit_width != 0 && bit_width <= 32);
     out.push(bit_width);
 
@@ -215,7 +215,7 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
         }
     }
 
-    let bytes_per_val = ((bit_width + 7) / 8) as usize;
+    let bytes_per_val = bit_width.div_ceil(8) as usize;
     let mut i = 0;
     while i < indices.len() {
         // ---- find run of equal values (eligible for RLE) ---------------
@@ -255,28 +255,23 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
             n += 1;
         }
         // pad to 8-value multiple
-        let padded = ((n + 7) / 8) * 8;
+        let padded = n.div_ceil(8) * 8;
         let groups = padded / 8;
         write_uleb128(((groups as u64) << 1) | 1, out); // LSB 1
 
-        // transposed bit-packing
-        for bit in 0..bit_width {
-            for g in 0..groups {
-                let mut byte = 0u8;
-                for j in 0..8 {
-                    let idx = start + g * 8 + j;
-                    if idx < start + n && ((indices[idx] >> bit) & 1) != 0 {
-                        byte |= 1 << j;
-                    }
+        // Bit-pack the run LSB-first with values contiguous inside each
+        // 8-value group, per the Parquet hybrid RLE/bit-packing layout.
+        // Padding values are zero and readers ignore them.
+        let base = out.len();
+        out.resize(base + bit_width as usize * groups, 0);
+        for j in 0..n {
+            let v = indices[start + j];
+            let bit_base = j * bit_width as usize;
+            for k in 0..bit_width as usize {
+                if (v >> k) & 1 != 0 {
+                    out[base + (bit_base + k) / 8] |= 1 << ((bit_base + k) % 8);
                 }
-                out.push(byte);
             }
-        }
-
-        // byte-align - if bit_width * groups isn’t a multiple of 8 add zeros
-        let bytes_this_run = bit_width as usize * groups;
-        if bytes_this_run % 1 != 0 {
-            unreachable!(); // construction guarantees whole bytes
         }
 
         i += n;
@@ -292,6 +287,7 @@ mod tests {
     use minarrow::vec64;
 
     use super::*;
+    use crate::models::decoders::parquet::decode_dictionary_indices_rle;
 
     #[test]
     fn test_encode_int32_plain() {
@@ -499,6 +495,26 @@ mod tests {
         assert_eq!(buf[1], 16);
         // next byte is the value
         assert_eq!(buf[2], 7);
+    }
+
+    #[test]
+    fn test_encode_dictionary_indices_rle_spec_vector() {
+        // Parquet format spec example: bit_width=3, values 0..=7 pack to
+        // 0b10001000 0b11000110 0b11111010.
+        let indices = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let mut buf = Vec::new();
+        encode_dictionary_indices_rle(&indices, &mut buf).unwrap();
+        assert_eq!(buf, &[3u8, 3, 0b10001000, 0b11000110, 0b11111010]);
+    }
+
+    #[test]
+    fn test_encode_dictionary_indices_rle_multi_group_roundtrip() {
+        // 19 values with bit_width 3 across three padded groups.
+        let indices: Vec<u32> = (0..19).map(|i| (i * 5) % 7).collect();
+        let mut buf = Vec::new();
+        encode_dictionary_indices_rle(&indices, &mut buf).unwrap();
+        let out = decode_dictionary_indices_rle(&buf, indices.len()).unwrap();
+        assert_eq!(out.0.as_slice(), indices.as_slice());
     }
 
     #[test]

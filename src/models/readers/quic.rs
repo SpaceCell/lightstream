@@ -9,7 +9,7 @@
 //! High-level async reader that wraps a QUIC receive stream and decodes
 //! Arrow IPC data into MinArrow tables.
 //!
-//! Wraps [`TableReader`] over a [`QuicByteStream`], hiding the wiring
+//! Wraps [`TableReader`](crate::models::readers::ipc::table::TableReader) over a [`QuicByteStream`](crate::models::streams::quic::QuicByteStream), hiding the wiring
 //! so callers get a one-liner API.
 //!
 //! ## Continuous streaming

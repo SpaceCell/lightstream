@@ -6,7 +6,7 @@
 
 //! Bidirectional Lightstream protocol connection.
 //!
-//! Wraps a [`LightstreamReader`] and [`LightstreamWriter`] together with
+//! Wraps a [`LightstreamReader`](crate::models::readers::lightstream::LightstreamReader) and [`LightstreamWriter`](crate::models::writers::lightstream::LightstreamWriter) together with
 //! transport-specific constructors for TCP, UDS, WebSocket, QUIC, stdio,
 //! and WebTransport.
 //!

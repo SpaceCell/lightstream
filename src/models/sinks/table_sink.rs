@@ -11,7 +11,7 @@
 //! ## Overview:
 //! - Supports Stream or File protocol
 //! - Handles schema emission, optional compression, dictionary batches, record batches, and end-of-stream/footer generation.
-//! - Supports both 8-byte (`Vec<u8>`) and 64-byte SIMD-aligned (`Vec64<u8>`) buffers via [`TableSink`] and [`TableSink64`] type aliases.
+//! - Supports both 8-byte (`Vec<u8>`) and 64-byte SIMD-aligned (`Vec64<u8>`) buffers via [`TableSink`](crate::models::sinks::table_sink::TableSink) and [`TableSink64`](crate::models::sinks::table_sink::TableSink64) type aliases.
 //! - Supports backpressure-friendly, chunked writes with partial-write handling in async runtimes (e.g. Tokio).
 
 use crate::compression::Compression;
@@ -33,7 +33,7 @@ use std::task::{Context, Poll};
 /// automatically handling Arrow IPC framing, schema, dictionaries, and alignment.
 /// It will write Arrow tables with 8-byte alignment.
 ///
-/// When writing `Minarrow` objects, and high-performance/64-byte SIMD, use [`TableWriter64`].
+/// When writing `Minarrow` objects, and high-performance/64-byte SIMD, use `TableWriter64`.
 pub type TableSink<W> = GTableSink<W, Vec<u8>>;
 
 /// Async Arrow Table Sink for (`Vec64<u8>`).

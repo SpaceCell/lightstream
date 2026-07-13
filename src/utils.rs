@@ -127,13 +127,13 @@ where
     buf.extend_from_slice(&packed);
 }
 
-/// Read Parquet-compliant bit-packed Boolean buffer to Vec<bool>.
+/// Read Parquet-compliant bit-packed Boolean buffer to `Vec<bool>`.
 pub fn read_parquet_bool_bits(buf: &[u8], len: usize) -> Vec<bool> {
     unpack_bits(buf, len)
 }
 
 /// Packs a sequence of bools into a bit-packed buffer (LSB0).
-/// Returns a new Vec<u8>.
+/// Returns a new `Vec<u8>`.
 pub fn pack_bits<I>(iter: I, len: usize) -> Vec<u8>
 where
     I: Iterator<Item = bool>,
@@ -148,7 +148,7 @@ where
     buf
 }
 
-/// Unpacks a bit-packed buffer into a Vec<bool>, up to given length.
+/// Unpacks a bit-packed buffer into a `Vec<bool>`, up to given length.
 pub fn unpack_bits(buf: &[u8], len: usize) -> Vec<bool> {
     (0..len)
         .map(|i| ((buf[i / 8] >> (i % 8)) & 1) != 0)

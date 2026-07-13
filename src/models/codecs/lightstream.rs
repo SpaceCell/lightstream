@@ -168,7 +168,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
         let codec = entry
             .ipc_codec
             .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "table codec missing"))?;
+            .ok_or_else(|| io::Error::other("table codec missing"))?;
 
         // Clear buffer and write TLV header with placeholder length
         let len = out.len();
@@ -190,7 +190,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
 
     /// Decode a TLV frame payload into a [`LightstreamMessage`].
     ///
-    /// Takes ownership of the payload Vec64<u8>. Column data is referenced
+    /// Takes ownership of the payload `Vec64<u8>`. Column data is referenced
     /// in place via SharedBuffer slices - no column bytes are copied.
     /// The SharedBuffer is cached for recycling: when the caller drops the
     /// previous table and the buffer becomes the sole owner, the Vec64 is
@@ -212,7 +212,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
                 let codec = entry
                     .ipc_codec
                     .as_mut()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "table codec missing"))?;
+                    .ok_or_else(|| io::Error::other("table codec missing"))?;
                 let shared = SharedBuffer::from_vec64(payload);
                 let table = codec.decode_payload(shared)?;
                 Ok(LightstreamMessage::Table { tag, table })

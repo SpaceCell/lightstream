@@ -16,7 +16,7 @@
 //!   `next_frame` and is responsible for getting bytes onto the wire.
 //! - [`TableWriter`] - **async end-to-end writer**. Wraps `TableStreamWriter`
 //!   and drives the queued frames into a `tokio::io::AsyncWrite` sink.
-//! - [`SyncTableWriter`] (this struct) - **sync end-to-end writer**. Wraps
+//! - [`SyncTableWriter`](crate::models::writers::ipc::sync_table::SyncTableWriter) (this struct) - **sync end-to-end writer**. Wraps
 //!   `TableStreamWriter` and drives the queued frames into a
 //!   `std::io::Write` sink. Use this for one-shot file writes from a sync
 //!   caller (e.g. `ChunkedArrowWriter`'s per-batch path) so the caller does

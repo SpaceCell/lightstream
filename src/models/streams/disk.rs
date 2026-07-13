@@ -6,13 +6,13 @@
 
 //! # Asynchronous disk byte stream
 //!
-//! Wraps a file in a [`Stream`] that yields fixed-size byte chunks.
+//! Wraps a file in a [`Stream`](futures_core::Stream) that yields fixed-size byte chunks.
 //!
 //! ## Overview
-//! - Uses Tokio [`File`].
+//! - Uses Tokio [`File`](tokio::fs::File).
 //! - Supports async backpressure via `poll_next`.
 //! - One copy into a `Vec64<u8>` output buffer per chunk.
-//! - Chunk size controlled by [`BufferChunkSize`].
+//! - Chunk size controlled by [`BufferChunkSize`](crate::enums::BufferChunkSize).
 //!
 //! ## Use cases
 //! - Ingest large files without loading them fully into memory.

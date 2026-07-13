@@ -121,6 +121,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();
@@ -175,6 +176,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();
@@ -234,6 +236,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();
@@ -315,6 +318,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();
@@ -385,6 +389,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();
@@ -441,6 +446,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();
@@ -497,6 +503,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let mut count = 0u64;
                 while let Some(batch) = reader.read_next().await.unwrap() {
                     assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
                     count += 1;
                 }
                 let elapsed = start.elapsed();

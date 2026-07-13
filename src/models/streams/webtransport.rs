@@ -6,7 +6,7 @@
 
 //! # Asynchronous WebTransport byte stream
 //!
-//! Type alias over [`AsyncReadByteStream`] for WebTransport receive streams.
+//! Type alias over [`AsyncReadByteStream`](crate::models::streams::async_read::AsyncReadByteStream) for WebTransport receive streams.
 //!
 //! ## Use cases
 //! - Receive Arrow IPC streams over WebTransport without loading them fully into memory.

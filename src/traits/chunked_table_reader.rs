@@ -75,7 +75,7 @@ pub trait ChunkedTableReader: Iterator<Item = Result<Table, Self::Error>> + Size
     /// own decoder so non-selected columns are not read from disk -
     /// post-decode filtering would defeat the point of the API.
     /// For Arrow IPC chunks that means
-    /// [`FileTableReader::read_batch_cols`]; for Parquet it means the
+    /// [`FileTableReader::read_batch_cols`](crate::models::readers::ipc::file_table::FileTableReader::read_batch_cols); for Parquet it means the
     /// `parquet::load_parquet_table_cols` path; for CSV it
     /// means configuring the decoder's projection up front.
     fn read_chunk_cols(&self, path: &Path, columns: &[&str]) -> Result<Table, Self::Error>;

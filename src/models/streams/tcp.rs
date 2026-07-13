@@ -6,14 +6,14 @@
 
 //! # Asynchronous TCP byte stream
 //!
-//! Wraps a TCP connection's read half as both [`AsyncRead`] and [`Stream`].
+//! Wraps a TCP connection's read half as both [`AsyncRead`](tokio::io::AsyncRead) and [`Stream`](futures_core::Stream).
 //!
 //! ## AsyncRead
 //! The direct decode path uses `AsyncRead` for zero-copy reads into the
 //! decoder's managed buffers. This is the internal fast path.
 //!
 //! ## Stream
-//! Yields [`SharedBuffer`] windows from a [`StreamArena`] for zero-allocation
+//! Yields [`SharedBuffer`](minarrow::structs::shared_buffer::SharedBuffer) windows from a [`StreamArena`](crate::models::streams::stream_arena::StreamArena) for zero-allocation
 //! streaming. Each poll reads into the arena's spare capacity and yields an
 //! immutable view of the filled region. In steady state, one arena allocation
 //! is reused forever.

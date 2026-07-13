@@ -23,7 +23,7 @@ mod helpers;
 use helpers::{make_table, table_schema};
 use lightstream::models::readers::parallel::http::HttpParallelTableReader;
 use lightstream::models::writers::parallel::http::HttpParallelTableWriter;
-use lightstream::traits::parallel_transport_reader::ParallelTransportReader;
+use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
 use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 use tokio::net::TcpListener;
 
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Server accepted TCP from {peer}");
         // from_tcp runs the h2 handshake with upload-sized flow-control
         // windows, then accepts STREAMS request streams and merges them.
-        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS)
+        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::Ordered)
             .await
             .expect("accept streams");
         reader.read_all_tables().await.expect("read tables")
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     writer.finish().await?;
 
     let tables = server.await?;
-    let total_rows: usize = tables.iter().map(|t| t.n_rows).sum();
+    let total_rows: usize = tables.iter().map(|(t, _)| t.n_rows).sum();
     println!(
         "Server merged {} tables ({total_rows} rows) from {STREAMS} streams.",
         tables.len()

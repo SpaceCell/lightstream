@@ -10,17 +10,17 @@
 //! - **Array-of-objects**: `[{"col_a": 1, "col_b": "x"}, ...]`
 //! - **NDJSON** (newline-delimited): `{"col_a": 1, "col_b": "x"}\n...`
 //!
-//! Backed by `simd-json` via the [`simd`] module. Cells dispatch
-//! directly into pre-allocated [`builder::ColumnBuilder`] buffers - no
+//! Backed by `simd-json` via the [`simd`](crate::models::decoders::json::simd) module. Cells dispatch
+//! directly into pre-allocated [`builder::ColumnBuilder`](crate::models::decoders::json::builder::ColumnBuilder) buffers - no
 //! intermediate `Value` tree or per-cell allocations except when copying
 //! string bytes into the column's data buffer.
 //!
 //! ## Schema
-//! Schema is **required** - pass it via [`JsonDecodeOptions::schema`]. Schema
+//! Schema is **required** - pass it via [`JsonDecodeOptions::schema`](crate::models::decoders::json::JsonDecodeOptions::schema). Schema
 //! inference from sampled rows is a planned follow-up.
 //!
 //! ## Type mismatch handling
-//! See [`builder::TypeMismatchPolicy`].
+//! See [`builder::TypeMismatchPolicy`](crate::models::decoders::json::builder::TypeMismatchPolicy).
 
 pub mod row_decoder;
 pub mod value;
@@ -46,7 +46,7 @@ pub struct JsonDecodeOptions {
     // TODO: optional schema inference via row sampling - follow-up phase.
     pub schema: Option<Vec<Field>>,
     /// Names that should be decoded as a dictionary/categorical column.
-    /// Currently informational - the schema's [`ArrowType::Dictionary`]
+    /// Currently informational - the schema's [`ArrowType::Dictionary`](minarrow::ArrowType::Dictionary)
     /// already drives that branch.
     pub categorical_cols: HashSet<String>,
     /// Maximum bytes accumulated before forcing a parse. Lower = lower
@@ -129,8 +129,7 @@ pub fn decode_json_slice(input: &mut [u8], options: &JsonDecodeOptions) -> io::R
                 Ok(Ok(tbl)) => out.push(tbl),
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "JSON array parser thread panicked",
                     ));
                 }
@@ -324,8 +323,7 @@ pub fn decode_ndjson_slice(input: &[u8], options: &JsonDecodeOptions) -> io::Res
                 Ok(Ok(tbl)) => out.push(tbl),
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "NDJSON parser thread panicked",
                     ));
                 }

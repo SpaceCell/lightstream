@@ -397,6 +397,8 @@ async fn test_stdio_types_exist() {
     }
 
     fn _check_stdout_writer() {
-        let _: fn(Vec<Field>) -> std::io::Result<StdoutTableWriter> = StdoutTableWriter::new;
+        use lightstream::compression::Compression;
+        let _: fn(Vec<Field>, Option<Compression>) -> std::io::Result<StdoutTableWriter> =
+            StdoutTableWriter::new;
     }
 }

@@ -7,8 +7,8 @@
 //! Type-Length-Value (TLV) frame definitions.
 //!
 //! Provides lightweight frame structs for TLV-based protocols:
-//! - [`TLVFrame`] for encoding, which borrows value slices.
-//! - [`TLVDecodedFrame`] for decoding, and owns the buffer via [`StreamBuffer`]).
+//! - [`TLVFrame`](crate::models::frames::tlv_frame::TLVFrame) for encoding, which borrows value slices.
+//! - [`TLVDecodedFrame`](crate::models::frames::tlv_frame::TLVDecodedFrame) for decoding, and owns the buffer via [`StreamBuffer`](crate::traits::stream_buffer::StreamBuffer)).
 
 use crate::traits::stream_buffer::StreamBuffer;
 

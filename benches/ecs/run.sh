@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+# Runs the cross-host throughput benchmark on a temporary Amazon ECS (EC2 launch
+# type) cluster of two dedicated instances.
+#
+# The script provisions the infrastructure, builds and pushes the benchmark
+# image, then for each data shape and data source runs the source and sink
+# tasks on separate container instances. At each stream count the sink
+# receives the same workload per transport and times each transfer
+# independently, once over Arrow Flight and once over Lightstream TCP,
+# printing one RESULT line per transport per run plus a median line carrying
+# min and max, and one round-trip latency line per shape. Each run also emits
+# a RESULT metric=gaps line summarising inter-batch arrival gaps and RAW
+# lines carrying the arrival series, which this script splits into CSV files
+# under the results directory. The infrastructure is destroyed at the end
+# unless KEEP=1 is set.
+#
+# Two data sources are exercised per shape. The `memory` source materialises
+# the table in RAM and measures pure transport throughput. The `nvme` source
+# writes DATASET_GB gigabytes to the instance's local NVMe as one Arrow IPC
+# file per stream. Each transport then evicts the page cache and replays the
+# files once cold off the device, followed by RUNS warm replays served from
+# the cache, covering both the first-scan and steady-state replay cases.
+#
+# Both transports run plaintext over the trusted-VPC network. TLS is assumed
+# terminated at the ingress boundary and is excluded, so neither side pays
+# encryption overhead.
+#
+# Required tools: AWS CLI v2, Terraform 1.6 or later, Docker and jq.
+#
+# Configuration:
+#
+#   REGION             AWS region. Defaults to us-east-1.
+#   SHAPES             Space-separated data shapes. Defaults to all four.
+#   DATA_SOURCES       Space-separated data sources. Defaults to "memory nvme".
+#   ROWS               Rows per table. Defaults to 1000000.
+#   DATASET_GB         Workload gigabytes split across the largest stream
+#                      count. Defaults to 350, sized to stay cache-resident
+#                      under the container memory ceiling for the warm runs.
+#   STREAMS            Comma-separated stream counts. Defaults to 1,4,8,16.
+#   RUNS               Warm runs per cell. Defaults to 5.
+#   FLIGHT_PORT        Source Flight port. Defaults to 9101.
+#   ECHO_PORT          Source latency echo port. Defaults to 9102.
+#   LS_PORT            Sink Lightstream port. Defaults to 9103.
+#   CTRL_PORT          Source control port. Defaults to 9104.
+#   INSTANCE_TYPE      Container-instance type. Defaults to the Terraform value.
+#   KEEP               Set to 1 to retain the infrastructure after the run.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"           # the lightstream repo root
+CONTEXT="$(cd "$ROOT/.." && pwd)"           # parent dir holding lightstream + minarrow
+TF="$HERE/terraform"
+
+REGION="${REGION:-us-east-1}"
+SHAPES="${SHAPES:-mixed narrow_numeric string_heavy wide}"
+DATA_SOURCES="${DATA_SOURCES:-memory nvme}"
+ROWS="${ROWS:-1000000}"
+DATASET_GB="${DATASET_GB:-350}"
+STREAMS="${STREAMS:-1,4,8,16}"
+RUNS="${RUNS:-5}"
+FLIGHT_PORT="${FLIGHT_PORT:-9101}"
+ECHO_PORT="${ECHO_PORT:-9102}"
+LS_PORT="${LS_PORT:-9103}"
+CTRL_PORT="${CTRL_PORT:-9104}"
+KEEP="${KEEP:-0}"
+
+TF_VARS=(-var "region=${REGION}" \
+         -var "flight_port=${FLIGHT_PORT}" \
+         -var "echo_port=${ECHO_PORT}" \
+         -var "ls_port=${LS_PORT}" \
+         -var "ctrl_port=${CTRL_PORT}")
+if [ -n "${INSTANCE_TYPE:-}" ]; then
+  TF_VARS+=(-var "instance_type=${INSTANCE_TYPE}")
+fi
+
+teardown() {
+  if [ "$KEEP" = "1" ]; then
+    echo "[run] KEEP=1 set, leaving the infrastructure up. Destroy later with:"
+    echo "      terraform -chdir=$TF destroy -auto-approve -var region=$REGION"
+    return
+  fi
+  echo "[run] destroying infrastructure"
+  if ! terraform -chdir="$TF" destroy -auto-approve -input=false "${TF_VARS[@]}"; then
+    echo "[run] WARNING: terraform destroy failed. The infrastructure may still be"
+    echo "      running and billing. Destroy it manually with:"
+    echo "      terraform -chdir=$TF destroy -auto-approve -var region=$REGION"
+  fi
+}
+trap teardown EXIT
+
+echo "[run] provisioning ECS infrastructure (region=$REGION)"
+terraform -chdir="$TF" init -input=false
+terraform -chdir="$TF" apply -auto-approve -input=false "${TF_VARS[@]}"
+
+CLUSTER="$(terraform -chdir="$TF" output -raw cluster_name)"
+ECR="$(terraform -chdir="$TF" output -raw ecr_repository_url)"
+REGISTRY="${ECR%/*}"
+SOURCE_IP="$(terraform -chdir="$TF" output -raw source_private_ip)"
+SINK_IP="$(terraform -chdir="$TF" output -raw sink_private_ip)"
+SOURCE_FAMILY="$(terraform -chdir="$TF" output -raw source_task_family)"
+SINK_FAMILY="$(terraform -chdir="$TF" output -raw sink_task_family)"
+SINK_LOG_GROUP="$(terraform -chdir="$TF" output -raw sink_log_group)"
+
+echo "[run] building and pushing image"
+aws ecr get-login-password --region "$REGION" \
+  | docker login --username AWS --password-stdin "$REGISTRY"
+IMAGE="$ECR:$(git -C "$ROOT" rev-parse --short HEAD)"
+
+# The workspace depends on minarrow through a `path = "../../minarrow"` sibling
+# checkout, which lives outside the repo. The Dockerfile therefore expects the
+# build context to be the parent directory that holds both `lightstream` and
+# `minarrow`. Docker only reads `.dockerignore` from the context root, so stage
+# this rig's ignore file there for the build and remove it afterwards.
+STAGED_IGNORE="$CONTEXT/.dockerignore"
+STAGED_IGNORE_BAK=""
+if [ -e "$STAGED_IGNORE" ]; then
+  STAGED_IGNORE_BAK="$STAGED_IGNORE.bench-ecs.bak"
+  mv "$STAGED_IGNORE" "$STAGED_IGNORE_BAK"
+fi
+cp "$HERE/.dockerignore" "$STAGED_IGNORE"
+restore_ignore() {
+  rm -f "$STAGED_IGNORE"
+  if [ -n "$STAGED_IGNORE_BAK" ]; then
+    mv "$STAGED_IGNORE_BAK" "$STAGED_IGNORE"
+  fi
+}
+trap 'restore_ignore; teardown' EXIT
+
+docker build -f "$HERE/Dockerfile" -t "$IMAGE" "$CONTEXT"
+docker push "$IMAGE"
+restore_ignore
+trap teardown EXIT
+
+# Re-apply so the task definitions carry the freshly pushed image reference.
+terraform -chdir="$TF" apply -auto-approve -input=false "${TF_VARS[@]}" -var "image_ref=${IMAGE}"
+
+# Wait for both container instances to register with the cluster before running
+# any tasks. Two instances are expected: one source, one sink.
+echo "[run] waiting for container instances to register with $CLUSTER"
+for _ in $(seq 1 60); do
+  count="$(aws ecs list-container-instances --cluster "$CLUSTER" --region "$REGION" \
+    --query 'length(containerInstanceArns)' --output text 2>/dev/null || echo 0)"
+  [ "$count" = "2" ] && break
+  sleep 5
+done
+if [ "${count:-0}" != "2" ]; then
+  echo "[run] ERROR: expected 2 registered container instances, found ${count:-0}" >&2
+  exit 1
+fi
+
+RESULTS_DIR="${RESULTS_DIR:-$HERE/results/$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$RESULTS_DIR"
+echo "[run] saving per-shape per-data-source logs under $RESULTS_DIR"
+
+# Emit a container command-override overrides file for aws ecs run-task.
+# $1 container name, $2.. the command argv.
+run_task() {
+  local family="$1"; shift
+  local container="$1"; shift
+  local role="$1"; shift
+  local cmd_json
+  cmd_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+  aws ecs run-task \
+    --cluster "$CLUSTER" \
+    --region "$REGION" \
+    --launch-type EC2 \
+    --task-definition "$family" \
+    --count 1 \
+    --placement-constraints "type=memberOf,expression=attribute:bench_role == ${role}" \
+    --overrides "{\"containerOverrides\":[{\"name\":\"${container}\",\"command\":${cmd_json}}]}" \
+    --query 'tasks[0].taskArn' --output text
+}
+
+# Split a sink log's RAW lines into one CSV of arrival offsets per pass under
+# $2, named <shape>-<data>-<protocol>-s<streams>[-<cache>][-run<run>].csv.
+extract_series() {
+  local log="$1" outdir="$2"
+  mkdir -p "$outdir"
+  awk -v outdir="$outdir" '/^RAW /{
+    proto = ""; shape = ""; ds = ""; streams = ""; cache = ""; run = ""; vals = "";
+    for (i = 2; i <= NF; i++) {
+      split($i, kv, "=");
+      if (kv[1] == "protocol") proto = kv[2];
+      else if (kv[1] == "shape") shape = kv[2];
+      else if (kv[1] == "data") ds = kv[2];
+      else if (kv[1] == "streams") streams = kv[2];
+      else if (kv[1] == "cache") cache = kv[2];
+      else if (kv[1] == "run") run = kv[2];
+      else if (kv[1] == "values") vals = kv[2];
+    }
+    name = shape "-" ds "-" proto "-s" streams;
+    if (cache != "") name = name "-" cache;
+    if (run != "") name = name "-run" run;
+    f = outdir "/" name ".csv";
+    n = split(vals, a, ",");
+    for (j = 1; j <= n; j++) print a[j] >> f;
+    close(f);
+  }' "$log"
+}
+
+# Wait for a task to stop. `aws ecs wait tasks-stopped` gives up after ~40
+# minutes (100 attempts x 6s), which is shorter than nvme dataset generation
+# for large shapes. Retry the wait until the task is actually STOPPED so a long
+# generation phase does not end the run.
+wait_task_stopped() {
+  local task_arn="$1"
+  while true; do
+    aws ecs wait tasks-stopped --cluster "$CLUSTER" --region "$REGION" --tasks "$task_arn" 2>/dev/null || true
+    local status
+    status="$(aws ecs describe-tasks --cluster "$CLUSTER" --region "$REGION" \
+      --tasks "$task_arn" --query 'tasks[0].lastStatus' --output text 2>/dev/null || echo UNKNOWN)"
+    [ "$status" = "STOPPED" ] && break
+    echo "[run] sink task still $status, continuing to wait"
+    sleep 10
+  done
+}
+
+for SHAPE in $SHAPES; do
+  for DS in $DATA_SOURCES; do
+    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS"
+
+    # Source starts first and listens; the sink then drives both transfers.
+    SOURCE_ARN="$(run_task "$SOURCE_FAMILY" source source \
+      bench_ecs_source \
+      --shape "$SHAPE" --rows "$ROWS" \
+      --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
+      --data-source "$DS" --dataset-dir /data \
+      --flight-bind "0.0.0.0:${FLIGHT_PORT}" --echo-bind "0.0.0.0:${ECHO_PORT}" \
+      --ctrl-bind "0.0.0.0:${CTRL_PORT}" \
+      --sink-ls-addr "${SINK_IP}:${LS_PORT}")"
+    echo "[run] source task: $SOURCE_ARN"
+
+    echo "[run] waiting for source task to reach RUNNING"
+    aws ecs wait tasks-running --cluster "$CLUSTER" --region "$REGION" --tasks "$SOURCE_ARN"
+
+    SINK_ARN="$(run_task "$SINK_FAMILY" sink sink \
+      bench_ecs_sink \
+      --shape "$SHAPE" --rows "$ROWS" \
+      --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
+      --data-source "$DS" \
+      --source-flight-addr "${SOURCE_IP}:${FLIGHT_PORT}" \
+      --source-echo-addr "${SOURCE_IP}:${ECHO_PORT}" \
+      --source-ctrl-addr "${SOURCE_IP}:${CTRL_PORT}" \
+      --ls-bind "0.0.0.0:${LS_PORT}")"
+    echo "[run] sink task: $SINK_ARN"
+
+    echo "[run] waiting for sink task to stop"
+    wait_task_stopped "$SINK_ARN"
+
+    # Fail loudly if the sink container exited non-zero.
+    EXIT_CODE="$(aws ecs describe-tasks --cluster "$CLUSTER" --region "$REGION" \
+      --tasks "$SINK_ARN" \
+      --query 'tasks[0].containers[0].exitCode' --output text)"
+    REASON="$(aws ecs describe-tasks --cluster "$CLUSTER" --region "$REGION" \
+      --tasks "$SINK_ARN" \
+      --query 'tasks[0].stoppedReason' --output text 2>/dev/null || true)"
+
+    # Fetch the sink task's log stream. The awslogs stream name is
+    # <prefix>/<container>/<task-id>.
+    SINK_TASK_ID="${SINK_ARN##*/}"
+    SINK_STREAM="sink/sink/${SINK_TASK_ID}"
+    echo "[run] collecting sink logs for shape=$SHAPE data=$DS"
+    aws logs get-log-events \
+      --log-group-name "$SINK_LOG_GROUP" \
+      --log-stream-name "$SINK_STREAM" \
+      --region "$REGION" \
+      --start-from-head \
+      --query 'events[].message' --output text 2>/dev/null \
+      | tr '\t' '\n' > "$RESULTS_DIR/$SHAPE-$DS.log" || true
+    extract_series "$RESULTS_DIR/$SHAPE-$DS.log" "$RESULTS_DIR/series"
+
+    # Stop the source task before the next combination so it rebuilds its batch.
+    aws ecs stop-task --cluster "$CLUSTER" --region "$REGION" --task "$SOURCE_ARN" \
+      --query 'task.taskArn' --output text >/dev/null || true
+
+    if [ "$EXIT_CODE" != "0" ]; then
+      echo "[run] ERROR: sink container for shape=$SHAPE data=$DS exited with code $EXIT_CODE" >&2
+      echo "[run]        stoppedReason: $REASON" >&2
+      echo "[run]        see $RESULTS_DIR/$SHAPE-$DS.log" >&2
+      exit 1
+    fi
+  done
+done
+
+SUMMARY="$RESULTS_DIR/summary.txt"
+grep -h -E '^RESULT' "$RESULTS_DIR"/*.log > "$SUMMARY" 2>/dev/null || true
+
+echo
+echo "[run] ============ cross-host throughput results ============"
+if [ -s "$SUMMARY" ]; then
+  cat "$SUMMARY"
+else
+  echo "[run] no RESULT lines captured - see $RESULTS_DIR"
+fi
+echo "[run] logs, summary and arrival-series CSVs saved under: $RESULTS_DIR"

@@ -15,11 +15,11 @@
 //!
 //! Limits are checked at the point where a length or count is read from untrusted
 //! bytes, before any allocation that scales with it. Each decoder accepts a
-//! [`DecodeLimits`] either through its constructor or, for free functions, as a
+//! [`DecodeLimits`](crate::models::decoders::limits::DecodeLimits) either through its constructor or, for free functions, as a
 //! trailing parameter threaded from its host reader/codec.
 //!
 //! Callers that need to opt out (replay tools, internal test fixtures, trusted
-//! pipelines feeding the decoder from disk) construct via [`DecodeLimits::unlimited`].
+//! pipelines feeding the decoder from disk) construct via [`DecodeLimits::unlimited`](crate::models::decoders::limits::DecodeLimits::unlimited).
 
 use std::io;
 

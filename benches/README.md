@@ -202,11 +202,13 @@ Decoded columns and protocol messages are passed through `std::hint::black_box` 
 
 Transport benchmarks report receiver-side throughput.
 
+Two small timing asymmetries apply to the loopback comparisons. The Lightstream writer connects before the receiver's timer starts, so up to one socket buffer of data can be in flight at time zero. The Arrow Flight timed region includes the `DoGet` request round trip, which Lightstream's push model does not incur. Both effects are bounded and shrink towards zero as the batch count grows.
+
 ## Cross-host benchmarks
 
 The local benchmarks run both endpoints on one host. The cross-host rigs run the sender and receiver on separate machines.
 
 | Directory        | Description                                                                                                                       |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `bench/cluster/` | Provisions a temporary EKS cluster and schedules the sender and receiver on separate worker nodes. See `bench/cluster/README.md`. |
-| `bench/aws/`     | Provisions two EC2 instances and runs the benchmark over plaintext TCP. See `bench/aws/README.md`.                                |
+| `benches/ecs/`   | Provisions two EC2 hosts under Amazon ECS and compares Arrow Flight with Lightstream TCP between them. See `benches/ecs/README.md`. |
+| `benches/aws/`   | Provisions two EC2 instances and runs the benchmark over plaintext TCP. See `benches/aws/README.md`.                              |

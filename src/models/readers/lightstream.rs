@@ -6,8 +6,8 @@
 
 //! Async Lightstream protocol reader.
 //!
-//! Reads TLV frames from an [`AsyncRead`] source, decoding each into a
-//! [`LightstreamMessage`] via the codec's type registry.
+//! Reads TLV frames from an [`AsyncRead`](tokio::io::AsyncRead) source, decoding each into a
+//! [`LightstreamMessage`](crate::models::frames::lightstream_message::LightstreamMessage) via the codec's type registry.
 //!
 //! The reader accumulates the 5-byte TLV header, then reads the payload
 //! into a Vec64 for zero-copy decode. Column data is mapped in place

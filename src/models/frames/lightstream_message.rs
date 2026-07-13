@@ -12,7 +12,7 @@
 //! [type_tag: u8][payload_len: u32 LE][payload: N bytes]
 //! ```
 //!
-//! After decoding, frames are represented as [`LightstreamMessage`] variants
+//! After decoding, frames are represented as [`LightstreamMessage`](crate::models::frames::lightstream_message::LightstreamMessage) variants
 //! - either an opaque message or a decoded Arrow table.
 //!
 //! With the `protobuf` feature enabled, message variants gain typed decode
@@ -20,10 +20,10 @@
 //! With the `msgpack` feature enabled, [`decode_msgpack`] and
 //! [`into_decoded_msgpack`] decode MessagePack payloads via serde.
 //!
-//! [`decode_payload`]: LightstreamMessage::decode_payload
-//! [`into_decoded_payload`]: LightstreamMessage::into_decoded_payload
-//! [`decode_msgpack`]: LightstreamMessage::decode_msgpack
-//! [`into_decoded_msgpack`]: LightstreamMessage::into_decoded_msgpack
+//! [`decode_payload`]: crate::models::frames::lightstream_message::LightstreamMessage::decode_payload
+//! [`into_decoded_payload`]: crate::models::frames::lightstream_message::LightstreamMessage::into_decoded_payload
+//! [`decode_msgpack`]: crate::models::frames::lightstream_message::LightstreamMessage::decode_msgpack
+//! [`into_decoded_msgpack`]: crate::models::frames::lightstream_message::LightstreamMessage::into_decoded_msgpack
 
 /// Size of a Lightstream frame header: 1 byte type tag + 4 bytes LE length.
 pub const FRAME_HEADER_SIZE: usize = 5;

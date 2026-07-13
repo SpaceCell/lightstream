@@ -10,7 +10,7 @@
 //! body is prefixed with an 8-byte i64 uncompressed length (-1 means the
 //! buffer was stored uncompressed), followed by the compressed or raw data.
 //!
-//! [`decompress_ipc_body`] produces a new `Vec64<u8>` with all buffers placed
+//! [`decompress_ipc_body`](crate::compression::ipc::decompress_ipc_body) produces a new `Vec64<u8>` with all buffers placed
 //! at `B::ALIGN` offsets, consistent with the uncompressed wire layout. A
 //! corrections Vec maps each buffer index to its (offset, length) within the
 //! decompressed buffer, since the flatbuffer metadata still references the
@@ -53,6 +53,7 @@ fn decompress_buffer_data(data: &[u8], codec: fb::CompressionType) -> io::Result
 ///
 /// Returns the decompressed buffer and a Vec of (offset, length) per buffer
 /// index for corrected buffer access.
+#[allow(clippy::type_complexity)]
 pub fn decompress_ipc_body<B: StreamBuffer>(
     body: &[u8],
     buffers: &Vector<'_, Buffer>,
@@ -163,11 +164,10 @@ pub fn decompress_ipc_body<B: StreamBuffer>(
     let mut decompressed = Vec64::<u8>::with_capacity(total_size);
     decompressed.resize(total_size, 0u8);
 
-    for i in 0..buffers.len() {
+    for (i, &(dec_offset, dec_len)) in corrections.iter().enumerate() {
         let buf = buffers.get(i);
         let offset = buf.offset() as usize;
         let length = buf.length() as usize;
-        let (dec_offset, dec_len) = corrections[i];
 
         if length == 0 || dec_len == 0 {
             continue;

@@ -54,8 +54,14 @@ use bench_helpers::{BENCH_ROWS, logical_payload_bytes, make_bench_table};
 const N_CHUNKS: usize = 32;
 const BASE: &str = "chunk";
 
+// `/var/tmp` rather than `std::env::temp_dir()`, because `/tmp` is commonly
+// mounted as `tmpfs` where cache eviction produces no cold storage read and
+// `fsync` costs almost nothing, which would distort the cold-read and
+// physical-write measurements.
+const BENCH_ROOT: &str = "/var/tmp";
+
 fn fresh_dir(suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lightstream_chunked_bench_{suffix}"));
+    let dir = PathBuf::from(BENCH_ROOT).join(format!("lightstream_chunked_bench_{suffix}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -242,8 +248,8 @@ fn bench_chunked_arrow(c: &mut Criterion) {
     // Reap the write benches' final-iteration directories alongside
     // the read benches' directory now that all timed work is done.
     cleanup(&read_dir);
-    cleanup(&std::env::temp_dir().join("lightstream_chunked_bench_arrow_write"));
-    cleanup(&std::env::temp_dir().join("lightstream_chunked_bench_arrow_par_write"));
+    cleanup(&PathBuf::from(BENCH_ROOT).join("lightstream_chunked_bench_arrow_write"));
+    cleanup(&PathBuf::from(BENCH_ROOT).join("lightstream_chunked_bench_arrow_par_write"));
     group.finish();
 }
 
@@ -376,8 +382,8 @@ fn bench_chunked_parquet(c: &mut Criterion) {
     });
 
     cleanup(&read_dir);
-    cleanup(&std::env::temp_dir().join("lightstream_chunked_bench_parquet_write"));
-    cleanup(&std::env::temp_dir().join("lightstream_chunked_bench_parquet_par_write"));
+    cleanup(&PathBuf::from(BENCH_ROOT).join("lightstream_chunked_bench_parquet_write"));
+    cleanup(&PathBuf::from(BENCH_ROOT).join("lightstream_chunked_bench_parquet_par_write"));
     group.finish();
 }
 
@@ -520,8 +526,8 @@ fn bench_chunked_csv(c: &mut Criterion) {
     });
 
     cleanup(&read_dir);
-    cleanup(&std::env::temp_dir().join("lightstream_chunked_bench_csv_write"));
-    cleanup(&std::env::temp_dir().join("lightstream_chunked_bench_csv_par_write"));
+    cleanup(&PathBuf::from(BENCH_ROOT).join("lightstream_chunked_bench_csv_write"));
+    cleanup(&PathBuf::from(BENCH_ROOT).join("lightstream_chunked_bench_csv_par_write"));
     group.finish();
 }
 

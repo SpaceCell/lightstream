@@ -9,17 +9,17 @@
 //! POSTs an Arrow IPC stream to an HTTP/2 endpoint. Transport is `h2`
 //! directly - hyper's Body / Service layer is not in the dep tree.
 //!
-//! Wraps a [`TableSink64`] over an [`H2SendWrite`] adapter, matching
+//! Wraps a [`TableSink64`](crate::models::sinks::table_sink::TableSink64) over an [`H2SendWrite`](crate::models::streams::http::H2SendWrite) adapter, matching
 //! the structural shape of every other lightstream transport writer
 //! (`TcpTableWriter`, `QuicTableWriter`, ...). The encoder's
 //! `encode_buf` is reused across frames as in `TableSink64`, and the
 //! `H2SendWrite::poll_write` adapter feeds h2 with one chunk per
 //! flow-control grant.
 //!
-//! Plug-and-play one-liner over `http://` is [`HttpTableWriter::post`];
-//! over `https://` is [`HttpTableWriter::post_tls`]. Callers that need
+//! Plug-and-play one-liner over `http://` is [`HttpTableWriter::post`](crate::models::writers::http::HttpTableWriter::post);
+//! over `https://` is [`HttpTableWriter::post_tls`](crate::models::writers::http::HttpTableWriter::post_tls). Callers that need
 //! custom headers pass a fully-built `http::Request<()>` via
-//! [`HttpTableWriter::from_request`].
+//! [`HttpTableWriter::from_request`](crate::models::writers::http::HttpTableWriter::from_request).
 
 use std::io;
 use std::pin::Pin;

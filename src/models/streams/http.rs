@@ -6,10 +6,10 @@
 
 //! # HTTP/2 byte stream adapters
 //!
-//! Receive side: [`H2RecvRead`] wraps [`h2::RecvStream`] as `AsyncRead`
-//! so it flows through [`AsyncReadByteStream`] like every other transport.
+//! Receive side: [`H2RecvRead`](crate::models::streams::http::H2RecvRead) wraps [`h2::RecvStream`] as `AsyncRead`
+//! so it flows through [`AsyncReadByteStream`](crate::models::streams::async_read::AsyncReadByteStream) like every other transport.
 //!
-//! Send side: [`H2SendWrite`] wraps [`h2::SendStream<Bytes>`] as
+//! Send side: [`H2SendWrite`](crate::models::streams::http::H2SendWrite) wraps [`h2::SendStream<Bytes>`] as
 //! `AsyncWrite` so `HttpTableWriter` can hold it inside `TableSink64`
 //! exactly the same way `QuicTableWriter` holds a `quinn::SendStream`.
 

@@ -136,15 +136,16 @@ fn read_parquet_impl<R: Read + Seek>(
         }
     }
 
-    // map Parquet schema -> Arrow types
+    // map Parquet schema -> Arrow types. The schema list opens with a root
+    // group element carrying no physical type; leaf column elements follow.
+    // Map only the leaves, in schema order, so indices line up with the row
+    // group's column chunks.
     let arrow_types: Vec<_> = meta
         .schema
         .iter()
-        .map(|se| {
-            parquet_to_arrow_type(
-                se.type_.unwrap(),
-                ParquetLogicalType::from_converted_type(se.converted_type),
-            )
+        .filter_map(|se| se.type_.map(|ty| (ty, se.converted_type)))
+        .map(|(ty, converted)| {
+            parquet_to_arrow_type(ty, ParquetLogicalType::from_converted_type(converted))
         })
         .collect::<Result<_, _>>()?;
 
@@ -157,10 +158,10 @@ fn read_parquet_impl<R: Read + Seek>(
         let col_name = &cmeta.path_in_schema[0];
 
         // Skip columns not in the projection
-        if let Some(ref proj) = projection {
-            if !proj.contains(col_name) {
-                continue;
-            }
+        if let Some(ref proj) = projection
+            && !proj.contains(col_name)
+        {
+            continue;
         }
 
         // The Parquet schema has no slot to record that a column was
@@ -511,8 +512,7 @@ fn build_cat8(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> A
     let dict = dict_raw
         .iter()
         .map(|b| String::from_utf8(b.clone()).unwrap())
-        .collect::<Vec64<_>>()
-        .into();
+        .collect::<Vec64<_>>();
     let idx8: Vec64<u8> = idx.iter().map(|&v| v as u8).collect();
     Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
         data: idx8.into(),
@@ -549,7 +549,7 @@ fn decode_hybrid(buf: &[u8], bit_width: u8, n: usize) -> Result<Vec64<u32>, IoEr
         if header & 1 == 0 {
             // RLE
             let run_len = (header >> 1) as usize;
-            let bytes_per_value = ((bit_width + 7) / 8) as usize;
+            let bytes_per_value = bit_width.div_ceil(8) as usize;
             if pos + bytes_per_value > buf.len() {
                 return Err(IoError::Format("truncated RLE run".into()));
             }
@@ -558,27 +558,26 @@ fn decode_hybrid(buf: &[u8], bit_width: u8, n: usize) -> Result<Vec64<u32>, IoEr
             let v = u32::from_le_bytes(v_bytes);
             pos += bytes_per_value;
             let take = run_len.min(n - out.len());
-            out.extend(std::iter::repeat(v).take(take));
+            out.extend(std::iter::repeat_n(v, take));
         } else {
             // bit-packed
             let groups = (header >> 1) as usize; // 1 group = 8 values
             let total_values = groups * 8;
-            let total_bits = (total_values as usize) * (bit_width as usize);
-            let total_bytes = (total_bits + 7) / 8;
+            let total_bits = total_values * (bit_width as usize);
+            let total_bytes = total_bits.div_ceil(8);
             if pos + total_bytes > buf.len() {
                 return Err(IoError::Format("truncated bit-packed run".into()));
             }
             let slice = &buf[pos..pos + total_bytes];
-            // decode all bit-packed values in one go
+            // Unpack the run LSB-first with values contiguous inside each
+            // 8-value group, per the Parquet hybrid RLE/bit-packing layout.
             let mut scratch = vec![0u32; total_values];
-            for bit in 0..bit_width {
-                for g in 0..groups {
-                    // for bit 'bit', the byte for group 'g' lives at offset bit*groups + g
-                    let byte = slice[bit as usize * groups + g];
-                    for j in 0..8 {
-                        if (byte >> j) & 1 != 0 {
-                            scratch[g * 8 + j] |= 1 << bit;
-                        }
+            for (idx, slot) in scratch.iter_mut().enumerate() {
+                let bit_base = idx * bit_width as usize;
+                for k in 0..bit_width as usize {
+                    let bit = bit_base + k;
+                    if (slice[bit / 8] >> (bit % 8)) & 1 != 0 {
+                        *slot |= 1 << k;
                     }
                 }
             }
@@ -657,7 +656,7 @@ fn parse_dictionary_values(buf: &[u8]) -> Result<Vec<Vec<u8>>, IoError> {
 // Thrift Parsers
 
 fn parse_file_metadata<R: Read>(r: &mut R) -> Result<FileMetaData, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut version = None;
     let mut schema = Vec::new();
     let mut num_rows = None;
@@ -666,7 +665,7 @@ fn parse_file_metadata<R: Read>(r: &mut R) -> Result<FileMetaData, IoError> {
     let mut created_by = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
@@ -686,12 +685,26 @@ fn parse_file_metadata<R: Read>(r: &mut R) -> Result<FileMetaData, IoError> {
                 }
             }
             5 => {
-                let (_kt, _vt, len) = thrift_read_map_begin(r)?;
+                // key_value_metadata is a list<KeyValue>, where each KeyValue
+                // is a struct with 1=key and 2=value (value optional).
+                let (_elem, len) = thrift_read_list_begin(r)?;
                 let mut map = BTreeMap::new();
                 for _ in 0..len {
-                    let k = thrift_read_string(r)?;
-                    let v = thrift_read_string(r)?;
-                    map.insert(k, v);
+                    let mut kv_last = 0i16;
+                    let mut key = String::new();
+                    let mut value = String::new();
+                    loop {
+                        let (t, fid) = thrift_read_field_begin(r, &mut kv_last)?;
+                        if t == 0 {
+                            break;
+                        }
+                        match fid {
+                            1 => key = thrift_read_string(r)?,
+                            2 => value = thrift_read_string(r)?,
+                            _ => thrift_skip_field(r, t)?,
+                        }
+                    }
+                    map.insert(key, value);
                 }
                 kv_meta = Some(map);
             }
@@ -711,7 +724,7 @@ fn parse_file_metadata<R: Read>(r: &mut R) -> Result<FileMetaData, IoError> {
 }
 
 fn parse_schema_element<R: Read>(r: &mut R) -> Result<SchemaElement, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut name = None;
     let mut repetition_type = None;
     let mut type_ = None;
@@ -720,26 +733,28 @@ fn parse_schema_element<R: Read>(r: &mut R) -> Result<SchemaElement, IoError> {
     let mut precision = None;
     let mut scale = None;
     let mut field_id = None;
+    let mut num_children = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
         match id {
-            1 => name = Some(thrift_read_string(r)?),
-            2 => {
+            1 => {
                 type_ = Some(
                     ParquetPhysicalType::from_i32(thrift_read_i32(r)?)
                         .ok_or_else(|| IoError::Format("Invalid type_".into()))?,
                 )
             }
+            2 => type_length = Some(thrift_read_i32(r)?),
             3 => repetition_type = Some(thrift_read_i32(r)?),
+            4 => name = Some(thrift_read_string(r)?),
+            5 => num_children = Some(thrift_read_i32(r)?),
             6 => converted_type = Some(thrift_read_i32(r)?),
-            7 => type_length = Some(thrift_read_i32(r)?),
-            9 => precision = Some(thrift_read_i32(r)?),
-            10 => scale = Some(thrift_read_i32(r)?),
-            15 => field_id = Some(thrift_read_i32(r)?),
+            7 => scale = Some(thrift_read_i32(r)?),
+            8 => precision = Some(thrift_read_i32(r)?),
+            9 => field_id = Some(thrift_read_i32(r)?),
             _ => thrift_skip_field(r, tpe)?,
         }
     }
@@ -753,17 +768,18 @@ fn parse_schema_element<R: Read>(r: &mut R) -> Result<SchemaElement, IoError> {
         precision,
         scale,
         field_id,
+        num_children,
     })
 }
 
 fn parse_row_group<R: Read>(r: &mut R) -> Result<RowGroupMeta, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut columns = Vec::new();
     let mut total_byte_size = None;
     let mut num_rows = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
@@ -787,21 +803,18 @@ fn parse_row_group<R: Read>(r: &mut R) -> Result<RowGroupMeta, IoError> {
 }
 
 fn parse_column_chunk<R: Read>(r: &mut R) -> Result<ColumnChunkMeta, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut file_offset = None;
     let mut meta_data = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
         match id {
-            1 => file_offset = Some(thrift_read_i64(r)?),
-            2 => {
-                thrift_read_struct_begin(r)?;
-                meta_data = Some(parse_column_meta_data(r)?);
-            }
+            2 => file_offset = Some(thrift_read_i64(r)?),
+            3 => meta_data = Some(parse_column_meta_data(r)?),
             _ => thrift_skip_field(r, tpe)?,
         }
     }
@@ -822,9 +835,10 @@ fn parse_column_meta_data<R: Read>(r: &mut R) -> Result<ColumnMetadata, IoError>
     let mut data_page_offset = None;
     let mut dictionary_page_offset = None;
     let mut statistics = None;
+    let mut last = 0i16;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
@@ -856,12 +870,9 @@ fn parse_column_meta_data<R: Read>(r: &mut R) -> Result<ColumnMetadata, IoError>
             5 => num_values = Some(thrift_read_i64(r)?),
             6 => total_uncompressed_size = Some(thrift_read_i64(r)?),
             7 => total_compressed_size = Some(thrift_read_i64(r)?),
-            8 => data_page_offset = Some(thrift_read_i64(r)?),
-            9 => dictionary_page_offset = Some(thrift_read_i64(r)?),
-            10 => {
-                thrift_read_struct_begin(r)?;
-                statistics = Some(parse_statistics(r)?);
-            }
+            9 => data_page_offset = Some(thrift_read_i64(r)?),
+            11 => dictionary_page_offset = Some(thrift_read_i64(r)?),
+            12 => statistics = Some(parse_statistics(r)?),
             _ => thrift_skip_field(r, tpe)?,
         }
     }
@@ -882,22 +893,27 @@ fn parse_column_meta_data<R: Read>(r: &mut R) -> Result<ColumnMetadata, IoError>
 }
 
 fn parse_statistics<R: Read>(r: &mut R) -> Result<Statistics, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut null_count = None;
     let mut distinct_count = None;
     let mut min = None;
     let mut max = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
+        // Statistics carries both the legacy signed min/max (fields 1/2) and
+        // the modern unsigned-order max_value/min_value (fields 5/6). Prefer
+        // whichever the writer emitted; the modern fields win when present.
         match id {
-            1 => null_count = Some(thrift_read_i64(r)?),
-            2 => distinct_count = Some(thrift_read_i64(r)?),
-            3 => min = Some(thrift_read_bytes(r)?),
-            4 => max = Some(thrift_read_bytes(r)?),
+            1 => max = Some(thrift_read_bytes(r)?),
+            2 => min = Some(thrift_read_bytes(r)?),
+            3 => null_count = Some(thrift_read_i64(r)?),
+            4 => distinct_count = Some(thrift_read_i64(r)?),
+            5 => max = Some(thrift_read_bytes(r)?),
+            6 => min = Some(thrift_read_bytes(r)?),
             _ => thrift_skip_field(r, tpe)?,
         }
     }
@@ -910,7 +926,7 @@ fn parse_statistics<R: Read>(r: &mut R) -> Result<Statistics, IoError> {
 }
 
 fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut ptype = None;
     let mut uncomp = None;
     let mut compr = None;
@@ -919,7 +935,7 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
     let mut dict_ph = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
@@ -932,23 +948,21 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
             }
             2 => uncomp = Some(thrift_read_i32(r)?),
             3 => compr = Some(thrift_read_i32(r)?),
-            4 => {
-                thrift_read_struct_begin(r)?;
+            5 => {
+                // DataPageHeader (v1), a nested compact struct at field id 5.
                 data_ph = Some(parse_data_page_header(r)?);
             }
-            5 => {
-                // DictionaryPageHeader (Thrift struct, field id 5).
-                //
-                // The writer emits each inner field with full Thrift framing
-                // (1-byte type, 2-byte LE id, value), terminated by a stop
-                // byte. Read symmetrically: loop, parse field_begin, dispatch
-                // by id, stop on type=0. Any unrecognised field is skipped.
-                thrift_read_struct_begin(r)?;
+            7 => {
+                // DictionaryPageHeader, a nested compact struct at field id 7.
+                // Read its fields with a struct-local last-field-id starting
+                // at zero, stopping on the field-stop byte and skipping any
+                // unrecognised field.
+                let mut inner = 0i16;
                 let mut num_values = 0i32;
                 let mut encoding = ParquetEncoding::Plain;
                 let mut is_sorted = None;
                 loop {
-                    let (tpe2, id2) = thrift_read_field_begin(r)?;
+                    let (tpe2, id2) = thrift_read_field_begin(r, &mut inner)?;
                     if tpe2 == 0 {
                         break;
                     }
@@ -962,7 +976,7 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
                                     )
                                 })?
                         }
-                        3 => is_sorted = Some(thrift_read_bool(r)?),
+                        3 => is_sorted = Some(tpe2 == TC_BOOL_TRUE),
                         _ => thrift_skip_field(r, tpe2)?,
                     }
                 }
@@ -972,9 +986,9 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
                     is_sorted,
                 });
             }
-            7 => {
-                // Parse DataPageHeaderV2
-                thrift_read_struct_begin(r)?;
+            8 => {
+                // DataPageHeaderV2, a nested compact struct at field id 8.
+                let mut inner = 0i16;
                 let mut num_rows = None;
                 let mut num_nulls = None;
                 let mut num_values = None;
@@ -985,14 +999,14 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
                 let mut statistics = None;
 
                 loop {
-                    let (tpe2, id2) = thrift_read_field_begin(r)?;
+                    let (tpe2, id2) = thrift_read_field_begin(r, &mut inner)?;
                     if tpe2 == 0 {
                         break;
                     }
                     match id2 {
-                        1 => num_rows = Some(thrift_read_i32(r)?),
+                        1 => num_values = Some(thrift_read_i32(r)?),
                         2 => num_nulls = Some(thrift_read_i32(r)?),
-                        3 => num_values = Some(thrift_read_i32(r)?),
+                        3 => num_rows = Some(thrift_read_i32(r)?),
                         4 => {
                             encoding =
                                 Some(ParquetEncoding::from_i32(thrift_read_i32(r)?).ok_or_else(
@@ -1005,11 +1019,8 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
                         }
                         5 => def_len = Some(thrift_read_i32(r)?),
                         6 => rep_len = Some(thrift_read_i32(r)?),
-                        7 => is_compressed = Some(thrift_read_bool(r)?),
-                        8 => {
-                            thrift_read_struct_begin(r)?;
-                            statistics = Some(parse_statistics(r)?);
-                        }
+                        7 => is_compressed = Some(tpe2 == TC_BOOL_TRUE),
+                        8 => statistics = Some(parse_statistics(r)?),
                         _ => thrift_skip_field(r, tpe2)?,
                     }
                 }
@@ -1042,7 +1053,7 @@ fn parse_page_header<R: Read + Seek>(r: &mut R) -> Result<PageHeader, IoError> {
 }
 
 fn parse_data_page_header<R: Read>(r: &mut R) -> Result<DataPageHeader, IoError> {
-    thrift_read_struct_begin(r)?;
+    let mut last = 0i16;
     let mut num_values = None;
     let mut encoding = None;
     let mut dlev = None;
@@ -1050,7 +1061,7 @@ fn parse_data_page_header<R: Read>(r: &mut R) -> Result<DataPageHeader, IoError>
     let mut stats = None;
 
     loop {
-        let (tpe, id) = thrift_read_field_begin(r)?;
+        let (tpe, id) = thrift_read_field_begin(r, &mut last)?;
         if tpe == 0 {
             break;
         }
@@ -1059,10 +1070,7 @@ fn parse_data_page_header<R: Read>(r: &mut R) -> Result<DataPageHeader, IoError>
             2 => encoding = Some(ParquetEncoding::from_i32(thrift_read_i32(r)?).unwrap()),
             3 => dlev = Some(ParquetEncoding::from_i32(thrift_read_i32(r)?).unwrap()),
             4 => rlev = Some(ParquetEncoding::from_i32(thrift_read_i32(r)?).unwrap()),
-            5 => {
-                thrift_read_struct_begin(r)?;
-                stats = Some(parse_statistics(r)?);
-            }
+            5 => stats = Some(parse_statistics(r)?),
             _ => thrift_skip_field(r, tpe)?,
         }
     }
@@ -1075,124 +1083,184 @@ fn parse_data_page_header<R: Read>(r: &mut R) -> Result<DataPageHeader, IoError>
     })
 }
 
-// Low-level Thrift readers
+// Low-level TCompactProtocol readers.
+//
+// Compact type identifiers from the Thrift spec. Bool field values ride in
+// the type nibble - TC_BOOL_TRUE and TC_BOOL_FALSE encode the value directly.
 
-fn thrift_read_struct_begin<R: Read>(_r: &mut R) -> Result<(), IoError> {
-    Ok(()) // marker
-}
+const TC_BOOL_TRUE: u8 = 1;
+const TC_BOOL_FALSE: u8 = 2;
+const TC_BYTE: u8 = 3;
+const TC_I16: u8 = 4;
+const TC_I32: u8 = 5;
+const TC_I64: u8 = 6;
+const TC_DOUBLE: u8 = 7;
+const TC_BINARY: u8 = 8;
+const TC_LIST: u8 = 9;
+const TC_SET: u8 = 10;
+const TC_MAP: u8 = 11;
+const TC_STRUCT: u8 = 12;
 
-fn thrift_read_field_begin<R: Read>(r: &mut R) -> Result<(u8, i16), IoError> {
-    let mut t = [0u8; 1];
-    r.read_exact(&mut t)?;
-    let tpe = t[0];
-    if tpe == 0 {
-        return Ok((0, 0));
+/// Read an unsigned LEB128 varint.
+fn thrift_read_varint<R: Read>(r: &mut R) -> Result<u64, IoError> {
+    let mut val = 0u64;
+    let mut shift = 0u32;
+    loop {
+        let mut b = [0u8; 1];
+        r.read_exact(&mut b)?;
+        val |= ((b[0] & 0x7f) as u64) << shift;
+        if b[0] & 0x80 == 0 {
+            return Ok(val);
+        }
+        shift += 7;
+        if shift > 63 {
+            return Err(IoError::Format("varint overflow".into()));
+        }
     }
-    let mut idb = [0u8; 2];
-    r.read_exact(&mut idb)?;
-    let id = i16::from_le_bytes(idb);
-    Ok((tpe, id))
 }
 
-fn thrift_read_i32<R: Read>(r: &mut R) -> Result<i32, IoError> {
-    let mut b = [0u8; 4];
-    r.read_exact(&mut b)?;
-    Ok(i32::from_le_bytes(b))
+/// Decode a zigzag-encoded unsigned value back to a signed integer.
+fn zigzag_decode(v: u64) -> i64 {
+    ((v >> 1) as i64) ^ -((v & 1) as i64)
 }
 
-fn thrift_read_i64<R: Read>(r: &mut R) -> Result<i64, IoError> {
-    let mut b = [0u8; 8];
-    r.read_exact(&mut b)?;
-    Ok(i64::from_le_bytes(b))
-}
-
-fn thrift_read_bool<R: Read>(r: &mut R) -> Result<bool, IoError> {
+/// Read a compact field header, advancing the struct's running field id.
+///
+/// Returns the compact type nibble and the resolved field id. A short-form
+/// header packs a 1..=15 delta into the high nibble; a zero delta signals the
+/// long form with a zigzag varint field id following. The field-stop byte 0
+/// returns `(0, 0)`.
+fn thrift_read_field_begin<R: Read>(r: &mut R, last: &mut i16) -> Result<(u8, i16), IoError> {
     let mut b = [0u8; 1];
     r.read_exact(&mut b)?;
-    Ok(b[0] != 0)
+    let byte = b[0];
+    if byte == 0 {
+        return Ok((0, 0));
+    }
+    let ctype = byte & 0x0f;
+    let delta = (byte >> 4) & 0x0f;
+    let id = if delta == 0 {
+        zigzag_decode(thrift_read_varint(r)?) as i16
+    } else {
+        *last + delta as i16
+    };
+    *last = id;
+    Ok((ctype, id))
 }
 
+/// Read a zigzag varint i32 value.
+fn thrift_read_i32<R: Read>(r: &mut R) -> Result<i32, IoError> {
+    Ok(zigzag_decode(thrift_read_varint(r)?) as i32)
+}
+
+/// Read a zigzag varint i64 value.
+fn thrift_read_i64<R: Read>(r: &mut R) -> Result<i64, IoError> {
+    Ok(zigzag_decode(thrift_read_varint(r)?))
+}
+
+/// Read a compact string - varint length followed by UTF-8 bytes.
 fn thrift_read_string<R: Read>(r: &mut R) -> Result<String, IoError> {
-    let mut lb = [0u8; 4];
-    r.read_exact(&mut lb)?;
-    let len = i32::from_le_bytes(lb) as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(String::from_utf8(buf).map_err(|e| IoError::Format(format!("UTF8 error: {}", e)))?)
+    let buf = thrift_read_bytes(r)?;
+    String::from_utf8(buf).map_err(|e| IoError::Format(format!("UTF8 error: {}", e)))
 }
 
+/// Read a compact binary value - varint length followed by the raw bytes.
 fn thrift_read_bytes<R: Read>(r: &mut R) -> Result<Vec<u8>, IoError> {
-    let mut lb = [0u8; 4];
-    r.read_exact(&mut lb)?;
-    let len = i32::from_le_bytes(lb) as usize;
+    let len = thrift_read_varint(r)? as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(buf)
 }
 
+/// Read a compact list header, returning the element compact type and count.
+///
+/// One byte packs the size in the high nibble and the element type in the low
+/// nibble. A size nibble of 0xF signals the long form with a varint count.
 fn thrift_read_list_begin<R: Read>(r: &mut R) -> Result<(u8, usize), IoError> {
-    let mut t = [0u8; 1];
-    r.read_exact(&mut t)?;
-    let elem_tpe = t[0];
-    let mut lb = [0u8; 4];
-    r.read_exact(&mut lb)?;
-    let len = i32::from_le_bytes(lb) as usize;
+    let mut b = [0u8; 1];
+    r.read_exact(&mut b)?;
+    let elem_tpe = b[0] & 0x0f;
+    let size_nibble = (b[0] >> 4) & 0x0f;
+    let len = if size_nibble == 0x0f {
+        thrift_read_varint(r)? as usize
+    } else {
+        size_nibble as usize
+    };
     Ok((elem_tpe, len))
 }
 
+/// Read a compact map header, returning the key type, value type, and count.
+///
+/// The count is a leading varint. An empty map stops there with no key/value
+/// type byte; otherwise a single byte packs the key type in the high nibble
+/// and the value type in the low nibble.
 fn thrift_read_map_begin<R: Read>(r: &mut R) -> Result<(u8, u8, usize), IoError> {
-    let mut kt = [0u8; 1];
-    let mut vt = [0u8; 1];
-    r.read_exact(&mut kt)?;
-    r.read_exact(&mut vt)?;
-    let mut lb = [0u8; 4];
-    r.read_exact(&mut lb)?;
-    let len = i32::from_le_bytes(lb) as usize;
-    Ok((kt[0], vt[0], len))
+    let len = thrift_read_varint(r)? as usize;
+    if len == 0 {
+        return Ok((0, 0, 0));
+    }
+    let mut b = [0u8; 1];
+    r.read_exact(&mut b)?;
+    let kt = (b[0] >> 4) & 0x0f;
+    let vt = b[0] & 0x0f;
+    Ok((kt, vt, len))
 }
 
-fn thrift_skip_field<R: Read>(r: &mut R, tpe: u8) -> Result<(), IoError> {
-    match tpe {
-        2 => {
+/// Skip a field value given its compact type. Bool field values ride in the
+/// type nibble and carry no payload, so bool fields consume nothing here.
+fn thrift_skip_field<R: Read>(r: &mut R, ctype: u8) -> Result<(), IoError> {
+    match ctype {
+        TC_BOOL_TRUE | TC_BOOL_FALSE => Ok(()),
+        _ => thrift_skip_value(r, ctype),
+    }
+}
+
+/// Skip a single value of the given compact type, recursing through nested
+/// structs, lists, sets, and maps. Bool values encountered as container
+/// elements consume one byte, unlike bool struct fields.
+fn thrift_skip_value<R: Read>(r: &mut R, ctype: u8) -> Result<(), IoError> {
+    match ctype {
+        TC_BOOL_TRUE | TC_BOOL_FALSE | TC_BYTE => {
             let mut b = [0u8; 1];
             r.read_exact(&mut b)?;
-        } // BOOL
-        8 => {
-            let mut b = [0u8; 4];
-            r.read_exact(&mut b)?;
-        } // I32
-        10 => {
+        }
+        TC_I16 | TC_I32 | TC_I64 => {
+            thrift_read_varint(r)?;
+        }
+        TC_DOUBLE => {
             let mut b = [0u8; 8];
             r.read_exact(&mut b)?;
-        } // I64
-        11 => {
+        }
+        TC_BINARY => {
             let _ = thrift_read_bytes(r)?;
-        } // STRING
-        12 => loop {
-            let (ft, _) = thrift_read_field_begin(r)?;
-            if ft == 0 {
-                break;
-            }
-            thrift_skip_field(r, ft)?;
-        }, // STRUCT
-        15 => {
+        }
+        TC_LIST | TC_SET => {
             let (et, len) = thrift_read_list_begin(r)?;
             for _ in 0..len {
-                thrift_skip_field(r, et)?;
+                thrift_skip_value(r, et)?;
             }
-        } // LIST
-        13 => {
-            let (_, _, len) = thrift_read_map_begin(r)?;
+        }
+        TC_MAP => {
+            let (kt, vt, len) = thrift_read_map_begin(r)?;
             for _ in 0..len {
-                // skip key
-                thrift_skip_field(r, 11)?; /*string*/
-                thrift_skip_field(r, 11)?;
+                thrift_skip_value(r, kt)?;
+                thrift_skip_value(r, vt)?;
+            }
+        }
+        TC_STRUCT => {
+            let mut inner = 0i16;
+            loop {
+                let (ft, _) = thrift_read_field_begin(r, &mut inner)?;
+                if ft == 0 {
+                    break;
+                }
+                thrift_skip_field(r, ft)?;
             }
         }
         _ => {
             return Err(IoError::Format(format!(
                 "Cannot skip unknown thrift type {}",
-                tpe
+                ctype
             )));
         }
     }
@@ -1224,7 +1292,7 @@ mod tests {
     fn hybrid_bitpacked_single_group() {
         // eight values: [1,0,1,0,1,0,1,0]  (bit-width 1)
         // header = (groups=1)<<1 | 1   => 3
-        // transposed byte = 0b01010101 = 0x55
+        // packed byte = 0b01010101 = 0x55
         let buf = [0x03, 0x55];
         let out = super::decode_hybrid(&buf, 1, 8).unwrap();
         assert_eq!(out.as_slice(), &[1, 0, 1, 0, 1, 0, 1, 0]);

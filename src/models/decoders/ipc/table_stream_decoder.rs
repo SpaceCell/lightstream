@@ -247,6 +247,7 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
 impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
     /// Poll for the next decoded table paired with the single custom_metadata
     /// pair from its record batch message.
+    #[allow(clippy::type_complexity)]
     fn poll_next_keyed(
         &mut self,
         cx: &mut Context<'_>,
@@ -407,20 +408,17 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
                                     // Carry the message's first custom_metadata
                                     // pair coupled with the table. No key is
                                     // interpreted here.
-                                    let custom_metadata = match af_msg.custom_metadata() {
-                                        None => None,
-                                        Some(kvs) => Some(
-                                            kvs.iter()
-                                                .filter_map(|kv| match (kv.key(), kv.value()) {
-                                                    (Some(k), Some(v)) => Some(KeyValue {
-                                                        key: k.to_string(),
-                                                        value: v.to_string(),
-                                                    }),
-                                                    _ => None,
-                                                })
-                                                .collect(),
-                                        ),
-                                    };
+                                    let custom_metadata = af_msg.custom_metadata().map(|kvs| {
+                                        kvs.iter()
+                                            .filter_map(|kv| match (kv.key(), kv.value()) {
+                                                (Some(k), Some(v)) => Some(KeyValue {
+                                                    key: k.to_string(),
+                                                    value: v.to_string(),
+                                                }),
+                                                _ => None,
+                                            })
+                                            .collect()
+                                    });
                                     let meta_saved = msg_bytes.to_vec();
                                     let body_pad = consumed - frame.body_range.end;
                                     let body_start = frame.body_range.start;
@@ -469,20 +467,17 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
                             let kvs = flatbuffers::root::<fb::Message>(&meta_bytes)
                                 .ok()
                                 .and_then(|m| m.custom_metadata());
-                            let custom_metadata = match kvs {
-                                None => None,
-                                Some(kvs) => Some(
-                                    kvs.iter()
-                                        .filter_map(|kv| match (kv.key(), kv.value()) {
-                                            (Some(k), Some(v)) => Some(KeyValue {
-                                                key: k.to_string(),
-                                                value: v.to_string(),
-                                            }),
-                                            _ => None,
-                                        })
-                                        .collect(),
-                                ),
-                            };
+                            let custom_metadata = kvs.map(|kvs| {
+                                kvs.iter()
+                                    .filter_map(|kv| match (kv.key(), kv.value()) {
+                                        (Some(k), Some(v)) => Some(KeyValue {
+                                            key: k.to_string(),
+                                            value: v.to_string(),
+                                        }),
+                                        _ => None,
+                                    })
+                                    .collect()
+                            });
                             this.begin_body_read(meta_bytes, body_len, body_pad, custom_metadata);
                             continue;
                         }

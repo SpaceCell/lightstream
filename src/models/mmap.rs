@@ -48,7 +48,7 @@ unsafe impl<const ALIGN: usize> Sync for MemMap<ALIGN> {}
 
 impl<const ALIGN: usize> MemMap<{ ALIGN }> {
     pub fn open(path: &str, offset: usize, len: usize) -> io::Result<Self> {
-        if offset % ALIGN != 0 {
+        if !offset.is_multiple_of(ALIGN) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 "File offset must be 64-byte aligned",
@@ -116,13 +116,12 @@ impl<const ALIGN: usize> MemMap<{ ALIGN }> {
         // stays inside the same allocation.
         let region_ptr = unsafe { (ptr as *mut u8).add(offset_in_page) };
         // Confirm alignment
-        if (region_ptr as usize) % ALIGN != 0 {
+        if !(region_ptr as usize).is_multiple_of(ALIGN) {
             // SAFETY: `ptr` is the live mapping just returned by mmap and
             // we own it - munmap with the matching base+length releases it
             // before we drop the error path. The pointer is not used again.
             unsafe { libc::munmap(ptr, map_len) };
-            return Err(Error::new(
-                ErrorKind::Other,
+            return Err(Error::other(
                 format!(
                     "MMAP region is not {ALIGN}-byte aligned (ptr = {:p})",
                     region_ptr

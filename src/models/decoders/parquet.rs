@@ -20,7 +20,7 @@ use std::io::Read;
 
 /// Decode a plain `INT32` buffer into a `Vec64<i32>`.
 pub fn decode_int32_plain(buf: &[u8]) -> Result<Vec64<i32>, IoError> {
-    if buf.len() % 4 != 0 {
+    if !buf.len().is_multiple_of(4) {
         return Err(IoError::Format(
             "decode_int32_plain: buffer len % 4 != 0".into(),
         ));
@@ -33,7 +33,7 @@ pub fn decode_int32_plain(buf: &[u8]) -> Result<Vec64<i32>, IoError> {
 
 /// Decode a plain `INT64` buffer into a `Vec64<i64>`.
 pub fn decode_int64_plain(buf: &[u8]) -> Result<Vec64<i64>, IoError> {
-    if buf.len() % 8 != 0 {
+    if !buf.len().is_multiple_of(8) {
         return Err(IoError::Format(
             "decode_int64_plain: buffer len % 8 != 0".into(),
         ));
@@ -46,7 +46,7 @@ pub fn decode_int64_plain(buf: &[u8]) -> Result<Vec64<i64>, IoError> {
 
 /// Decode a plain `UINT32` buffer into a `Vec64<u32>`.
 pub fn decode_uint32_as_int32_plain(buf: &[u8]) -> Result<Vec64<u32>, IoError> {
-    if buf.len() % 4 != 0 {
+    if !buf.len().is_multiple_of(4) {
         return Err(IoError::Format("buffer len % 4 != 0".into()));
     }
     Ok(buf
@@ -64,7 +64,7 @@ pub fn decode_uint8_as_int32_plain(buf: &[u8]) -> Result<Vec64<u8>, IoError> {
 /// Decode a plain `UINT16` buffer into a `Vec64<u16>`.
 #[cfg(feature = "extended_numeric_types")]
 pub fn decode_uint16_as_int32_plain(buf: &[u8]) -> Result<Vec64<u16>, IoError> {
-    if buf.len() % 2 != 0 {
+    if !buf.len().is_multiple_of(2) {
         return Err(IoError::Format("buffer len % 2 != 0".into()));
     }
     Ok(buf
@@ -75,7 +75,7 @@ pub fn decode_uint16_as_int32_plain(buf: &[u8]) -> Result<Vec64<u16>, IoError> {
 
 /// Decode a plain `UINT64` buffer into a `Vec64<u64>`.
 pub fn decode_uint64_as_int64_plain(buf: &[u8]) -> Result<Vec64<u64>, IoError> {
-    if buf.len() % 8 != 0 {
+    if !buf.len().is_multiple_of(8) {
         return Err(IoError::Format("buffer len % 8 != 0".into()));
     }
     Ok(buf
@@ -86,7 +86,7 @@ pub fn decode_uint64_as_int64_plain(buf: &[u8]) -> Result<Vec64<u64>, IoError> {
 
 /// Decode a plain `FLOAT32` buffer into a `Vec64<f32>`.
 pub fn decode_float32_plain(buf: &[u8]) -> Result<Vec64<f32>, IoError> {
-    if buf.len() % 4 != 0 {
+    if !buf.len().is_multiple_of(4) {
         return Err(IoError::Format(
             "decode_float32_plain: buffer len % 4 != 0".into(),
         ));
@@ -99,7 +99,7 @@ pub fn decode_float32_plain(buf: &[u8]) -> Result<Vec64<f32>, IoError> {
 
 /// Decode a plain `FLOAT64` buffer into a `Vec64<f64>`.
 pub fn decode_float64_plain(buf: &[u8]) -> Result<Vec64<f64>, IoError> {
-    if buf.len() % 8 != 0 {
+    if !buf.len().is_multiple_of(8) {
         return Err(IoError::Format(
             "decode_float64_plain: buffer len % 8 != 0".into(),
         ));
@@ -186,7 +186,7 @@ pub fn decode_dictionary_indices_rle(buf: &[u8], len: usize) -> Result<Vec64<u32
     let mut input = &buf[1..];
     let mut out = Vec64::with_capacity(len);
 
-    let bytes_per_val = ((bit_width + 7) / 8) as usize;
+    let bytes_per_val = bit_width.div_ceil(8) as usize;
 
     while out.len() < len {
         // ---- read ULEB128 header --------------------------------------
@@ -221,7 +221,7 @@ pub fn decode_dictionary_indices_rle(buf: &[u8], len: usize) -> Result<Vec64<u32
             input = &input[bytes_per_val..];
 
             let needed = len - out.len();
-            out.extend(std::iter::repeat(value).take(run_len.min(needed)));
+            out.extend(std::iter::repeat_n(value, run_len.min(needed)));
         } else {
             // --------------- Bit-packed run -----------------------------
             let groups = (header >> 1) as usize; // 1 group = 8 values
@@ -229,16 +229,15 @@ pub fn decode_dictionary_indices_rle(buf: &[u8], len: usize) -> Result<Vec64<u32
             if input.len() < bytes_in_run {
                 return Err(IoError::Format("truncated bit-packed run".into()));
             }
-            // decode all groups in this run
+            // Unpack the run LSB-first with values contiguous inside each
+            // 8-value group, per the Parquet hybrid RLE/bit-packing layout.
             let mut scratch = vec![0u32; groups * 8];
-            for bit in 0..bit_width {
-                for g in 0..groups {
-                    let b = input[bit as usize * groups + g];
-                    for j in 0..8 {
-                        let idx = g * 8 + j;
-                        if idx < scratch.len() && (b >> j) & 1 != 0 {
-                            scratch[idx] |= 1 << bit;
-                        }
+            for (idx, slot) in scratch.iter_mut().enumerate() {
+                let bit_base = idx * bit_width as usize;
+                for k in 0..bit_width as usize {
+                    let bit = bit_base + k;
+                    if (input[bit / 8] >> (bit % 8)) & 1 != 0 {
+                        *slot |= 1 << k;
                     }
                 }
             }
@@ -371,6 +370,15 @@ mod tests {
         // truncated to len=5
         let out2 = decode_dictionary_indices_rle(buf, 5).unwrap();
         assert_eq!(out2.0, vec![1, 0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn test_decode_dictionary_rle_bitpacked_spec_vector() {
+        // Parquet format spec example: bit_width=3, values 0..=7 pack to
+        // 0b10001000 0b11000110 0b11111010.
+        let buf = &[3u8, 3, 0b10001000, 0b11000110, 0b11111010];
+        let out = decode_dictionary_indices_rle(buf, 8).unwrap();
+        assert_eq!(out.0, vec![0, 1, 2, 3, 4, 5, 6, 7]);
     }
 
     #[test]

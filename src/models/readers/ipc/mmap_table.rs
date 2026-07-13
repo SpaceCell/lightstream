@@ -103,16 +103,16 @@ unsafe impl Sync for MmapRegionOwner {}
 /// ## Zero-Copy behaviour
 /// - Currently zero-copy for 64-byte aligned writers, otherwise it copied into SIMD-friendly buffers.
 /// - The current method to guarantee zero-copy is to use the `TableWriter` from this crate, and the resulting
-/// file can be zero-copy read.
+///   file can be zero-copy read.
 /// - `.arrow` files written with other implementations e.g., `pyarrow`, `arrow-rs` are usually 8-byte aligned,
-/// and thus will copy at the current time. Though, this means their buffers are often not 64-byte aligned and
-/// thus require re-allocations before processing with SIMD-kernels and related scenarios.
+///   and thus will copy at the current time. Though, this means their buffers are often not 64-byte aligned and
+///   thus require re-allocations before processing with SIMD-kernels and related scenarios.
 /// - Hence, this library has initially prioritised this high-performance scenario, though in future we may
-/// add support for the general case, and invite community contributions.
+///   add support for the general case, and invite community contributions.
 ///
 /// ## Platform
 /// -  This implementation uses POSIX `mmap(2)` for zero-copy access, and is therefore
-/// supported only on Unix-like operating systems (Linux, macOS, BSDs, Solaris, etc.).
+///    supported only on Unix-like operating systems (Linux, macOS, BSDs, Solaris, etc.).
 /// - There are no plans to support Windows, however PR's will be accepted.
 ///
 /// ## Overview
@@ -169,7 +169,7 @@ impl MmapTableReader {
             base_ptr,
             magic_end,
             aligned_data_offset,
-            (base_ptr + aligned_data_offset) % 64 == 0
+            (base_ptr + aligned_data_offset).is_multiple_of(64)
         );
 
         if &data[..6] != ARROW_MAGIC_NUMBER {

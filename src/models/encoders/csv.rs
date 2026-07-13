@@ -7,7 +7,7 @@
 //! CSV Encoder for Minarrow Tables/SuperTables.
 //! - Handles all supported types: Int32, Int64, UInt32, UInt64, Float32, Float64, Boolean, String32, Categorical32.
 //! - Supports custom delimiter, header row, quoting, and null representation.
-//! - Serialises a Table or SuperTable to any Write or Vec<u8>.
+//! - Serialises a Table or SuperTable to any Write or `Vec<u8>`.
 //!
 //! ## Fast path
 //!
@@ -122,11 +122,7 @@ fn estimate_cell_width(arr: &Array, n_rows: usize) -> usize {
         },
         Array::BooleanArray(_) => 5,
         Array::TextArray(TextArray::String32(arr)) => {
-            if n_rows == 0 {
-                8
-            } else {
-                arr.data.len() / n_rows + 4
-            }
+            arr.data.len().checked_div(n_rows).map_or(8, |v| v + 4)
         }
         #[cfg(feature = "large_string")]
         Array::TextArray(TextArray::String64(arr)) => {

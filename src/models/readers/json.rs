@@ -8,12 +8,12 @@
 //!
 //! High-level API for reading JSON files or streams into Minarrow Tables.
 //! Supports either a single JSON array-of-objects or streaming NDJSON
-//! (newline-delimited), chosen via [`JsonFormat`].
+//! (newline-delimited), chosen via [`JsonFormat`](crate::models::encoders::json::JsonFormat).
 //!
 //! For NDJSON, records can be pulled in fixed-size batches via
-//! [`JsonReader::next_batch`]; array-of-objects must be fully read in one pass.
+//! [`JsonReader::next_batch`](crate::models::readers::json::JsonReader::next_batch); array-of-objects must be fully read in one pass.
 //!
-//! See [`JsonDecodeOptions`] for schema handling and type control.
+//! See [`JsonDecodeOptions`](crate::models::decoders::json::JsonDecodeOptions) for schema handling and type control.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};

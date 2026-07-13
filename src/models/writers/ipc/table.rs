@@ -10,16 +10,16 @@
 //! in Arrow IPC format using its `File` or `Stream` protocols.
 //!
 //! ## Features
-//! - Wraps [`GTableSink`] for Arrow IPC framing and schema management
+//! - Wraps [`GTableSink`](crate::models::sinks::table_sink::GTableSink) for Arrow IPC framing and schema management
 //! - Supports optional compression
 //! - Automatically registers categorical dictionaries
 //! - Provides helpers for writing one or many tables to disk
 //!
 //! ## Typical usage
-//! - Create with [`TableWriter::new`] or [`TableWriter::new_with_compression`]  
-//! - Optionally register dictionaries with [`TableWriter::register_dictionary`]  
-//! - Write tables using [`TableWriter::write_table`] or [`TableWriter::write_all_tables`]  
-//! - Finalise with [`TableWriter::finish`]  
+//! - Create with [`TableWriter::new`](crate::models::writers::ipc::table::TableWriter::new) or `TableWriter::new_with_compression`
+//! - Optionally register dictionaries with [`TableWriter::register_dictionary`](crate::models::writers::ipc::table::TableWriter::register_dictionary)  
+//! - Write tables using [`TableWriter::write_table`](crate::models::writers::ipc::table::TableWriter::write_table) or [`TableWriter::write_all_tables`](crate::models::writers::ipc::table::TableWriter::write_all_tables)  
+//! - Finalise with [`TableWriter::finish`](crate::models::writers::ipc::table::TableWriter::finish)  
 
 use std::io;
 

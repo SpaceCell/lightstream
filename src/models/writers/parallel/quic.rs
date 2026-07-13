@@ -8,7 +8,7 @@
 //!
 //! Fans one table sequence across several concurrent QUIC streams on a
 //! single [`quinn::Connection`]. Each stream runs its own
-//! [`QuicTableWriter`] driven by a dedicated task, so the streams send
+//! [`QuicTableWriter`](crate::models::writers::quic::QuicTableWriter) driven by a dedicated task, so the streams send
 //! in parallel and aggregate throughput is the sum across them.
 //!
 //! Each stream carries an independent ordered sequence of batches;

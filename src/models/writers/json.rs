@@ -12,9 +12,9 @@
 //!
 //! ## Features
 //! - Pluggable destination: in-memory `Vec<u8>` or [`minarrow::Vec64`] (64-byte aligned),
-//!   files, or any user-supplied [`Write`] impl
-//! - Configurable output shape and formatting via [`JsonEncodeOptions`]
-//! - Writes single tables or multi-batch [`SuperTable`]s
+//!   files, or any user-supplied [`Write`](std::io::Write) impl
+//! - Configurable output shape and formatting via [`JsonEncodeOptions`](crate::models::encoders::json::JsonEncodeOptions)
+//! - Writes single tables or multi-batch [`SuperTable`](minarrow::SuperTable)s
 //!
 //! JSON is a text format; output bytes are not consumed as SIMD payloads, so
 //! a standard `Vec<u8>` is the ergonomic default. A 64-byte aligned `Vec64<u8>`

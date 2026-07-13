@@ -7,15 +7,15 @@
 //! # Parallel Lightstream protocol reader
 //!
 //! Accepts several concurrent Lightstream protocol connections on a
-//! [`TcpListener`] and decodes them across cores, one task per connection.
+//! [`TcpListener`](tokio::net::TcpListener) and decodes them across cores, one task per connection.
 //! Each task feeds its own channel, and the reader merges the channels into a
-//! single frame stream of [`LightstreamMessage`] values, so protobuf messages
+//! single frame stream of [`LightstreamMessage`](crate::models::frames::lightstream_message::LightstreamMessage) values, so protobuf messages
 //! and Arrow tables share the wire.
 //!
 //! Message and table types are registered on every connection at
-//! [`accept`](LightstreamParallelReader::accept). Under [`SortBehaviour::None`]
-//! and [`SortBehaviour::RequestKeys`] frames surface in the order the
-//! connections produce them. Under [`SortBehaviour::Ordered`] the reader pulls
+//! [`accept`](crate::models::readers::parallel::lightstream::LightstreamParallelReader::accept). Under [`SortBehaviour::None`](crate::traits::parallel_transport_reader::SortBehaviour::None)
+//! and [`SortBehaviour::RequestKeys`](crate::traits::parallel_transport_reader::SortBehaviour::RequestKeys) frames surface in the order the
+//! connections produce them. Under [`SortBehaviour::Ordered`](crate::traits::parallel_transport_reader::SortBehaviour::Ordered) the reader pulls
 //! the connections in the writer's round-robin rotation, so frames surface in
 //! global send order. Each connection announces its index before any frames,
 //! so it is placed by that index rather than by accept order - the global order

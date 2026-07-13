@@ -8,7 +8,7 @@
 //!
 //! High-level async writer that writes Arrow IPC encoded tables to stdout.
 //!
-//! Wraps a [`TableSink64`] over `tokio::io::Stdout`, hiding the wiring
+//! Wraps a [`TableSink64`](crate::models::sinks::table_sink::TableSink64) over `tokio::io::Stdout`, hiding the wiring
 //! so callers get a simple API for CLI tools.
 //!
 //! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the
@@ -40,7 +40,7 @@ use crate::traits::transport_writer::IPCTransportWriter;
 /// Writes Arrow IPC stream protocol data to stdout using the standard
 /// encoding pipeline.
 ///
-/// Uses Vec64<u8> for 64-byte SIMD aligned encoding, matching the
+/// Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the
 /// Arrow IPC frame decoder on the read side.
 pub struct StdoutTableWriter {
     sink: TableSink64<Stdout>,

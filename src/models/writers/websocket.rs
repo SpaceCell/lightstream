@@ -10,7 +10,7 @@
 //! Arrow IPC encoded tables as binary WebSocket messages.
 //!
 //! Extracts the raw TCP stream after the tungstenite handshake and uses
-//! [`WsWrite`] for WebSocket binary frame encoding on the data path.
+//! [`WsWrite`](crate::models::streams::websocket::WsWrite) for WebSocket binary frame encoding on the data path.
 //!
 //! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding.
 //!
@@ -22,7 +22,7 @@
 //! that integration is compiled in.
 //!
 //! For pinned roots, a custom verifier, or client-auth keys, use
-//! [`WebSocketTableWriter::connect_tls`] - it takes an
+//! [`WebSocketTableWriter::connect_tls`](crate::models::writers::websocket::WebSocketTableWriter::connect_tls) - it takes an
 //! `Arc<rustls::ClientConfig>` directly and bypasses the bundled
 //! verifier. The library does not enforce a transport policy; if a
 //! deployment requires TLS, that is the caller's deployment decision.

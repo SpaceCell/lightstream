@@ -8,7 +8,7 @@
 //!
 //! Fans one table sequence across several concurrent TCP connections to a
 //! single endpoint. TCP has no in-band stream multiplexing, so each "stream"
-//! is its own connection running its own [`TcpTableWriter`] driven by a
+//! is its own connection running its own [`TcpTableWriter`](crate::models::writers::tcp::TcpTableWriter) driven by a
 //! dedicated task. The connections send in parallel and aggregate throughput
 //! is the sum across them.
 //!

@@ -7,7 +7,7 @@
 //! # Generic async framed byte stream
 //!
 //! Adapts any chunked byte source into a stream of protocol frames using a
-//! user-supplied [`FrameDecoder`].
+//! user-supplied [`FrameDecoder`](crate::traits::frame_decoder::FrameDecoder).
 //!
 //! - Works with any `GenByteStream<B>` (e.g., network/file sources).
 //! - Buffers partial input and yields complete frames as soon as available.

@@ -10,12 +10,12 @@
 //! an Arrow IPC stream. The transport is `h2` directly - hyper's Body /
 //! Service layer is not in the dep tree.
 //!
-//! Plug-and-play one-liner over `http://` is [`HttpTableReader::get`];
-//! over `https://` is [`HttpTableReader::get_tls`] (requires the `tls`
+//! Plug-and-play one-liner over `http://` is [`HttpTableReader::get`](crate::models::readers::http::HttpTableReader::get);
+//! over `https://` is [`HttpTableReader::get_tls`](crate::models::readers::http::HttpTableReader::get_tls) (requires the `tls`
 //! feature and a caller-supplied `rustls::ClientConfig` with ALPN set
 //! to `h2`). Callers that need custom headers (auth tokens, API keys)
 //! pass a fully-built `http::Request<()>` via
-//! [`HttpTableReader::from_request`].
+//! [`HttpTableReader::from_request`](crate::models::readers::http::HttpTableReader::from_request).
 //!
 //! ## Continuous streaming
 //!

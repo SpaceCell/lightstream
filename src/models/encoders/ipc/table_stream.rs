@@ -19,13 +19,15 @@ use std::io;
 
 use minarrow::{ArrowType, Field, Table};
 
-use crate::compression::Compression;
+use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
+use crate::compression::{Compression, compress};
 use crate::constants::DEFAULT_FRAME_ALLOCATION_SIZE;
 use crate::enums::{IPCMessageProtocol, WriterState};
 use crate::models::encoders::ipc::schema::{
     build_flatbuf_recordbatch, build_flatbuf_schema, encode_flatbuf_dictionary,
 };
 use crate::traits::stream_buffer::StreamBuffer;
+use crate::utils::align_to;
 
 /// Arrow IPC table encoder.
 ///
@@ -126,13 +128,46 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
 
         let layout = compute_body_layout::<B>(tbl)?;
 
-        let mut body = B::with_capacity(layout.body_size.max(DEFAULT_FRAME_ALLOCATION_SIZE));
-        for region in &layout.regions {
-            body.extend_from_slice(region.data);
-            if region.pad > 0 {
-                body.extend_from_slice(&[0u8; 64][..region.pad]);
+        // When compression is active, compress each buffer with a u64 LE
+        // uncompressed length prefix and rebuild the buffer metadata against
+        // the compressed layout, per the Arrow IPC BodyCompression spec.
+        let (body, fb_buffers, body_size) = if let Some(codec) = self.compression {
+            let mut compressed: Vec<Vec<u8>> = Vec::with_capacity(layout.regions.len());
+            for region in &layout.regions {
+                if region.data.is_empty() {
+                    compressed.push(Vec::new());
+                } else {
+                    let c = compress(region.data, codec)
+                        .map_err(|e| io::Error::other(format!("{}", e)))?;
+                    let mut wire = Vec::with_capacity(8 + c.len());
+                    wire.extend_from_slice(&(region.data.len() as u64).to_le_bytes());
+                    wire.extend_from_slice(&c);
+                    compressed.push(wire);
+                }
             }
-        }
+            let mut fb_buffers = Vec::with_capacity(compressed.len());
+            let mut body = B::with_capacity(DEFAULT_FRAME_ALLOCATION_SIZE);
+            let mut offset = 0usize;
+            for c in &compressed {
+                fb_buffers.push(fbm::Buffer::new(offset as i64, c.len() as i64));
+                body.extend_from_slice(c);
+                let pad = align_to::<B>(c.len());
+                if pad > 0 {
+                    body.extend_from_slice(&[0u8; 64][..pad]);
+                }
+                offset += c.len() + pad;
+            }
+            (body, fb_buffers, offset)
+        } else {
+            let mut body = B::with_capacity(layout.body_size.max(DEFAULT_FRAME_ALLOCATION_SIZE));
+            for region in &layout.regions {
+                body.extend_from_slice(region.data);
+                if region.pad > 0 {
+                    body.extend_from_slice(&[0u8; 64][..region.pad]);
+                }
+            }
+            (body, layout.fb_buffers, layout.body_size)
+        };
 
         let fb_compression = match self.compression {
             Some(c) => Some(c.to_arrow_ipc_type()?),
@@ -142,8 +177,8 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
             &mut self.fbb,
             tbl.n_rows,
             &layout.fb_field_nodes,
-            &layout.fb_buffers,
-            layout.body_size,
+            &fb_buffers,
+            body_size,
             fb_compression,
             None,
         )?;

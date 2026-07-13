@@ -122,6 +122,12 @@ pub struct StreamArena {
     capacity: usize,
 }
 
+impl Default for StreamArena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamArena {
     /// Create an arena with the default capacity (1 MiB).
     pub fn new() -> Self {

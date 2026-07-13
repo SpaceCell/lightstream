@@ -34,6 +34,7 @@
 use std::io;
 use std::sync::Arc;
 use log::warn;
+#[cfg(any(feature = "default_categorical_8", feature = "zstd", feature = "snappy"))]
 use tracing::debug;
 
 use flatbuffers::Vector;
@@ -46,8 +47,6 @@ use crate::arrow::message::org::apache::arrow::flatbuf as fb;
 use crate::arrow::message::org::apache::arrow::flatbuf::Buffer;
 #[cfg(feature = "zstd")]
 use crate::compression::ipc::decompress_ipc_body;
-#[cfg(any(feature = "zstd", feature = "snappy"))]
-use crate::compression::{Compression, decompress};
 use crate::debug_println;
 use crate::models::decoders::limits::DecodeLimits;
 use crate::{AFMessage, AFMessageHeader};
@@ -110,6 +109,7 @@ impl RecordBatchParser {
         // Handle compressed body: decompress into a Vec64, build an Arc
         // from it for zero-copy column views within the decompressed buffer.
         #[cfg(feature = "zstd")]
+        #[allow(clippy::type_complexity)]
         let decompressed: Option<(Vec64<u8>, Vec<(usize, usize)>)> =
             if let Some(ref compression) = header.compression() {
                 Some(decompress_ipc_body::<Vec<u8>>(
@@ -641,6 +641,12 @@ impl RecordBatchParser {
     ///   in which case `decode_fixed_width_batch` supplies the `Arc`.
     /// * If unaligned we always copy.
     ///
+    /// # Safety
+    ///
+    /// `slice` must contain at least `len * size_of::<T>()` bytes of
+    /// initialised data whose bit patterns are valid values of `T`. When
+    /// `arc_bytes` is `Some`, the `Arc` must own the allocation backing
+    /// `slice` so the shared view keeps the bytes alive.
     #[inline]
     pub unsafe fn buffer_from_slice<T: Copy>(
         slice: &[u8],
@@ -990,6 +996,7 @@ fn parse_dictionary_strings(
 /// buffer index in sync with the IPC metadata. Only array construction and
 /// SharedBuffer slicing are avoided for non-projected columns, so mmap
 /// pages for skipped columns are never faulted in.
+#[allow(clippy::too_many_arguments)]
 pub fn decode_record_batch(
     rec: &fb::RecordBatch,
     fields: &[Field],
@@ -1411,6 +1418,7 @@ fn consume_buffer(
 ///
 /// When `corrections` is provided, buffer offset and length come from the
 /// decompression corrections map instead of the flatbuffer metadata.
+#[allow(clippy::too_many_arguments)]
 fn extract_null_mask(
     field: &Field,
     field_len: usize,
@@ -2103,187 +2111,6 @@ pub fn convert_fb_field_to_arrow(
         nullable,
         metadata,
     })
-}
-
-/// Decompress a compressed record batch body buffer by buffer, creating a sequential layout
-/// Each buffer is compressed individually with format: 8-byte uncompressed length + compressed data
-/// Returns the decompressed body and the correct offset for each buffer in the decompressed layout
-#[cfg(any(feature = "zstd", feature = "snappy"))]
-pub(crate) fn decompress_sequential_body(
-    buffers: &Vector<Buffer>,
-    compressed_body: &[u8],
-) -> io::Result<(Vec<u8>, Vec<usize>)> {
-    let mut decompressed_body = Vec::new();
-    let mut buffer_offsets = Vec::new(); // Offset of each buffer in the decompressed body
-    let mut read_offset = 0; // Offset in the compressed body we're reading from
-
-    debug!(
-        "DEBUG: Decompressing {} buffers, compressed_body.len()={}",
-        buffers.len(),
-        compressed_body.len()
-    );
-
-    for i in 0..buffers.len() {
-        let buf = buffers.get(i);
-        let buf_length = buf.length() as usize; // This is the UNCOMPRESSED length
-
-        debug!(
-            "DEBUG: Buffer {}: uncompressed_length={}, read_offset={}",
-            i, buf_length, read_offset
-        );
-
-        // Record the current offset in the decompressed body for this buffer
-        buffer_offsets.push(decompressed_body.len());
-
-        // Skip buffers with zero length (common for null masks)
-        if buf_length == 0 {
-            debug!("DEBUG: Skipping zero-length buffer {}", i);
-            // Zero length buffers still take space in the decompressed output (nothing to decompress)
-            continue;
-        }
-
-        // Check if this looks like a compressed buffer (starts with 8-byte uncompressed length)
-        if read_offset + 8 > compressed_body.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("Buffer {} header extends beyond body data", i),
-            ));
-        }
-
-        let header_bytes = &compressed_body[read_offset..read_offset + 8];
-        let uncompressed_len = u64::from_le_bytes(header_bytes.try_into().map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid length header: {}", e),
-            )
-        })?) as usize;
-
-        debug!(
-            "DEBUG: Buffer {} header uncompressed_len={}",
-            i, uncompressed_len
-        );
-
-        // Verify the uncompressed length matches the FlatBuffers metadata
-        if uncompressed_len != buf_length {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Uncompressed length mismatch for buffer {}: header says {}, metadata says {}",
-                    i, uncompressed_len, buf_length
-                ),
-            ));
-        }
-
-        let compressed_start = read_offset + 8;
-
-        // For the compressed data size, we need to scan to find the right boundary
-        // since compressed data can be variable size + padding
-        let remaining_body = &compressed_body[compressed_start..];
-
-        // Try different compression algorithms and find the one that works
-        let compression_types = [
-            #[cfg(feature = "snappy")]
-            Compression::Snappy,
-            #[cfg(feature = "zstd")]
-            Compression::Zstd,
-        ];
-
-        let mut decompressed = None;
-        let mut actual_compressed_size = 0;
-
-        for &compression in &compression_types {
-            // Try different compressed sizes - scan forward to find the right size
-            for try_len in 1..=remaining_body.len() {
-                let try_compressed = &remaining_body[..try_len];
-                if let Ok(result) = decompress(try_compressed, compression) {
-                    if result.len() == uncompressed_len {
-                        debug!(
-                            "DEBUG: Successfully decompressed buffer {} with {:?}, size {} -> {}",
-                            i,
-                            compression,
-                            try_len,
-                            result.len()
-                        );
-                        decompressed = Some(result);
-                        actual_compressed_size = try_len;
-                        break;
-                    }
-                }
-            }
-
-            if decompressed.is_some() {
-                break;
-            }
-        }
-
-        match decompressed {
-            Some(data) => {
-                decompressed_body.extend_from_slice(&data);
-                // Move read offset past the header + actual compressed data + padding
-                let total_size = 8 + actual_compressed_size;
-                // Add padding to align to 64-byte boundary (Arrow IPC alignment)
-                let aligned_size = ((total_size + 63) / 64) * 64;
-                read_offset += aligned_size;
-                debug!(
-                    "DEBUG: Buffer {} processed, advancing read_offset by {} to {}",
-                    i, aligned_size, read_offset
-                );
-            }
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Could not decompress buffer {}", i),
-                ));
-            }
-        }
-    }
-
-    debug!(
-        "DEBUG: Decompressed body size: {} bytes",
-        decompressed_body.len()
-    );
-    debug!("DEBUG: Buffer offsets count: {}", buffer_offsets.len());
-    Ok((decompressed_body, buffer_offsets))
-}
-
-/// Heuristic to detect if a body contains compressed buffers
-/// Looks for the compression header pattern: 8-byte uncompressed length + compressed data
-#[cfg(any(feature = "zstd", feature = "snappy"))]
-pub(crate) fn is_body_compressed(buffers: &Vector<Buffer>, body: &[u8]) -> bool {
-    // Check a few buffers with non-zero length for compression headers
-    for i in 0..buffers.len().min(3) {
-        let buf = buffers.get(i);
-        let buf_offset = buf.offset() as usize;
-        let buf_length = buf.length() as usize;
-
-        // Skip zero-length buffers
-        if buf_length == 0 {
-            continue;
-        }
-
-        // Check if we have enough bytes for the header
-        if buf_offset + 8 <= body.len() {
-            let header_bytes = &body[buf_offset..buf_offset + 8];
-            if let Ok(header_bytes_arr) = header_bytes.try_into() {
-                let uncompressed_len = u64::from_le_bytes(header_bytes_arr) as usize;
-
-                // If the header's uncompressed length matches the FlatBuffers metadata length,
-                // and it's a reasonable size, this is likely compressed
-                if uncompressed_len == buf_length
-                    && uncompressed_len > 0
-                    && uncompressed_len < 100_000_000
-                {
-                    debug!(
-                        "DEBUG: Heuristic found compression header at buffer {}: uncompressed_len={}",
-                        i, uncompressed_len
-                    );
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
 }
 
 #[cfg(test)]

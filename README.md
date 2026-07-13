@@ -343,7 +343,7 @@ The repository includes Criterion benchmarks for:
 - JSON encoding and decoding
 - Apache Arrow Flight comparison
 
-Cross-host benchmark rigs are also provided for EC2 and EKS.
+Cross-host benchmark rigs are also provided for EC2 and Amazon ECS.
 
 See [`benches/README.md`](benches/README.md) for the benchmark matrix, methodology and commands.
 

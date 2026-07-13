@@ -9,7 +9,7 @@
 //! High-level async writer that sends Arrow IPC encoded tables over a
 //! QUIC send stream.
 //!
-//! Wraps a [`TableSink64`] over a [`quinn::SendStream`], hiding the wiring
+//! Wraps a [`TableSink64`](crate::models::sinks::table_sink::TableSink64) over a [`quinn::SendStream`], hiding the wiring
 //! so callers get a one-liner API.
 //!
 //! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the
@@ -31,7 +31,7 @@ use crate::traits::transport_writer::IPCTransportWriter;
 /// Wraps a QUIC send stream and writes Arrow IPC stream protocol data
 /// using the standard encoding pipeline.
 ///
-/// Uses Vec64<u8> for 64-byte SIMD aligned encoding, matching the
+/// Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the
 /// Arrow IPC frame decoder on the read side.
 pub struct QuicTableWriter {
     sink: TableSink64<quinn::SendStream>,

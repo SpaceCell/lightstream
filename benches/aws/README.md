@@ -17,8 +17,8 @@ cross-check.
 | `run.sh`              | SSH-based orchestration: launches the sender in the background, then runs the receiver. |
 | `terraform/`          | Terraform module that provisions two EC2 instances ready for the rig. See [terraform/README.md](terraform/README.md). User supplies their own SSH public key; no key material is bundled. |
 
-Both binaries share the bench table shapes from `benches/bench_helpers.rs`
-so the workload matches the in-process `transport_throughput` bench
+Both binaries share the bench table shapes from `benches/common/bench_helpers.rs`
+so the workload matches the in-process `transport_bench_matrix` bench
 for the same `(shape, rows, batches)` triple. Throughput uses the
 same logical-bytes denominator.
 
@@ -60,7 +60,7 @@ Or build the container image and push to a registry both instances
 can pull from:
 
 ```bash
-docker build -t lightstream-bench:latest -f bench/aws/Dockerfile .
+docker build -t lightstream-bench:latest -f benches/aws/Dockerfile .
 ```
 
 ### 2. Drop binaries onto the EC2 instances
@@ -85,7 +85,7 @@ SHAPE=mixed                                      \
 ROWS=100000                                      \
 BATCHES=2000                                     \
 SSH_OPTS="-i ~/.ssh/your-key.pem"                \
-bench/aws/run.sh
+benches/aws/run.sh
 ```
 
 The script:

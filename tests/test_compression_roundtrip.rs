@@ -20,8 +20,8 @@ use lightstream::models::writers::ipc::table::TableWriter;
 
 use minarrow::ffi::arrow_dtype::ArrowType;
 use minarrow::{
-    Array, BooleanArray, Buffer, Field, FieldArray, FloatArray, IntegerArray, NumericArray,
-    StringArray, Table, TextArray, Vec64,
+    Array, BooleanArray, Buffer, Field, FieldArray, FloatArray, IntegerArray, MaskedArray,
+    NumericArray, StringArray, Table, TextArray, Vec64,
 };
 
 /// Create a comprehensive test table with multiple data types
@@ -223,10 +223,24 @@ async fn test_compression_none_roundtrip() {
 
 #[cfg(feature = "snappy")]
 #[tokio::test]
-async fn test_snappy_compression_roundtrip() {
-    let (original, roundtrip) = write_and_read_roundtrip(Some(Compression::Snappy)).await;
-    verify_tables_equal(&original, &roundtrip);
-    println!("✓ Snappy compression roundtrip test passed");
+async fn test_snappy_ipc_write_rejected() {
+    // Arrow IPC BodyCompression permits only LZ4_FRAME and ZSTD, so a
+    // Snappy IPC write reports Unsupported rather than producing a file
+    // other Arrow readers cannot open. Snappy remains available for the
+    // formats that support it.
+    let temp_file = NamedTempFile::new().unwrap();
+    let file = File::create(temp_file.path()).await.unwrap();
+    let (table, schema) = create_test_table();
+    let mut writer = TableWriter::new(
+        file,
+        schema,
+        IPCMessageProtocol::File,
+        Some(Compression::Snappy),
+    )
+    .unwrap();
+    let result = writer.write_all_tables(vec![table]).await;
+    let err = result.expect_err("Snappy IPC write should be rejected");
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
 }
 
 #[cfg(feature = "zstd")]

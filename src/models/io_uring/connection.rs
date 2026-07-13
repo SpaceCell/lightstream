@@ -54,7 +54,7 @@ async fn read_exact_vec64<S: UringStream>(
     Ok(buf)
 }
 
-/// Read exactly `len` bytes from the stream into a Vec<u8> starting at `offset`.
+/// Read exactly `len` bytes from the stream into a `Vec<u8>` starting at `offset`.
 async fn read_exact_vec<S: UringStream>(
     stream: &S,
     mut buf: Vec<u8>,

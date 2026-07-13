@@ -11,9 +11,9 @@
 //!
 //! ## Features
 //! - Pluggable destination: in-memory (`Vec<u8>`) or files (`std::fs::File`)
-//! - Configurable delimiter, header emission, and null representation via [`CsvEncodeOptions`]
+//! - Configurable delimiter, header emission, and null representation via [`CsvEncodeOptions`](crate::models::encoders::csv::CsvEncodeOptions)
 //! - RFC 4180-style quoting/escaping handled by the encoders
-//! - Write single tables or concatenate multi-batch [`SuperTable`]s - header on first batch only
+//! - Write single tables or concatenate multi-batch [`SuperTable`](minarrow::SuperTable)s - header on first batch only
 //!
 //! ## Quick start
 //! ```no_run

@@ -14,12 +14,12 @@
 //! Consistent with the Arrow IPC file specification; expects opening/closing magic,
 //! footer length, and block tables.
 //!
-#[cfg(any(not(feature = "arena"), feature = "zstd", feature = "snappy"))]
+#[cfg(not(feature = "arena"))]
 use minarrow::Vec64;
 use minarrow::structs::shared_buffer::SharedBuffer;
 /// # Which reader?
 /// - **Speed**: Prefer the mmap variant [`MmapTableReader`] when zero-copy performance is required -
-/// for e.g., the MMAP version can read millions of rows in microseconds, microseconds, and very large volumes in milliseconds.
+///   for e.g., the MMAP version can read millions of rows in microseconds, and very large volumes in milliseconds.
 /// - **Flexibility**: this standard reader is more flexible as it is not tied to memory-mapped shared memory.
 use std::collections::HashSet;
 use std::fs::File;
@@ -70,8 +70,6 @@ use crate::models::streams::stream_arena::StreamArena;
 use crate::models::decoders::ipc::parser::{
     convert_fb_field_to_arrow, decode_record_batch, handle_dictionary_batch,
 };
-#[cfg(any(feature = "zstd", feature = "snappy"))]
-use crate::models::decoders::ipc::parser::{decompress_sequential_body, is_body_compressed};
 use crate::models::decoders::limits::DecodeLimits;
 
 /// Footer-declared block entry (i.e., offsets/lengths) for a dictionary or record batch.
@@ -88,10 +86,10 @@ struct IPCFileBlock {
 /// Heap-allocated Arrow file reader.
 ///
 /// # Which reader?
-/// - **Speed**: Prefer the mmap variant [`MmapTableReader`] when zero-copy performance is required -
-/// for e.g., the MMAP version can read millions of rows in microseconds, and very large volumes in milliseconds.
+/// - **Speed**: Prefer the mmap variant [`MmapTableReader`](crate::models::readers::ipc::mmap_table::MmapTableReader) when zero-copy performance is required -
+///   for e.g., the MMAP version can read millions of rows in microseconds, and very large volumes in milliseconds.
 /// - **Flexibility**: this standard reader is more flexible as it is not tied to memory-mapped
-/// shared memory.
+///   shared memory.
 #[derive(Clone)]
 pub struct FileTableReader {
     /// Open file handle shared across the reader's lifetime. All block
@@ -242,7 +240,7 @@ impl FileTableReader {
     /// reader's owned per-batch buffers; total resident memory is the
     /// sum of every batch's columns.
     ///
-    /// For files larger than RAM consider [`MmapTableReader::load_batched`]
+    /// For files larger than RAM consider [`MmapTableReader::load_batched`](crate::models::readers::ipc::mmap_table::MmapTableReader::load_batched)
     /// which holds Arc references into the mmap region instead of
     /// owning the underlying bytes.
     pub fn load_batched(&self, name_override: Option<String>) -> io::Result<SuperTable> {
@@ -310,8 +308,7 @@ impl FileTableReader {
         // region.
         let spare = arena.spare_mut();
         if spare.len() < total {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "arena capacity exhausted; recycle could not reclaim space",
             ));
         }
@@ -419,31 +416,8 @@ impl FileTableReader {
             io::Error::new(io::ErrorKind::InvalidData, "expected RecordBatch header")
         })?;
 
-        #[cfg(any(feature = "zstd", feature = "snappy"))]
-        {
-            let body_data = &shared.as_slice()[body_offset..body_offset + body_len];
-            let buffers = rec
-                .buffers()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no buffers"))?;
-            if is_body_compressed(&buffers, body_data) {
-                let (decompressed_body, _offsets) =
-                    decompress_sequential_body(&buffers, body_data)?;
-                let decompressed_shared =
-                    SharedBuffer::from_vec64(Vec64::from_slice(&decompressed_body));
-                let (table, _) = decode_record_batch(
-                    &rec,
-                    &fields,
-                    &self.dictionaries,
-                    decompressed_shared,
-                    0,
-                    decompressed_body.len(),
-                    projection,
-                    DecodeLimits::default(),
-                )?;
-                return Ok(table);
-            }
-        }
-
+        // Compressed bodies are handled inside decode_record_batch, which
+        // decompresses per buffer and corrects the buffer offsets.
         let (table, _) = decode_record_batch(
             &rec,
             &fields,

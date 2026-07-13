@@ -14,7 +14,7 @@
 //! writing the file body first and positioning the writer appropriately.
 
 use std::collections::BTreeMap;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Seek, Write};
 
 use crate::constants::PARQUET_MAGIC;
 use crate::error::IoError;
@@ -58,6 +58,9 @@ pub(crate) struct SchemaElement {
     pub scale: Option<i32>,
     /// Field ID (optional).
     pub field_id: Option<i32>,
+    /// Number of child nodes for a group element. The root group carries the
+    /// leaf column count. Leaf elements leave this unset.
+    pub num_children: Option<i32>,
 }
 
 /// Row group descriptor.
@@ -220,25 +223,25 @@ impl PageType {
     }
 }
 impl DataPageHeader {
-    /// Write a DataPage v1 header using the minimal Thrift wire format.
+    /// Write a DataPage v1 header using TCompactProtocol.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
 
         // [1] Total number of encoded values in the page
-        thrift_write_field_i32(&mut w, 1, self.num_values);
+        thrift_write_field_i32(&mut w, &mut last, 1, self.num_values);
 
         // [2] Encoding used for data values (e.g. PLAIN, RLE)
-        thrift_write_field_i32(&mut w, 2, self.encoding.to_i32());
+        thrift_write_field_i32(&mut w, &mut last, 2, self.encoding.to_i32());
 
         // [3] Encoding used for definition levels
-        thrift_write_field_i32(&mut w, 3, self.definition_level_encoding.to_i32());
+        thrift_write_field_i32(&mut w, &mut last, 3, self.definition_level_encoding.to_i32());
 
         // [4] Encoding used for repetition levels
-        thrift_write_field_i32(&mut w, 4, self.repetition_level_encoding.to_i32());
+        thrift_write_field_i32(&mut w, &mut last, 4, self.repetition_level_encoding.to_i32());
 
         // [5] Optional statistics block
         if let Some(ref stats) = self.statistics {
-            thrift_write_field_struct_begin(&mut w, 5);
+            thrift_write_field_struct_begin(&mut w, &mut last, 5);
             stats.write(&mut w)?;
         }
 
@@ -248,18 +251,18 @@ impl DataPageHeader {
 }
 
 impl DataPageHeaderV2 {
-    /// Write a DataPage v2 header using the minimal Thrift wire format.
+    /// Write a DataPage v2 header using TCompactProtocol.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
-        thrift_write_field_i32(&mut w, 1, self.num_rows);
-        thrift_write_field_i32(&mut w, 2, self.num_nulls);
-        thrift_write_field_i32(&mut w, 3, self.num_values);
-        thrift_write_field_i32(&mut w, 4, self.encoding.to_i32());
-        thrift_write_field_i32(&mut w, 5, self.definition_levels_byte_length);
-        thrift_write_field_i32(&mut w, 6, self.repetition_levels_byte_length);
-        thrift_write_field_bool(&mut w, 7, self.is_compressed);
+        let mut last = 0i16;
+        thrift_write_field_i32(&mut w, &mut last, 1, self.num_values);
+        thrift_write_field_i32(&mut w, &mut last, 2, self.num_nulls);
+        thrift_write_field_i32(&mut w, &mut last, 3, self.num_rows);
+        thrift_write_field_i32(&mut w, &mut last, 4, self.encoding.to_i32());
+        thrift_write_field_i32(&mut w, &mut last, 5, self.definition_levels_byte_length);
+        thrift_write_field_i32(&mut w, &mut last, 6, self.repetition_levels_byte_length);
+        thrift_write_field_bool(&mut w, &mut last, 7, self.is_compressed);
         if let Some(ref s) = self.statistics {
-            thrift_write_field_struct_begin(&mut w, 8);
+            thrift_write_field_struct_begin(&mut w, &mut last, 8);
             s.write(&mut w)?;
         }
         thrift_write_field_stop(&mut w);
@@ -268,24 +271,27 @@ impl DataPageHeaderV2 {
 }
 
 impl PageHeader {
-    /// Write a page header (DataPage v1/v2 or Dictionary) via the Thrift wire format.
+    /// Write a page header (DataPage v1/v2 or Dictionary) via TCompactProtocol.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
-        thrift_write_field_i32(&mut w, 1, self.type_.as_i32());
-        thrift_write_field_i32(&mut w, 2, self.uncompressed_page_size);
-        thrift_write_field_i32(&mut w, 3, self.compressed_page_size);
+        let mut last = 0i16;
+        thrift_write_field_i32(&mut w, &mut last, 1, self.type_.as_i32());
+        thrift_write_field_i32(&mut w, &mut last, 2, self.uncompressed_page_size);
+        thrift_write_field_i32(&mut w, &mut last, 3, self.compressed_page_size);
 
+        // [5] DataPage v1 header
         if let Some(ref h) = self.data_page_header {
-            thrift_write_field_struct_begin(&mut w, 4);
+            thrift_write_field_struct_begin(&mut w, &mut last, 5);
             h.write(&mut w)?;
         }
-        if let Some(ref h2) = self.data_page_header_v2 {
-            thrift_write_field_struct_begin(&mut w, 7); // field id 7 for V2
-            h2.write(&mut w)?;
-        }
+        // [7] Dictionary page header
         if let Some(ref d) = self.dictionary_page_header {
-            thrift_write_field_struct_begin(&mut w, 5);
+            thrift_write_field_struct_begin(&mut w, &mut last, 7);
             d.write(&mut w)?;
+        }
+        // [8] DataPage v2 header
+        if let Some(ref h2) = self.data_page_header_v2 {
+            thrift_write_field_struct_begin(&mut w, &mut last, 8);
+            h2.write(&mut w)?;
         }
         thrift_write_field_stop(&mut w);
         Ok(())
@@ -293,19 +299,19 @@ impl PageHeader {
 }
 
 impl DictionaryPageHeader {
-    /// Write a dictionary page header via the Thrift wire format.
+    /// Write a dictionary page header via TCompactProtocol.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
 
         // [1] Number of dictionary entries in this page
-        thrift_write_field_i32(&mut w, 1, self.num_values);
+        thrift_write_field_i32(&mut w, &mut last, 1, self.num_values);
 
         // [2] Encoding used to serialise the dictionary values
-        thrift_write_field_i32(&mut w, 2, self.encoding.to_i32());
+        thrift_write_field_i32(&mut w, &mut last, 2, self.encoding.to_i32());
 
         // [3] Optional flag indicating whether the dictionary is sorted
         if let Some(val) = self.is_sorted {
-            thrift_write_field_bool(&mut w, 3, val);
+            thrift_write_field_bool(&mut w, &mut last, 3, val);
         }
 
         thrift_write_field_stop(&mut w);
@@ -318,42 +324,45 @@ impl FileMetaData {
     /// Caller must have written the file body and positioned the writer.
     /// Returns the file position at which the footer begins.
     pub fn write<W: Write + Seek>(&self, mut w: W) -> Result<u64, IoError> {
-        let start_pos = w.seek(SeekFrom::Current(0))?;
+        let start_pos = w.stream_position()?;
 
-        // Serialise `FileMetaData` using Thrift encoding into a buffer.
+        // Serialise `FileMetaData` using TCompactProtocol into a buffer.
         let mut buf = Vec::new();
-        thrift_write_struct_begin(&mut buf, 0x0c);
+        let mut last = 0i16;
 
         // [1] Version of the Parquet format
-        thrift_write_field_i32(&mut buf, 1, self.version);
+        thrift_write_field_i32(&mut buf, &mut last, 1, self.version);
 
         // [2] Schema elements
-        thrift_write_field_list_begin(&mut buf, 2, 12, self.schema.len() as i32);
+        thrift_write_field_list_begin(&mut buf, &mut last, 2, TC_STRUCT, self.schema.len());
         for s in &self.schema {
             s.write(&mut buf)?;
         }
 
         // [3] Total number of rows in the file
-        thrift_write_field_i64(&mut buf, 3, self.num_rows);
+        thrift_write_field_i64(&mut buf, &mut last, 3, self.num_rows);
 
         // [4] Row group metadata
-        thrift_write_field_list_begin(&mut buf, 4, 12, self.row_groups.len() as i32);
+        thrift_write_field_list_begin(&mut buf, &mut last, 4, TC_STRUCT, self.row_groups.len());
         for rg in &self.row_groups {
             rg.write(&mut buf)?;
         }
 
-        // [5] Optional key-value metadata
+        // [5] Optional key-value metadata as a list<KeyValue>, each entry a
+        // struct with 1=key and 2=value.
         if let Some(ref kv) = self.key_value_metadata {
-            thrift_write_field_map_begin(&mut buf, 5, 11, 11, kv.len() as i32);
+            thrift_write_field_list_begin(&mut buf, &mut last, 5, TC_STRUCT, kv.len());
             for (k, v) in kv {
-                thrift_write_string(&mut buf, k);
-                thrift_write_string(&mut buf, v);
+                let mut kv_last = 0i16;
+                thrift_write_field_string(&mut buf, &mut kv_last, 1, k);
+                thrift_write_field_string(&mut buf, &mut kv_last, 2, v);
+                thrift_write_field_stop(&mut buf);
             }
         }
 
         // [6] Optional creator string
         if let Some(ref s) = self.created_by {
-            thrift_write_field_string(&mut buf, 6, s);
+            thrift_write_field_string(&mut buf, &mut last, 6, s);
         }
 
         thrift_write_field_stop(&mut buf);
@@ -370,48 +379,63 @@ impl FileMetaData {
 
 // SchemaElement
 impl SchemaElement {
-    /// Write a single schema element using the Thrift wire format.
+    /// Write a single schema element using TCompactProtocol.
+    ///
+    /// Fields follow the parquet.thrift `SchemaElement` numbering: type=1,
+    /// type_length=2, repetition_type=3, name=4, num_children=5,
+    /// converted_type=6, scale=7, precision=8, field_id=9. Group elements
+    /// (the root) carry `num_children` and omit both the physical type and
+    /// the repetition type.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
+        let is_group = self.num_children.is_some();
 
-        // [1] Field name - required
-        thrift_write_field_string(&mut w, 1, &self.name);
-
-        // [2] Physical type - optional
+        // [1] Physical type - leaf elements only
         if let Some(ty) = self.type_ {
-            thrift_write_field_i32(&mut w, 2, ty.as_i32());
+            thrift_write_field_i32(&mut w, &mut last, 1, ty.as_i32());
         }
 
-        // [3] Repetition type - 0 = REQUIRED, 1 = OPTIONAL, 2 = REPEATED
-        thrift_write_field_i32(&mut w, 3, self.repetition_type);
+        // [2] Type length (optional; used for fixed-length types)
+        if let Some(len) = self.type_length {
+            thrift_write_field_i32(&mut w, &mut last, 2, len);
+        }
+
+        // [3] Repetition type - 0 = REQUIRED, 1 = OPTIONAL, 2 = REPEATED.
+        // Group elements omit the repetition type.
+        if !is_group {
+            thrift_write_field_i32(&mut w, &mut last, 3, self.repetition_type);
+        }
+
+        // [4] Field name - required
+        thrift_write_field_string(&mut w, &mut last, 4, &self.name);
+
+        // [5] Number of children - group elements only
+        if let Some(nc) = self.num_children {
+            thrift_write_field_i32(&mut w, &mut last, 5, nc);
+        }
 
         // [6] Converted type - optional - defaults to UTF8 for byte arrays
         match self.converted_type {
-            Some(ct) => thrift_write_field_i32(&mut w, 6, ct),
+            Some(ct) => thrift_write_field_i32(&mut w, &mut last, 6, ct),
             None if matches!(self.type_, Some(ParquetPhysicalType::ByteArray)) => {
-                thrift_write_field_i32(&mut w, 6, 1); // 1 = UTF8
+                thrift_write_field_i32(&mut w, &mut last, 6, 0); // 0 = UTF8
             }
             _ => {}
         }
 
-        // [7] Type length (optional; used for fixed-length types)
-        if let Some(len) = self.type_length {
-            thrift_write_field_i32(&mut w, 7, len);
-        }
-
-        // [9] Decimal precision - optional
-        if let Some(p) = self.precision {
-            thrift_write_field_i32(&mut w, 9, p);
-        }
-
-        // [10] Decimal scale - optional
+        // [7] Decimal scale - optional
         if let Some(s) = self.scale {
-            thrift_write_field_i32(&mut w, 10, s);
+            thrift_write_field_i32(&mut w, &mut last, 7, s);
         }
 
-        // [15] Field ID - optional
+        // [8] Decimal precision - optional
+        if let Some(p) = self.precision {
+            thrift_write_field_i32(&mut w, &mut last, 8, p);
+        }
+
+        // [9] Field ID - optional
         if let Some(id) = self.field_id {
-            thrift_write_field_i32(&mut w, 15, id);
+            thrift_write_field_i32(&mut w, &mut last, 9, id);
         }
 
         thrift_write_field_stop(&mut w);
@@ -420,21 +444,21 @@ impl SchemaElement {
 }
 
 impl RowGroupMeta {
-    /// Write a row group descriptor via the Thrift wire format.
+    /// Write a row group descriptor via TCompactProtocol.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
 
-        // columns
-        thrift_write_field_list_begin(&mut w, 1, 12, self.columns.len() as i32);
+        // [1] columns
+        thrift_write_field_list_begin(&mut w, &mut last, 1, TC_STRUCT, self.columns.len());
         for col in &self.columns {
             col.write(&mut w)?;
         }
 
-        // total_byte_size
-        thrift_write_field_i64(&mut w, 2, self.total_byte_size);
+        // [2] total_byte_size
+        thrift_write_field_i64(&mut w, &mut last, 2, self.total_byte_size);
 
-        // num_rows
-        thrift_write_field_i64(&mut w, 3, self.num_rows);
+        // [3] num_rows
+        thrift_write_field_i64(&mut w, &mut last, 3, self.num_rows);
 
         thrift_write_field_stop(&mut w);
         Ok(())
@@ -442,15 +466,18 @@ impl RowGroupMeta {
 }
 
 impl ColumnChunkMeta {
-    /// Write a column chunk descriptor via the Thrift wire format.
+    /// Write a column chunk descriptor via TCompactProtocol.
+    ///
+    /// Field 1 (`file_path`) is omitted; `file_offset` is field 2 and the
+    /// inline `meta_data` struct is field 3, per parquet.thrift.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
 
-        // file_offset
-        thrift_write_field_i64(&mut w, 1, self.file_offset);
+        // [2] file_offset
+        thrift_write_field_i64(&mut w, &mut last, 2, self.file_offset);
 
-        // metadata
-        thrift_write_field_struct_begin(&mut w, 2);
+        // [3] metadata
+        thrift_write_field_struct_begin(&mut w, &mut last, 3);
         self.meta_data.write(&mut w)?;
 
         thrift_write_field_stop(&mut w);
@@ -459,48 +486,48 @@ impl ColumnChunkMeta {
 }
 
 impl ColumnMetadata {
-    /// Write column metadata (ColumnMetaData) using minimal Thrift wire encoding.
+    /// Write column metadata (ColumnMetaData) using TCompactProtocol.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
 
         // [1] Physical type (e.g. INT32, BYTE_ARRAY, etc.)
-        thrift_write_field_i32(&mut w, 1, self.type_.as_i32());
+        thrift_write_field_i32(&mut w, &mut last, 1, self.type_.as_i32());
 
         // [2] Encodings used (PLAIN, RLE, DICTIONARY, etc.)
-        thrift_write_field_list_begin(&mut w, 2, 8, self.encodings.len() as i32);
+        thrift_write_field_list_begin(&mut w, &mut last, 2, TC_I32, self.encodings.len());
         for &e in &self.encodings {
-            w.write_all(&e.to_i32().to_le_bytes())?;
+            write_varint(&mut w, zigzag_i32(e.to_i32()));
         }
 
         // [3] Path in schema (e.g. ["root", "field", "nested_field"])
-        thrift_write_field_list_begin(&mut w, 3, 11, self.path_in_schema.len() as i32);
+        thrift_write_field_list_begin(&mut w, &mut last, 3, TC_BINARY, self.path_in_schema.len());
         for s in &self.path_in_schema {
             thrift_write_string(&mut w, s);
         }
 
         // [4] Compression codec identifier
-        thrift_write_field_i32(&mut w, 4, self.codec);
+        thrift_write_field_i32(&mut w, &mut last, 4, self.codec);
 
         // [5] Total number of values (including nulls)
-        thrift_write_field_i64(&mut w, 5, self.num_values);
+        thrift_write_field_i64(&mut w, &mut last, 5, self.num_values);
 
         // [6] Uncompressed size in bytes
-        thrift_write_field_i64(&mut w, 6, self.total_uncompressed_size);
+        thrift_write_field_i64(&mut w, &mut last, 6, self.total_uncompressed_size);
 
         // [7] Compressed size in bytes
-        thrift_write_field_i64(&mut w, 7, self.total_compressed_size);
+        thrift_write_field_i64(&mut w, &mut last, 7, self.total_compressed_size);
 
-        // [8] Offset to the first data page
-        thrift_write_field_i64(&mut w, 8, self.data_page_offset);
+        // [9] Offset to the first data page
+        thrift_write_field_i64(&mut w, &mut last, 9, self.data_page_offset);
 
-        // [9] Offset to dictionary page (if present)
+        // [11] Offset to dictionary page (if present)
         if let Some(dict_off) = self.dictionary_page_offset {
-            thrift_write_field_i64(&mut w, 9, dict_off);
+            thrift_write_field_i64(&mut w, &mut last, 11, dict_off);
         }
 
-        // [10] Optional statistics block
+        // [12] Optional statistics block
         if let Some(ref stats) = self.statistics {
-            thrift_write_field_struct_begin(&mut w, 10);
+            thrift_write_field_struct_begin(&mut w, &mut last, 12);
             stats.write(&mut w)?;
         }
 
@@ -510,28 +537,32 @@ impl ColumnMetadata {
 }
 
 impl Statistics {
-    /// Write Parquet file statistics using the Thrift wire format.
+    /// Write Parquet column statistics using TCompactProtocol.
+    ///
+    /// `null_count` is field 3 and `distinct_count` is field 4. Min/max are
+    /// emitted as the modern `max_value` (field 5) and `min_value` (field 6)
+    /// byte arrays.
     pub fn write<W: Write>(&self, mut w: W) -> Result<(), IoError> {
-        thrift_write_struct_begin(&mut w, 0x0c);
+        let mut last = 0i16;
 
-        // [1] Null count - optional
+        // [3] Null count - optional
         if let Some(n) = self.null_count {
-            thrift_write_field_i64(&mut w, 1, n);
+            thrift_write_field_i64(&mut w, &mut last, 3, n);
         }
 
-        // [2] Distinct count - optional
+        // [4] Distinct count - optional
         if let Some(d) = self.distinct_count {
-            thrift_write_field_i64(&mut w, 2, d);
+            thrift_write_field_i64(&mut w, &mut last, 4, d);
         }
 
-        // [3] Minimum value - optional
-        if let Some(ref min) = self.min {
-            thrift_write_field_bytes(&mut w, 3, min);
-        }
-
-        // [4] Maximum value - optional
+        // [5] Maximum value - optional
         if let Some(ref max) = self.max {
-            thrift_write_field_bytes(&mut w, 4, max);
+            thrift_write_field_bytes(&mut w, &mut last, 5, max);
+        }
+
+        // [6] Minimum value - optional
+        if let Some(ref min) = self.min {
+            thrift_write_field_bytes(&mut w, &mut last, 6, min);
         }
 
         thrift_write_field_stop(&mut w);
@@ -539,68 +570,110 @@ impl Statistics {
     }
 }
 
-// --------------- Thrift serialisation helpers --------------- //
+// --------------- TCompactProtocol serialisation helpers --------------- //
 
-/// Begin a Thrift struct (marker only; no-op for our minimal writer).
-fn thrift_write_struct_begin<W: Write>(_w: &mut W, _id: u8) {}
-/// Write Thrift field stop byte.
+/// Compact-protocol element and field type identifiers from the Thrift spec.
+const TC_BOOL_TRUE: u8 = 1;
+const TC_BOOL_FALSE: u8 = 2;
+const TC_I32: u8 = 5;
+const TC_I64: u8 = 6;
+const TC_BINARY: u8 = 8;
+const TC_LIST: u8 = 9;
+const TC_STRUCT: u8 = 12;
+
+/// Encode an i32 as a zigzag value ready for varint serialisation.
+fn zigzag_i32(v: i32) -> u64 {
+    ((v << 1) ^ (v >> 31)) as u32 as u64
+}
+/// Encode an i64 as a zigzag value ready for varint serialisation.
+fn zigzag_i64(v: i64) -> u64 {
+    ((v << 1) ^ (v >> 63)) as u64
+}
+/// Encode an i16 as a zigzag value ready for varint serialisation.
+fn zigzag_i16(v: i16) -> u64 {
+    ((v << 1) ^ (v >> 15)) as u16 as u64
+}
+
+/// Write an unsigned LEB128 varint.
+fn write_varint<W: Write>(w: &mut W, mut v: u64) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            w.write_all(&[byte]).unwrap();
+            break;
+        }
+        w.write_all(&[byte | 0x80]).unwrap();
+    }
+}
+
+/// Write a compact field header for field `id` with compact type `ctype`,
+/// advancing the struct's running field id. Uses the short form when the
+/// delta from the previous field id is in 1..=15, otherwise the long form
+/// with a zigzag varint field id.
+fn thrift_write_field_header<W: Write>(w: &mut W, last: &mut i16, id: i16, ctype: u8) {
+    let delta = id - *last;
+    if (1..=15).contains(&delta) {
+        w.write_all(&[((delta as u8) << 4) | ctype]).unwrap();
+    } else {
+        w.write_all(&[ctype]).unwrap();
+        write_varint(w, zigzag_i16(id));
+    }
+    *last = id;
+}
+
+/// Write a compact list header - one byte `(size<<4)|elem_type` for sizes
+/// below 15, otherwise the `0xF` nibble followed by a varint size.
+fn thrift_write_list_header<W: Write>(w: &mut W, elem_type: u8, len: usize) {
+    if len < 15 {
+        w.write_all(&[((len as u8) << 4) | elem_type]).unwrap();
+    } else {
+        w.write_all(&[0xF0 | elem_type]).unwrap();
+        write_varint(w, len as u64);
+    }
+}
+
+/// Write the compact field-stop byte.
 fn thrift_write_field_stop<W: Write>(w: &mut W) {
     w.write_all(&[0]).unwrap();
 }
-/// Write a Thrift i32 field with `id`.
-fn thrift_write_field_i32<W: Write>(w: &mut W, id: i16, v: i32) {
-    w.write_all(&[8]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-    w.write_all(&v.to_le_bytes()).unwrap();
+/// Write an i32 field as a zigzag varint.
+fn thrift_write_field_i32<W: Write>(w: &mut W, last: &mut i16, id: i16, v: i32) {
+    thrift_write_field_header(w, last, id, TC_I32);
+    write_varint(w, zigzag_i32(v));
 }
-/// Write a Thrift i64 field with `id`.
-fn thrift_write_field_i64<W: Write>(w: &mut W, id: i16, v: i64) {
-    w.write_all(&[10]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-    w.write_all(&v.to_le_bytes()).unwrap();
+/// Write an i64 field as a zigzag varint.
+fn thrift_write_field_i64<W: Write>(w: &mut W, last: &mut i16, id: i16, v: i64) {
+    thrift_write_field_header(w, last, id, TC_I64);
+    write_varint(w, zigzag_i64(v));
 }
-/// Write a Thrift bool field with `id`.
-fn thrift_write_field_bool<W: Write>(w: &mut W, id: i16, v: bool) {
-    w.write_all(&[2]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-    w.write_all(&[v as u8]).unwrap();
+/// Write a bool field. The value rides in the compact type nibble.
+fn thrift_write_field_bool<W: Write>(w: &mut W, last: &mut i16, id: i16, v: bool) {
+    thrift_write_field_header(w, last, id, if v { TC_BOOL_TRUE } else { TC_BOOL_FALSE });
 }
-/// Write a Thrift string field with `id`.
-fn thrift_write_field_string<W: Write>(w: &mut W, id: i16, s: &str) {
-    w.write_all(&[11]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
+/// Write a string field as a varint length followed by the UTF-8 bytes.
+fn thrift_write_field_string<W: Write>(w: &mut W, last: &mut i16, id: i16, s: &str) {
+    thrift_write_field_header(w, last, id, TC_BINARY);
     thrift_write_string(w, s);
 }
-/// Write a Thrift bytes field with `id`.
-fn thrift_write_field_bytes<W: Write>(w: &mut W, id: i16, b: &[u8]) {
-    w.write_all(&[11]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-    let l = b.len() as i32;
-    w.write_all(&l.to_le_bytes()).unwrap();
+/// Write a bytes field as a varint length followed by the raw bytes.
+fn thrift_write_field_bytes<W: Write>(w: &mut W, last: &mut i16, id: i16, b: &[u8]) {
+    thrift_write_field_header(w, last, id, TC_BINARY);
+    write_varint(w, b.len() as u64);
     w.write_all(b).unwrap();
 }
-/// Begin a Thrift list field with `id`, element type `tpe`, and `len`.
-fn thrift_write_field_list_begin<W: Write>(w: &mut W, id: i16, tpe: u8, len: i32) {
-    w.write_all(&[15]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-    w.write_all(&[tpe]).unwrap();
-    w.write_all(&len.to_le_bytes()).unwrap();
+/// Begin a list field with `id`, element type `tpe`, and element count `len`.
+fn thrift_write_field_list_begin<W: Write>(w: &mut W, last: &mut i16, id: i16, tpe: u8, len: usize) {
+    thrift_write_field_header(w, last, id, TC_LIST);
+    thrift_write_list_header(w, tpe, len);
 }
-/// Begin a Thrift map field with `id`, key/val types `kt`/`vt`, and `len`.
-fn thrift_write_field_map_begin<W: Write>(w: &mut W, id: i16, kt: u8, vt: u8, len: i32) {
-    w.write_all(&[13]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-    w.write_all(&[kt, vt]).unwrap();
-    w.write_all(&len.to_le_bytes()).unwrap();
+/// Begin a nested struct field with `id`. The caller writes the struct body
+/// and its terminating stop byte.
+fn thrift_write_field_struct_begin<W: Write>(w: &mut W, last: &mut i16, id: i16) {
+    thrift_write_field_header(w, last, id, TC_STRUCT);
 }
-/// Begin a nested Thrift struct field with `id`.
-fn thrift_write_field_struct_begin<W: Write>(w: &mut W, id: i16) {
-    w.write_all(&[12]).unwrap();
-    w.write_all(&id.to_le_bytes()).unwrap();
-}
-/// Write a Thrift length-prefixed string value.
+/// Write a compact string value - varint length followed by the UTF-8 bytes.
 fn thrift_write_string<W: Write>(w: &mut W, s: &str) {
-    let len = s.len() as i32;
-    w.write_all(&len.to_le_bytes()).unwrap();
+    write_varint(w, s.len() as u64);
     w.write_all(s.as_bytes()).unwrap();
 }

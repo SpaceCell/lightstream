@@ -11,9 +11,10 @@
 //! `127.0.0.1`. Only the client receive loop is timed. Connection setup,
 //! schema negotiation and per-iteration buffer construction are excluded.
 //!
-//! Arrow Flight uses 8 MiB HTTP/2 flow-control windows and increased gRPC
-//! message limits so each batch can be sent as a single message. Lightstream
-//! uses its default configuration.
+//! Arrow Flight uses 8 MiB HTTP/2 flow-control windows and raised gRPC
+//! message limits so no transport ceiling interferes, while flight-data
+//! slicing stays at the encoder's default 2 MiB, matching how Arrow Flight
+//! ships. Lightstream uses its default configuration.
 //!
 //! Throughput is calculated from the source columns using
 //! [`bench_helpers::logical_payload_bytes_shape`], matching the accounting used
@@ -248,9 +249,9 @@ fn wide_batch(n_rows: usize) -> RecordBatch {
 // ---------------------------------------------------------------------------
 
 // Flight tuning that mirrors lightstream within Flight's public API. The 8 MiB
-// HTTP/2 windows match the lightstream HTTP/2 path, and the message and
-// flight-data limits let each batch travel as one message rather than the
-// default 2 MiB slices.
+// HTTP/2 windows match the lightstream HTTP/2 path, and the raised gRPC
+// message limits remove the transport-level ceilings. Flight-data slicing
+// stays at the encoder's default 2 MiB, matching how Arrow Flight ships.
 const FLIGHT_HTTP2_WINDOW: u32 = 8 * 1024 * 1024;
 const FLIGHT_MAX_MESSAGE_BYTES: usize = i32::MAX as usize;
 
@@ -320,8 +321,9 @@ impl FlightService for BenchFlightService {
         let batch_stream = stream::iter((0..n).map(move |_| {
             Ok::<RecordBatch, arrow_flight::error::FlightError>((*batch).clone())
         }));
+        // The encoder keeps its default flight-data size, so batches above
+        // 2 MiB split into multiple messages per Arrow Flight's own tuning.
         let flight_data = FlightDataEncoderBuilder::new()
-            .with_max_flight_data_size(FLIGHT_MAX_MESSAGE_BYTES)
             .build(batch_stream)
             .map_err(|err| Status::internal(format!("flight encode failure: {err}")));
         Ok(Response::new(Box::pin(flight_data)))
@@ -473,10 +475,9 @@ fn bench_flight_do_get(
                     count += 1;
                 }
                 let elapsed = start.elapsed();
-                // The raised flight-data limit sends each batch as one message,
-                // matching lightstream's one-IPC-message-per-table framing, so
-                // the decoded count tracks the input count. A batch above the
-                // limit would still split, so the check stays a lower bound.
+                // Batches above the encoder's default 2 MiB flight-data size
+                // split into multiple decoded batches, so the check is a
+                // lower bound on the input count.
                 assert!(count >= iters);
 
                 let _ = shutdown_tx.send(());

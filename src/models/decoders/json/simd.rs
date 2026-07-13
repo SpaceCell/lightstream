@@ -9,7 +9,7 @@
 //! Drives `simd_json` over the input bytes via reusable [`Buffers`] state,
 //! then walks the parsed nodes directly into the column builders. No
 //! intermediate `Value` tree; node strings borrow from the input buffer
-//! and are copied straight into the [`StringArray`] data buffer at push time.
+//! and are copied straight into the [`StringArray`](minarrow::StringArray) data buffer at push time.
 
 use std::collections::HashMap;
 use std::io;

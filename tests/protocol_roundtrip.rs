@@ -15,10 +15,8 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use lightstream::enums::BufferChunkSize;
 use lightstream::models::protocol::connection::TcpLightstreamConnection;
 use lightstream::models::readers::lightstream::LightstreamReader;
-use lightstream::models::streams::tcp::TcpByteStream;
 use lightstream::models::writers::lightstream::LightstreamWriter;
 use minarrow::{
     Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,

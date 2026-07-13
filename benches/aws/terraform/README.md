@@ -2,7 +2,7 @@
 
 This Terraform module creates two EC2 instances in the same Availability Zone and cluster placement group, using the default VPC.
 
-The instances are configured with clock synchronisation and increased open-file limits. After applying the Terraform configuration, copy the Lightstream `bench_sender` and `bench_receiver` binaries to the instances and run the benchmark with `bench/aws/run.sh`.
+The instances are configured with clock synchronisation and increased open-file limits. After applying the Terraform configuration, copy the Lightstream `bench_sender` and `bench_receiver` binaries to the instances and run the benchmark with `benches/aws/run.sh`.
 
 ## Prerequisites
 
@@ -33,7 +33,7 @@ Set `ssh_public_key_path` to the path of the public key. Terraform registers the
 ## Provision the instances
 
 ```bash
-cd bench/aws/terraform
+cd benches/aws/terraform
 
 terraform init
 
@@ -92,7 +92,7 @@ Update the binary paths when building for a different target.
 
 ## Run the benchmark
 
-The `run_sh_invocation` output contains the instance addresses required by `bench/aws/run.sh`. Set `SSH_OPTS` to use the corresponding private key:
+The `run_sh_invocation` output contains the instance addresses required by `benches/aws/run.sh`. Set `SSH_OPTS` to use the corresponding private key:
 
 ```bash
 SENDER_HOST=ec2-user@$(terraform output -raw sender_public_ip) \
@@ -131,4 +131,4 @@ Destroy the infrastructure after the benchmark completes to avoid further EC2 ch
 * Both instances are created in the same Availability Zone. Cross-AZ and cross-region benchmarks require separate infrastructure and network configuration.
 * Larger instance types may provide higher network bandwidth and may have additional networking requirements.
 * The benchmark uses the sender's private IPv4 address. IPv6 is not configured.
-* The sender and receiver use plaintext TCP. TLS, QUIC, WebTransport and HTTP/2 measurements are handled by `benches/transport_throughput.rs`.
+* The sender and receiver use plaintext TCP. TLS, QUIC, WebTransport and HTTP/2 measurements are handled by `benches/transport/transport_bench_matrix.rs`.

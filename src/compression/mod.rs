@@ -71,7 +71,7 @@ impl Compression {
 }
 
 /// Compress a buffer according to the requested codec.
-/// Always returns a new Vec<u8> (per Parquet page convention).
+/// Always returns a new `Vec<u8>` (per Parquet page convention).
 ///
 /// # Arguments
 /// - `input`: Slice of bytes to compress.
@@ -115,7 +115,7 @@ fn zstd_compress(input: &[u8]) -> Result<Vec<u8>, IoError> {
 }
 
 /// Decompress a buffer according to the codec.
-/// Returns a new Vec<u8> containing the decompressed data.
+/// Returns a new `Vec<u8>` containing the decompressed data.
 ///
 /// # Arguments
 /// - `input`: Compressed bytes.

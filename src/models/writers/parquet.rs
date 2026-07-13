@@ -39,7 +39,7 @@
 //!
 //! # let table = Table::default();
 //! let mut file = File::create("data.parquet").unwrap();
-//! write_parquet_table(&table, &mut file, Compression::Zstd).unwrap();
+//! write_parquet_table(&table, &mut file, Some(Compression::Zstd)).unwrap();
 //! ```
 
 use std::io::{Seek, Write};
@@ -73,21 +73,21 @@ pub const PARQUET_PAGE_CHUNK_SIZE: usize = 32_768;
 ///
 /// # Support
 /// - This is a straightforward, zero-dependency parquet writer for the
-/// common use case.
+///   common use case.
 /// - One can write, and read Parquet from `Minarrow`, but reading
-/// external files with more niche encodings may not work.
+///   external files with more niche encodings may not work.
 /// - Multiple data pages per column are emitted in fixed-size chunks.
 /// - Each dictionary page offset and first data page offset are stored in
 ///   ColumnMetadata.
 /// - Offset is updated after every write, including page headers and page bodies.
 /// - All page-level statistics are computed for that page's chunk.
 /// - `Zstd` and `Snappy` compression options
-/// `Plain` encoding for all types, and `RLE encoding` for *categorical* types.
+///   `Plain` encoding for all types, and `RLE encoding` for *categorical* types.
 ///
 /// # Alternatives
 /// - When using Minarrow, one can use `.to_arrow()` or `.to_polars() to
-/// bridge over FFI to `arrow-rs`, `polars_arrow`, to immediately access the
-/// full reader/writer ecosystem, at the penalty of long compile times.
+///   bridge over FFI to `arrow-rs`, `polars_arrow`, to immediately access the
+///   full reader/writer ecosystem, at the penalty of long compile times.
 pub fn write_parquet_table<W: Write + Seek>(
     table: &Table,
     mut out: W,
@@ -96,25 +96,35 @@ pub fn write_parquet_table<W: Write + Seek>(
     // file-header magic
     out.write_all(PARQUET_MAGIC)?;
 
-    // schema
-    let schema: Vec<SchemaElement> = table
-        .cols
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let (physical, logical) = arrow_type_to_parquet(&c.field.dtype).unwrap();
-            SchemaElement {
-                name: c.field.name.clone(),
-                repetition_type: if c.field.nullable { 1 } else { 0 }, // OPTIONAL / REQUIRED
-                type_: Some(physical),
-                converted_type: logical_to_converted(&logical),
-                type_length: None,
-                precision: None,
-                scale: None,
-                field_id: Some(i as i32),
-            }
-        })
-        .collect();
+    // schema - the flattened list opens with a root group element carrying
+    // the leaf column count, followed by one leaf element per column. pyarrow
+    // requires the root group's num_children to reconstruct the schema tree.
+    let mut schema: Vec<SchemaElement> = Vec::with_capacity(table.cols.len() + 1);
+    schema.push(SchemaElement {
+        name: "schema".into(),
+        repetition_type: 0,
+        type_: None,
+        converted_type: None,
+        type_length: None,
+        precision: None,
+        scale: None,
+        field_id: None,
+        num_children: Some(table.cols.len() as i32),
+    });
+    for (i, c) in table.cols.iter().enumerate() {
+        let (physical, logical) = arrow_type_to_parquet(&c.field.dtype).unwrap();
+        schema.push(SchemaElement {
+            name: c.field.name.clone(),
+            repetition_type: if c.field.nullable { 1 } else { 0 }, // OPTIONAL / REQUIRED
+            type_: Some(physical),
+            converted_type: logical_to_converted(&logical),
+            type_length: None,
+            precision: None,
+            scale: None,
+            field_id: Some(i as i32),
+            num_children: None,
+        });
+    }
 
     // accumulators
     let mut row_groups = Vec::new();
@@ -129,6 +139,13 @@ pub fn write_parquet_table<W: Write + Seek>(
         let mut dictionary_page_offset = None;
         let mut encodings = vec![ParquetEncoding::Plain];
 
+        // The column chunk's total sizes cover every page's header and body,
+        // including the dictionary page, per the Parquet spec. Readers that
+        // slice the chunk by total_compressed_size rely on the header bytes
+        // being counted here.
+        let mut total_uncompressed_size = 0i64;
+        let mut total_compressed_size = 0i64;
+
         // Dictionary support
         if is_dictionary(&col.array) {
             let dict_offset_before = out.stream_position()?;
@@ -138,21 +155,25 @@ pub fn write_parquet_table<W: Write + Seek>(
                     feature = "extended_categorical"
                 ))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
-                    write_dictionary_page(
+                    let (dict_uncomp, dict_comp) = write_dictionary_page(
                         &mut out,
                         &mut offset,
                         a.unique_values.iter().map(|s| s.as_bytes()),
                         compression,
                     )?;
+                    total_uncompressed_size += dict_uncomp;
+                    total_compressed_size += dict_comp;
                 }
                 #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(a)) => {
-                    write_dictionary_page(
+                    let (dict_uncomp, dict_comp) = write_dictionary_page(
                         &mut out,
                         &mut offset,
                         a.unique_values.iter().map(|s| s.as_bytes()),
                         compression,
                     )?;
+                    total_uncompressed_size += dict_uncomp;
+                    total_compressed_size += dict_comp;
                 }
                 _ => {}
             }
@@ -165,8 +186,6 @@ pub fn write_parquet_table<W: Write + Seek>(
         let n = col.len();
         let mut start = 0;
         let mut col_num_values = 0i64;
-        let mut total_uncompressed_size = 0i64;
-        let mut total_compressed_size = 0i64;
 
         let mut recorded_data_page_offset: Option<i64> = None;
 
@@ -340,9 +359,11 @@ pub fn write_parquet_table<W: Write + Seek>(
                 recorded_data_page_offset = Some(header_offset);
             }
 
+            // The page header bytes count towards both chunk totals.
+            let header_len = header_buf.len() as i64;
             col_num_values += len as i64;
-            total_uncompressed_size += uncompressed_page_size as i64;
-            total_compressed_size += compressed_page_size as i64;
+            total_uncompressed_size += header_len + uncompressed_page_size as i64;
+            total_compressed_size += header_len + compressed_page_size as i64;
             start = end;
         }
 
@@ -396,13 +417,14 @@ pub fn write_parquet_table<W: Write + Seek>(
 
 // Helpers
 
-/// Add a dictionary page and return its offset.
+/// Add a dictionary page and return its uncompressed and compressed byte
+/// contributions to the column chunk totals, each including the page header.
 fn write_dictionary_page<'a, W, I>(
     out: &mut W,
     offset: &mut i64,
     values: I,
     compression: Option<Compression>,
-) -> Result<(), IoError>
+) -> Result<(i64, i64), IoError>
 where
     W: Write + Seek,
     I: IntoIterator<Item = &'a [u8]>,
@@ -446,7 +468,11 @@ where
     out.write_all(body_on_wire)?;
     *offset = out.stream_position()? as i64;
 
-    Ok(())
+    let header_len = header_buf.len() as i64;
+    Ok((
+        header_len + raw.len() as i64,
+        header_len + body_on_wire.len() as i64,
+    ))
 }
 
 /// true if the array is a (categorical) dictionary array.
@@ -492,7 +518,7 @@ pub fn encode_levels_rle(levels: &[bool]) -> Vec<u8> {
     }
 
     // Bit-packed path
-    let padded_len = ((levels.len() + 7) / 8) * 8;
+    let padded_len = levels.len().div_ceil(8) * 8;
     let groups = padded_len / 8;
     let header = ((groups as u64) << 1) | 1; // LSB = 1 -> bit-packed
     write_uleb128(header, &mut out);
@@ -524,52 +550,57 @@ fn write_uleb128(mut v: u64, o: &mut Vec<u8>) {
 }
 
 /// Convert logical-type enum to legacy ConvertedType id for compatibility.
+///
+/// Ids follow parquet.thrift ConvertedType: UTF8=0, DATE=6, TIME_MILLIS=7,
+/// TIME_MICROS=8, TIMESTAMP_MILLIS=9, TIMESTAMP_MICROS=10, UINT_8..UINT_64=
+/// 11..14, INT_8..INT_64=15..18. Date64 has no ConvertedType and is left
+/// unannotated.
 fn logical_to_converted(log: &ParquetLogicalType) -> Option<i32> {
     Some(match log {
-        ParquetLogicalType::Utf8 => 1,
+        ParquetLogicalType::Utf8 => 0,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::Date32 => 4,
+        ParquetLogicalType::Date32 => 6,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::Date64 => 5,
+        ParquetLogicalType::Date64 => return None,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::TimestampMillis => 9,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::TimestampMicros => 10,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimeMillis => 6,
+        ParquetLogicalType::TimeMillis => 7,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimeMicros => 7,
+        ParquetLogicalType::TimeMicros => 8,
         ParquetLogicalType::IntType {
             bit_width: 8,
-            is_signed: true,
+            is_signed: false,
         } => 11,
         ParquetLogicalType::IntType {
             bit_width: 16,
-            is_signed: true,
+            is_signed: false,
         } => 12,
         ParquetLogicalType::IntType {
             bit_width: 32,
-            is_signed: true,
+            is_signed: false,
         } => 13,
         ParquetLogicalType::IntType {
             bit_width: 64,
-            is_signed: true,
+            is_signed: false,
         } => 14,
         ParquetLogicalType::IntType {
             bit_width: 8,
-            is_signed: false,
+            is_signed: true,
         } => 15,
         ParquetLogicalType::IntType {
             bit_width: 16,
-            is_signed: false,
+            is_signed: true,
         } => 16,
         ParquetLogicalType::IntType {
             bit_width: 32,
-            is_signed: false,
+            is_signed: true,
         } => 17,
         ParquetLogicalType::IntType {
             bit_width: 64,
-            is_signed: false,
+            is_signed: true,
         } => 18,
         _ => return None,
     })
@@ -616,7 +647,7 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
         }
     }
 
-    let bytes_per_value = ((bit_width + 7) / 8) as usize;
+    let bytes_per_value = bit_width.div_ceil(8) as usize;
     let n = indices.len();
     let mut i = 0;
 
@@ -663,7 +694,7 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
             }
             bp_len += 1;
         }
-        let emit_len = ((bp_len + 7) / 8) * 8; // pad to /8
+        let emit_len = bp_len.div_ceil(8) * 8; // pad to /8
         let groups = emit_len / 8;
         let header = ((groups as u64) << 1) | 1; // LSB 1
         write_uleb128(header, out);
@@ -671,9 +702,7 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
         // build a scratch buffer, and if there is another RLE run immediately
         // after these bp_len values, fill the padding with that next value
         let mut scratch = vec![0u32; emit_len];
-        for j in 0..bp_len {
-            scratch[j] = indices[bp_start + j];
-        }
+        scratch[..bp_len].copy_from_slice(&indices[bp_start..(bp_len + bp_start)]);
 
         // if the next run is RLE (i + bp_len < n && future run_len >= 8),
         // use its value to fill the padding; else fall back to zero
@@ -689,21 +718,19 @@ pub fn encode_dictionary_indices_rle(indices: &[u32], out: &mut Vec<u8>) -> Resu
                 }
             }
             if look >= 8 {
-                for j in bp_len..emit_len {
-                    scratch[j] = pad_val;
-                }
+                scratch[bp_len..emit_len].fill(pad_val);
             }
         }
-        for bit in 0..bit_width {
-            for g in 0..groups {
-                let mut byte = 0u8;
-                for j in 0..8 {
-                    let idx = g * 8 + j;
-                    if ((scratch[idx] >> bit) & 1) != 0 {
-                        byte |= 1 << j;
-                    }
+        // Bit-pack the run LSB-first with values contiguous inside each
+        // 8-value group, per the Parquet hybrid RLE/bit-packing layout.
+        let base = out.len();
+        out.resize(base + bit_width as usize * groups, 0);
+        for (j, &v) in scratch.iter().enumerate() {
+            let bit_base = j * bit_width as usize;
+            for k in 0..bit_width as usize {
+                if (v >> k) & 1 != 0 {
+                    out[base + (bit_base + k) / 8] |= 1 << ((bit_base + k) % 8);
                 }
-                out.push(byte);
             }
         }
         i += bp_len;

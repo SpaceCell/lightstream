@@ -71,16 +71,17 @@ impl<R: BufRead> CsvReader<R> {
     ///
     /// Requires reading first batch if not already done
     pub fn schema(&mut self) -> io::Result<&[Field]> {
-        if self.schema.is_none() && !self.finished {
-            if let Some(batch) = self.next_batch()? {
-                self.schema = Some(
-                    batch
-                        .cols
-                        .iter()
-                        .map(|c| c.field.as_ref().clone())
-                        .collect(),
-                );
-            }
+        if self.schema.is_none()
+            && !self.finished
+            && let Some(batch) = self.next_batch()?
+        {
+            self.schema = Some(
+                batch
+                    .cols
+                    .iter()
+                    .map(|c| c.field.as_ref().clone())
+                    .collect(),
+            );
         }
         Ok(self.schema.as_deref().unwrap_or(&[]))
     }

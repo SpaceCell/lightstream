@@ -9,7 +9,7 @@
 //! Common shape for the per-format chunked-file writers
 //! (`ChunkedCsvWriter`, `ChunkedParquetWriter`, `ChunkedArrowWriter`):
 //! a directory of `<base>-NNNNNNNNNN.<ext>` files produced one chunk per
-//! call to [`Self::write_chunk`]. Each emitted file is a complete,
+//! call to [`Self::write_chunk`](crate::traits::chunked_table_writer::ChunkedTableWriter::write_chunk). Each emitted file is a complete,
 //! independently readable file of the matching format, paired with the
 //! matching `ChunkedXReader`.
 //!
@@ -18,7 +18,7 @@
 //! inherent on each writer, free to take exactly the args they need.
 //!
 //! `write_all` is the writer-side counterpart to
-//! [`crate::traits::chunked_table_reader::ChunkedTableReader::read_all`]:
+//! `crate::traits::chunked_table_reader::ChunkedTableReader::read_all`:
 //! given a `SuperTable`, it writes every batch as its own chunk file in
 //! order. `par_write_all` is the sync `std::thread::scope` fan-out where
 //! workers reserve indices off the writer's shared atomic counter and

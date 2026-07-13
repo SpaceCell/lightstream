@@ -6,11 +6,11 @@
 
 //! # CSV Decoder for Minarrow Tables
 //!
-//! - Accepts a CSV byte slice or any [`BufRead`].
+//! - Accepts a CSV byte slice or any [`BufRead`](std::io::BufRead).
 //! - Infers schema or uses a provided schema (optional).
 //! - Supports: `Int32`, `Int64`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Boolean`, `String32`, `Categorical32`, `Categorical8`.
 //! - Custom delimiter, nulls, quoting, and dictionary mapping for categoricals.
-//! - Produces a single [`Table`] via [`decode_csv`], or multiple batches via repeated calls to [`decode_csv_batch`].
+//! - Produces a single [`Table`](minarrow::Table) via [`decode_csv`](crate::models::decoders::csv::decode_csv), or multiple batches via repeated calls to [`decode_csv_batch`](crate::models::decoders::csv::decode_csv_batch).
 //!
 //! ## Fast path
 //!
@@ -23,7 +23,7 @@
 //!
 //! Notes:
 //! - Input is treated as UTF-8; invalid byte sequences are lossily decoded via `String::from_utf8_lossy`.
-//! - See [`CsvDecodeOptions`] for configurable delimiter, quoting, header handling, and schema control.
+//! - See [`CsvDecodeOptions`](crate::models::decoders::csv::CsvDecodeOptions) for configurable delimiter, quoting, header handling, and schema control.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -335,7 +335,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 let raw = field_bytes(cell_field_idx(row + data_row_offset, col));
                 let unq = unquote(raw, quote);
                 let vb = trim_ascii(&unq);
-                if is_null_bytes(vb, &nulls) {
+                if is_null_bytes(vb, nulls) {
                     continue;
                 }
                 if is_bool && !is_bool_token(vb) {
@@ -418,7 +418,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -430,7 +430,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -442,7 +442,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -454,7 +454,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -466,7 +466,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -478,7 +478,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -490,7 +490,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -502,7 +502,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -514,7 +514,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,
@@ -526,7 +526,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
                 col_idx,
                 n_rows,
                 quote,
-                &nulls,
+                nulls,
                 &mut null_bools,
                 &mut null_count,
             )?,

@@ -17,7 +17,7 @@
 //! The default [`Iterator`] path is sync and serial. Per-file Parquet
 //! decode is CPU-heavy (decompression, page parsing, dictionary
 //! resolution), so across files the gain from parallel reads is larger
-//! than for raw IPC. [`ChunkedTableReader::par_load_batched`] (inherited from
+//! than for raw IPC. [`ChunkedTableReader::par_load_batched`](crate::traits::chunked_table_reader::ChunkedTableReader::par_load_batched) (inherited from
 //! the trait) uses `std::thread::scope` to fan per-chunk work end-to-end
 //! across worker threads and returns a `SuperTable` with batches in
 //! write order.
@@ -120,7 +120,6 @@ impl Iterator for ChunkedParquetReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compression::Compression;
     use crate::models::writers::chunked::parquet::ChunkedParquetWriter;
     use crate::traits::chunked_table_writer::ChunkedTableWriter;
     use minarrow::{Table, fa_i32};
@@ -133,7 +132,7 @@ mod tests {
         let mut w = ChunkedParquetWriter::new(&dir, "part", None).unwrap();
         for i in 0..8i32 {
             w.write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!("n", i, i + 100)]),
             ))
             .unwrap();
@@ -192,7 +191,7 @@ mod tests {
                 null_mask: Some(Bitmask::new_set_all(n_rows, true)),
             }))),
         );
-        let table = Table::new("t".into(), Some(vec![dict_col]));
+        let table = Table::new("t", Some(vec![dict_col]));
 
         let path = std::env::temp_dir().join("ls_categorical_roundtrip.parquet");
         let _ = std::fs::remove_file(&path);

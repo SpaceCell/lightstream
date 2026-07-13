@@ -9,7 +9,7 @@
 //! Asynchronous, pull-based producer that encodes Type-Length-Value frames and yields them
 //! as a `futures_core::Stream` of buffers. Uses the generic [`StreamBuffer`] so you can emit
 //! either standard `Vec<u8>` or SIMD-aligned `Vec64<u8>` buffers. Push frames with
-//! [`TLVStreamWriter::write_frame`], then call [`TLVStreamWriter::finish`] to signal end of stream.
+//! [`TLVStreamWriter::write_frame`](crate::models::encoders::tlv::tlv_stream::TLVStreamWriter::write_frame), then call [`TLVStreamWriter::finish`](crate::models::encoders::tlv::tlv_stream::TLVStreamWriter::finish) to signal end of stream.
 //!
 //! No alignment padding is applied.
 
@@ -30,6 +30,12 @@ pub struct TLVStreamWriter<B: StreamBuffer> {
     finished: bool,
     waker: Option<Waker>,
     global_offset: usize,
+}
+
+impl<B: StreamBuffer + 'static> Default for TLVStreamWriter<B> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<B: StreamBuffer + 'static> TLVStreamWriter<B> {

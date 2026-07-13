@@ -6,14 +6,14 @@
 
 //! # WebSocket byte stream adapters
 //!
-//! Provides [`WsRead`] and [`WsWrite`] for WebSocket I/O over a raw TCP
+//! Provides [`WsRead`](crate::models::streams::websocket::WsRead) and [`WsWrite`](crate::models::streams::websocket::WsWrite) for WebSocket I/O over a raw TCP
 //! stream extracted after the tungstenite handshake.
 //!
 //! WS frame parsing and construction happens inline with zero intermediate
 //! allocations. Payload bytes flow between the TCP socket and the caller's
-//! buffer via the standard [`AsyncRead`] / [`AsyncWrite`] traits.
+//! buffer via the standard [`AsyncRead`](tokio::io::AsyncRead) / [`AsyncWrite`](tokio::io::AsyncWrite) traits.
 //!
-//! [`WsRead`] also implements [`Stream`] yielding arena-backed [`SharedBuffer`]
+//! [`WsRead`](crate::models::streams::websocket::WsRead) also implements [`Stream`](futures_core::Stream) yielding arena-backed [`SharedBuffer`](minarrow::structs::shared_buffer::SharedBuffer)
 //! windows for consumers that prefer the StreamExt API.
 
 use std::io;
@@ -214,7 +214,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                         return Poll::Ready(Ok(()));
                     }
 
-                    let before = buf.filled().len();
+                    let _before = buf.filled().len();
                     // Create a sub-ReadBuf limited to max_read bytes
                     let unfilled = buf.initialize_unfilled_to(max_read);
                     let mut sub = ReadBuf::new(unfilled);

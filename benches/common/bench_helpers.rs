@@ -216,7 +216,45 @@ pub fn logical_payload_bytes_shape(shape: BenchShape, n_rows: usize, n_batches: 
 }
 
 // ---------------------------------------------------------------------------
-// Mixed (canonical) shape - i32 + f64 + utf8 + categorical
+// Replay dataset support
+// ---------------------------------------------------------------------------
+
+/// Tables each stream replays when a dataset budget of `dataset_gb` decimal
+/// gigabytes is split evenly across `max_streams` streams. The source and
+/// sink both derive the batch count from the same workload arguments, so the
+/// two sides agree on it without exchanging it.
+pub fn batches_per_stream_for_budget(
+    shape: BenchShape,
+    n_rows: usize,
+    max_streams: usize,
+    dataset_gb: u64,
+) -> u64 {
+    let per_batch = logical_payload_bytes_shape(shape, n_rows, 1);
+    ((dataset_gb * 1_000_000_000) / (max_streams as u64 * per_batch)).max(1)
+}
+
+/// Rebuild `base` with a fresh first column so every replay batch is
+/// distinct. The first column of every bench shape is `i32`, and batch
+/// `seq` holds `seq + i` at row `i`, so a batch's first value identifies it
+/// and the receiver can verify ordered, complete delivery for each stream.
+/// The remaining columns stay Arc-shared with `base`.
+pub fn replay_batch_table(base: &Table, seq: u64) -> Table {
+    let data: Vec64<i32> = (0..base.n_rows)
+        .map(|i| (seq as i32).wrapping_add(i as i32))
+        .collect();
+    let mut table = base.clone();
+    table.cols[0] = FieldArray::new(
+        (*base.cols[0].field).clone(),
+        Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
+            data: Buffer::from(data),
+            null_mask: None,
+        }))),
+    );
+    table
+}
+
+// ---------------------------------------------------------------------------
+// Mixed (default) shape - i32 + f64 + utf8 + categorical
 // ---------------------------------------------------------------------------
 
 fn mixed_table(n_rows: usize) -> Table {

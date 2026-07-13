@@ -8,14 +8,14 @@
 //!
 //! Fans one frame sequence across several concurrent Lightstream protocol
 //! connections to a single endpoint. Each connection runs its own
-//! [`LightstreamWriter`] driven by a dedicated task, so the connections send
+//! [`LightstreamWriter`](crate::models::writers::lightstream::LightstreamWriter) driven by a dedicated task, so the connections send
 //! in parallel and aggregate throughput is the sum across them.
 //!
 //! Message types and table types are registered on every connection at
-//! [`connect`](LightstreamParallelWriter::connect). Callers then send by type
-//! name - [`send_table`](LightstreamParallelWriter::send_table) for Arrow
-//! tables, [`send_message`](LightstreamParallelWriter::send_message) and
-//! [`send_proto`](LightstreamParallelWriter::send_proto) for messages - so
+//! [`connect`](crate::models::writers::parallel::lightstream::LightstreamParallelWriter::connect). Callers then send by type
+//! name - [`send_table`](crate::models::writers::parallel::lightstream::LightstreamParallelWriter::send_table) for Arrow
+//! tables, [`send_message`](crate::models::writers::parallel::lightstream::LightstreamParallelWriter::send_message) and
+//! [`send_proto`](crate::models::writers::parallel::lightstream::LightstreamParallelWriter::send_proto) for messages - so
 //! protobuf messages and Arrow tables share the wire. Frames route round-robin
 //! in send order. Order within a connection is preserved; global order across
 //! the set is recovered by the receiver under

@@ -13,9 +13,9 @@
 //! sequence key - `Some` when the peer used an ordered writer, `None`
 //! otherwise.
 //!
-//! Under [`SortBehaviour::None`] and [`SortBehaviour::RequestKeys`] tables
+//! Under [`SortBehaviour::None`](crate::traits::parallel_transport_reader::SortBehaviour::None) and [`SortBehaviour::RequestKeys`](crate::traits::parallel_transport_reader::SortBehaviour::RequestKeys) tables
 //! surface in the order the streams produce them. Under
-//! [`SortBehaviour::Ordered`] the reader pulls the streams in the writer's
+//! [`SortBehaviour::Ordered`](crate::traits::parallel_transport_reader::SortBehaviour::Ordered) the reader pulls the streams in the writer's
 //! round-robin rotation, so tables surface in global write order.
 
 use std::io;

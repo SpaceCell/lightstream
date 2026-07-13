@@ -10,14 +10,14 @@
 //! into Arrow IPC frames - File or Stream protocol
 //!
 //! ## Overview
-//! - Wraps the generic [`GTableStreamEncoder`] for frame emission
+//! - Wraps the generic `GTableStreamEncoder` for frame emission
 //! - For pipes, custom network protocols, or synchronous contexts
 //! - Emits schema, dictionaries, record batches, and end-of-stream/footer
 //! - Frames can be pulled incrementally (`next_frame`) or drained all at once
 //!
 //! ## Async Helpers
-//! - [`write_tables_to_stream`] - write a sequence of tables to an async sink.
-//! - [`write_table_to_stream`] - write a single table to an async sink.
+//! - [`write_tables_to_stream`](crate::models::writers::ipc::table_stream::write_tables_to_stream) - write a sequence of tables to an async sink.
+//! - [`write_table_to_stream`](crate::models::writers::ipc::table_stream::write_table_to_stream) - write a single table to an async sink.
 //!
 //! ## Usage
 //! ```ignore

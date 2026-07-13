@@ -28,9 +28,9 @@ pub(crate) enum ParquetPhysicalType {
     /// 64-bit signed integer.
     Int64 = 2,
     /// 32-bit IEEE floating point.
-    Float = 3,
+    Float = 4,
     /// 64-bit IEEE floating point.
-    Double = 4,
+    Double = 5,
     /// Variable-length byte array (used for strings and binary data).
     ByteArray = 6,
 }
@@ -49,8 +49,8 @@ impl ParquetPhysicalType {
             0 => Some(Self::Boolean),
             1 => Some(Self::Int32),
             2 => Some(Self::Int64),
-            3 => Some(Self::Float),
-            4 => Some(Self::Double),
+            4 => Some(Self::Float),
+            5 => Some(Self::Double),
             6 => Some(Self::ByteArray),
             _ => None,
         }
@@ -106,63 +106,64 @@ impl ParquetLogicalType {
     /// Returns `None` if the ID is unsupported or maps to a type that is not
     /// handled (e.g. `MAP`, `DECIMAL`, `LIST`).
     pub fn from_converted_type(id: Option<i32>) -> Option<Self> {
+        // ConvertedType ids follow parquet.thrift: UTF8=0, MAP=1,
+        // MAP_KEY_VALUE=2, LIST=3, ENUM=4, DECIMAL=5, DATE=6,
+        // TIME_MILLIS=7, TIME_MICROS=8, TIMESTAMP_MILLIS=9,
+        // TIMESTAMP_MICROS=10, UINT_8..UINT_64=11..14, INT_8..INT_64=15..18,
+        // JSON=19, BSON=20, INTERVAL=21.
         match id {
             None => None,
-            Some(0) => None, // NONE
-            Some(1) => Some(ParquetLogicalType::Utf8),
-            Some(2) => None, // MAP (unsupported)
-            Some(3) => None, // MAP_KEY_VALUE (unsupported)
+            Some(0) => Some(ParquetLogicalType::Utf8),
+            Some(1) => None, // MAP (unsupported)
+            Some(2) => None, // MAP_KEY_VALUE (unsupported)
+            Some(3) => None, // LIST (unsupported)
+            Some(4) => None, // ENUM (unsupported)
+            Some(5) => None, // DECIMAL (unsupported)
             #[cfg(feature = "datetime")]
-            Some(4) => Some(ParquetLogicalType::Date32),
+            Some(6) => Some(ParquetLogicalType::Date32),
             #[cfg(feature = "datetime")]
-            Some(5) => Some(ParquetLogicalType::Date64),
+            Some(7) => Some(ParquetLogicalType::TimeMillis),
             #[cfg(feature = "datetime")]
-            Some(6) => Some(ParquetLogicalType::TimeMillis),
-            #[cfg(feature = "datetime")]
-            Some(7) => Some(ParquetLogicalType::TimeMicros),
-            Some(8) => None, // UINT_8 (unsupported legacy alias)
+            Some(8) => Some(ParquetLogicalType::TimeMicros),
             #[cfg(feature = "datetime")]
             Some(9) => Some(ParquetLogicalType::TimestampMillis),
             #[cfg(feature = "datetime")]
             Some(10) => Some(ParquetLogicalType::TimestampMicros),
             Some(11) => Some(ParquetLogicalType::IntType {
                 bit_width: 8,
-                is_signed: true,
+                is_signed: false,
             }),
             Some(12) => Some(ParquetLogicalType::IntType {
                 bit_width: 16,
-                is_signed: true,
+                is_signed: false,
             }),
             Some(13) => Some(ParquetLogicalType::IntType {
                 bit_width: 32,
-                is_signed: true,
+                is_signed: false,
             }),
             Some(14) => Some(ParquetLogicalType::IntType {
                 bit_width: 64,
-                is_signed: true,
+                is_signed: false,
             }),
             Some(15) => Some(ParquetLogicalType::IntType {
                 bit_width: 8,
-                is_signed: false,
+                is_signed: true,
             }),
             Some(16) => Some(ParquetLogicalType::IntType {
                 bit_width: 16,
-                is_signed: false,
+                is_signed: true,
             }),
             Some(17) => Some(ParquetLogicalType::IntType {
                 bit_width: 32,
-                is_signed: false,
+                is_signed: true,
             }),
             Some(18) => Some(ParquetLogicalType::IntType {
                 bit_width: 64,
-                is_signed: false,
+                is_signed: true,
             }),
-            Some(19) => None, // LIST (unsupported)
-            Some(20) => None, // DECIMAL (unsupported)
-            Some(21) => None, // ENUM (unsupported)
-            Some(22) => None, // UTF8 (duplicate, handled above)
-            Some(23) => None, // BSON
-            Some(24) => None, // JSON
+            Some(19) => None, // JSON
+            Some(20) => None, // BSON
+            Some(21) => None, // INTERVAL (unsupported)
             _ => None,
         }
     }
@@ -288,17 +289,15 @@ pub(crate) fn arrow_type_to_parquet(
             feature = "extended_categorical"
         ))]
         ArrowType::Dictionary(CategoricalIndexType::UInt32) => {
-            Ok((ParquetPhysicalType::Int32, ParquetLogicalType::NoneType))
+            Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8))
         }
         #[cfg(feature = "default_categorical_8")]
         ArrowType::Dictionary(CategoricalIndexType::UInt8) => {
-            Ok((ParquetPhysicalType::Int32, ParquetLogicalType::NoneType))
+            Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8))
         }
         ArrowType::Float32 => Ok((ParquetPhysicalType::Float, ParquetLogicalType::NoneType)),
         ArrowType::Float64 => Ok((ParquetPhysicalType::Double, ParquetLogicalType::NoneType)),
         ArrowType::String => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
-        ArrowType::LargeString => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
-        #[cfg(feature = "large_string")]
         ArrowType::LargeString => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
         ArrowType::Utf8View => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
         #[cfg(feature = "datetime")]

@@ -1,0 +1,25 @@
+# Docker build ignore rules for the ECS benchmark image.
+#
+# The build context for this image is the parent directory that holds both the
+# `lightstream` and `minarrow` checkouts (see Dockerfile and run.sh), so these
+# patterns are matched against `lightstream/...` and `minarrow/...`. `run.sh`
+# and `run-local-docker.sh` stage this file into the context root as
+# `.dockerignore` before building and remove it afterwards, because Docker only
+# reads `.dockerignore` from the context root.
+#
+# Everything under the context is excluded except the two checkouts the image
+# builds, so whatever else lives beside them stays out of the context. Build
+# output and VCS metadata within the checkouts are excluded to keep the
+# context small and the build reproducible.
+
+*
+!lightstream
+!minarrow
+
+**/target/
+**/.git/
+**/.github/
+**/.idea/
+**/*.swp
+**/*.swo
+**/.DS_Store

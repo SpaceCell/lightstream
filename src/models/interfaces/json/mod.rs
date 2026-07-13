@@ -17,19 +17,19 @@
 //! takes a wire shape that already matches the table - JSON keys as column names,
 //! and one flat object per row. In contrast, this interface takes a connector's shape
 //! (that may differ by vendor, etc.) and a [`JsonSchema`]'s per-column
-//! [`ValueSource`] to map it onto the same columns.
+//! [`ValueSource`](crate::models::interfaces::json::ValueSource) to map it onto the same columns.
 //!
 //! ## Behaviour
 //!
 //! Flow: The mapping compiles once at construction. Each frame is parsed through
-//! simd-json's tape with reusable [`Buffers`]. The record envelope is
+//! simd-json's tape with reusable [`Buffers`](simd_json::Buffers). The record envelope is
 //! then resolved, and every record yields one value per column.
 //!
 //! Timing: A wall-clock column fills from the caller's receive `now`,
 //! passed in epoch nanoseconds and scaled to the column's time unit when
 //! the source compiles.
 //!
-//! Size Limits: [`DecodeLimits`] caps frame bytes, records per frame, and string value
+//! Size Limits: [`DecodeLimits`](crate::models::decoders::limits::DecodeLimits) caps frame bytes, records per frame, and string value
 //! length before the corresponding work happens. Downstream connector input is considered
 //! untrusted.
 
@@ -106,11 +106,11 @@ fn clock_nanos_per_tick(_field: &Field) -> i64 {
 /// ## Behaviour
 /// - The per-column mapping compiles at construction.
 /// - Each [`parse_frame`](Self::parse_frame) call parses the frame with reusable
-/// [`Buffers`] and returns a [`JsonFrame`] positioned on the frame's
-/// records.
+///   [`Buffers`] and returns a [`JsonFrame`] positioned on the frame's
+///   records.
 /// - `Ok(None)` means the frame carries no records for this schema
-/// i.e., could be a heartbeat, subscribe ack, or another channel's frame on a
-/// multiplexed socket - which is normal traffic rather than an error.
+///   i.e., could be a heartbeat, subscribe ack, or another channel's frame on a
+///   multiplexed socket - which is normal traffic rather than an error.
 pub struct JsonInterface {
     sources: Vec<ValueSource>,
     wall_clock_scale: Vec<i64>,
@@ -125,13 +125,13 @@ impl JsonInterface {
     /// before any frame arrives.
     pub fn new(schema: &JsonSchema, limits: DecodeLimits) -> io::Result<Self> {
         for (field, source) in schema.fields().iter().zip(schema.sources()) {
-            if let ValueSource::JsonPath(path) | ValueSource::FramePath(path) = source {
-                if path.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("column '{}' has an empty path", field.name),
-                    ));
-                }
+            if let ValueSource::JsonPath(path) | ValueSource::FramePath(path) = source
+                && path.is_empty()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("column '{}' has an empty path", field.name),
+                ));
             }
         }
         let sources = schema.sources().to_vec();
@@ -158,9 +158,9 @@ impl JsonInterface {
     ///
     /// ## Behaviour
     /// - `frame` is parsed in place - simd-json unescapes strings directly
-    /// into the buffer, overwriting the original JSON text.
+    ///   into the buffer, overwriting the original JSON text.
     /// - `now` is the caller's receive clock in epoch nanoseconds, captured once for the frame,
-    /// which gets scaled to the column's time unit when `WallClock` is used.
+    ///   which gets scaled to the column's time unit when `WallClock` is used.
     ///
     /// Returns `Ok(None)` when the configured record path is absent from
     /// the frame. Returns an error for:

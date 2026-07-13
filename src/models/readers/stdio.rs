@@ -9,7 +9,7 @@
 //! High-level async reader that reads Arrow IPC data from stdin
 //! and decodes it into MinArrow tables.
 //!
-//! Wraps [`TableReader`] over a [`StdinByteStream`], hiding the wiring
+//! Wraps [`TableReader`](crate::models::readers::ipc::table::TableReader) over a [`StdinByteStream`](crate::models::streams::stdio::StdinByteStream), hiding the wiring
 //! so callers get a simple API for CLI tools.
 //!
 //! ## Continuous streaming

@@ -87,7 +87,7 @@ impl ChunkedTableWriter for ChunkedParquetWriter {
     /// used by both `write_chunk` and `par_write_all`.
     fn write_chunk_at(&self, path: &Path, table: &Table) -> Result<(), IoError> {
         let file = File::create(path)?;
-        write_parquet_table(table, file, self.compression.clone())?;
+        write_parquet_table(table, file, self.compression)?;
         Ok(())
     }
 }
@@ -105,14 +105,14 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let mut w = ChunkedParquetWriter::new(&dir, "part", None).unwrap();
         let p0 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 1, 2, 3)])))
+            .write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 1, 2, 3)])))
             .unwrap();
         let p1 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 4, 5)])))
+            .write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 4, 5)])))
             .unwrap();
         let p2 = w
             .write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!("n", 6, 7, 8, 9)]),
             ))
             .unwrap();
@@ -140,7 +140,7 @@ mod tests {
 
         let w = ChunkedParquetWriter::new(&dir, "part", None).unwrap();
         let tables: Vec<Table> = (0..6i32)
-            .map(|i| Table::new("b".into(), Some(vec![fa_i32!("n", i, i + 100)])))
+            .map(|i| Table::new("b", Some(vec![fa_i32!("n", i, i + 100)])))
             .collect();
         let refs: Vec<&Table> = tables.iter().collect();
 

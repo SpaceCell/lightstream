@@ -6,15 +6,15 @@
 
 //! # Parallel TCP table reader
 //!
-//! Accepts several concurrent TCP connections on a [`TcpListener`] and decodes
+//! Accepts several concurrent TCP connections on a [`TcpListener`](tokio::net::TcpListener) and decodes
 //! them across cores, one task per connection. Each task feeds its own
 //! channel, and the reader merges the channels into a single table stream.
 //! Each table is paired with its sequence key - `Some` when the peer used an
 //! ordered writer, `None` otherwise.
 //!
-//! Under [`SortBehaviour::None`] and [`SortBehaviour::RequestKeys`] tables
+//! Under [`SortBehaviour::None`](crate::traits::parallel_transport_reader::SortBehaviour::None) and [`SortBehaviour::RequestKeys`](crate::traits::parallel_transport_reader::SortBehaviour::RequestKeys) tables
 //! surface in the order the connections produce them. Under
-//! [`SortBehaviour::Ordered`] the reader pulls the connections in the writer's
+//! [`SortBehaviour::Ordered`](crate::traits::parallel_transport_reader::SortBehaviour::Ordered) the reader pulls the connections in the writer's
 //! round-robin rotation, so tables surface in global write order. Connections
 //! are accepted in order, so the `i`-th accepted connection pairs with the
 //! writer's `i`-th connection.

@@ -6,7 +6,7 @@
 
 //! Codec-based serialisation and deserialisation.
 //!
-//! [`Serialise`] is implemented for Minarrow value types such as `Table`,
+//! [`Serialise`](crate::traits::serialise::Serialise) is implemented for Minarrow value types such as `Table`,
 //! `Array` and `FieldArray`. The codec type `C` defines the encoded format and
 //! provides the corresponding encoder and decoder implementations.
 //!

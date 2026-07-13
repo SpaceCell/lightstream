@@ -6,7 +6,7 @@
 
 //! Async Lightstream protocol writer.
 //!
-//! Wraps a [`LightstreamCodec`] and an [`AsyncWrite`] destination, providing
+//! Wraps a [`LightstreamCodec`](crate::models::codecs::lightstream::LightstreamCodec) and an [`AsyncWrite`](tokio::io::AsyncWrite) destination, providing
 //! methods to send messages and Arrow tables over a single connection.
 //!
 //! Tables are encoded using the Arrow IPC streaming protocol - schema is
@@ -16,8 +16,8 @@
 //! sending via prost. With the `msgpack` feature, [`send_msgpack`]
 //! provides typed message sending via MessagePack and serde.
 //!
-//! [`send_proto`]: LightstreamWriter::send_proto
-//! [`send_msgpack`]: LightstreamWriter::send_msgpack
+//! [`send_proto`]: crate::models::writers::lightstream::LightstreamWriter::send_proto
+//! [`send_msgpack`]: crate::models::writers::lightstream::LightstreamWriter::send_msgpack
 
 use std::io;
 

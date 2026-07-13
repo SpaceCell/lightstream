@@ -4,26 +4,27 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Receiver for the AWS A-to-B benchmark.
+//! Sender for the AWS A-to-B benchmark.
 //!
-//! Connects to the sender, receives the configured number of table batches and
-//! reports throughput measured across the receive loop.
+//! Listens on the configured address, accepts one connection and sends the
+//! configured number of table batches. Throughput is measured across the send
+//! loop for comparison with the receiver result.
 //!
-//! See `bench/aws/README.md` for setup instructions. Run with `--help` for the
-//! available command-line options.
+//! See `benches/aws/README.md` for setup instructions. Run with `--help` for
+//! the available command-line options.
 
+use std::sync::Arc;
 use std::time::Instant;
 
-use minarrow::Vec64;
-use tokio::net::TcpStream;
+use minarrow::{Field, Table};
+use tokio::net::TcpListener;
 
-use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
-use lightstream::models::readers::ipc::table::TableReader;
+use lightstream::models::writers::tcp::TcpTableWriter;
+use lightstream::traits::transport_writer::IPCTransportWriter;
 
-#[path = "../../benches/common/bench_helpers.rs"]
+#[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
-
-use bench_helpers::BenchShape;
+use bench_helpers::{BenchShape, bench_schema, make_bench_table_shape};
 
 #[derive(Debug, Clone, Copy)]
 enum ShapeArg {
@@ -55,14 +56,14 @@ impl ShapeArg {
 }
 
 struct Args {
-    connect: String,
+    bind: String,
     shape: BenchShape,
     rows: usize,
     batches: u64,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut connect = "127.0.0.1:9001".to_string();
+    let mut bind = "0.0.0.0:9001".to_string();
     let mut shape = BenchShape::Mixed;
     let mut rows: usize = 100_000;
     let mut batches: u64 = 1_000;
@@ -70,10 +71,10 @@ fn parse_args() -> Result<Args, String> {
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
-            "--connect" => {
-                connect = argv
+            "--bind" => {
+                bind = argv
                     .next()
-                    .ok_or_else(|| "--connect requires value".to_string())?;
+                    .ok_or_else(|| "--bind requires value".to_string())?;
             }
             "--shape" => {
                 let v = argv
@@ -95,14 +96,14 @@ fn parse_args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: bench_receiver [--connect ADDR] [--shape SHAPE] [--rows N] [--batches N]"
+                    "Usage: bench_sender [--bind ADDR] [--shape SHAPE] [--rows N] [--batches N]"
                 );
-                println!("  --connect  sender address (default 127.0.0.1:9001)");
+                println!("  --bind     listen address (default 0.0.0.0:9001)");
                 println!(
                     "  --shape    mixed | narrow_numeric | string_heavy | wide (default mixed)"
                 );
-                println!("  --rows     rows per batch (default 100_000) - must match sender");
-                println!("  --batches  total batches expected (default 1_000)");
+                println!("  --rows     rows per batch (default 100_000)");
+                println!("  --batches  total batches to send (default 1_000)");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
@@ -110,7 +111,7 @@ fn parse_args() -> Result<Args, String> {
     }
 
     Ok(Args {
-        connect,
+        bind,
         shape,
         rows,
         batches,
@@ -122,53 +123,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     eprintln!(
-        "[receiver] connect={} shape={} rows={} batches={}",
-        args.connect,
+        "[sender] bind={} shape={} rows={} batches={}",
+        args.bind,
         args.shape.label(),
         args.rows,
         args.batches
     );
 
-    let stream = TcpStream::connect(&args.connect).await?;
-    eprintln!("[receiver] connected; reading");
+    let table = Arc::new(make_bench_table_shape(args.shape, args.rows));
+    let schema: Vec<Field> = bench_schema(&table);
+    let dict_regs = args.shape.dictionary_registrations();
 
-    let (read_half, _write) = stream.into_split();
-    let mut reader = TableReader::<Vec64<u8>>::new(
-        read_half,
-        BufferChunkSize::Http.chunk_size(),
-        IPCMessageProtocol::Stream,
-    );
+    let listener = TcpListener::bind(&args.bind).await?;
+    eprintln!("[sender] listening on {}", listener.local_addr()?);
+
+    let (socket, peer) = listener.accept().await?;
+    eprintln!("[sender] receiver connected from {peer}");
+
+    // Hand the accepted socket's write half to the table writer. The
+    // peer is responsible for connecting first, so the timed region
+    // covers send-only work.
+    let (_read, write) = socket.into_split();
+    let mut writer = TcpTableWriter::from_write_half(write, schema, None)?;
+    for (id, values) in dict_regs {
+        writer.register_dictionary(id, values);
+    }
 
     let start = Instant::now();
-    let mut count = 0u64;
-    while let Some(batch) = reader.read_next().await? {
-        assert!(batch.n_rows > 0);
-        std::hint::black_box(&batch.cols);
-        count += 1;
+    for _ in 0..args.batches {
+        let table_ref = Table::clone(&table);
+        writer.write_table(table_ref).await?;
     }
+    writer.finish().await?;
     let elapsed = start.elapsed();
-    assert_eq!(count, args.batches, "batch count mismatch");
 
     let logical_bytes = bench_helpers::logical_payload_bytes_shape(args.shape, args.rows, 1)
         * args.batches;
-    let logical_gib = (logical_bytes as f64) / (1024.0 * 1024.0 * 1024.0);
-    let throughput_gib = logical_gib / elapsed.as_secs_f64();
+    let throughput_gib =
+        (logical_bytes as f64) / (1024.0 * 1024.0 * 1024.0) / elapsed.as_secs_f64();
 
     eprintln!(
-        "[receiver] received {} batches ({:.2} GiB logical) in {:.3} s = {:.3} GiB/s",
-        count,
-        logical_gib,
-        elapsed.as_secs_f64(),
-        throughput_gib
-    );
-    // Print a machine-parsable summary line on stdout so wrapper scripts
-    // can capture the result without parsing the log.
-    println!(
-        "RESULT shape={} rows={} batches={} bytes={} elapsed_s={:.6} gib_per_s={:.3}",
-        args.shape.label(),
-        args.rows,
+        "[sender] sent {} batches ({:.2} GiB logical) in {:.3} s = {:.3} GiB/s",
         args.batches,
-        logical_bytes,
+        (logical_bytes as f64) / (1024.0 * 1024.0 * 1024.0),
         elapsed.as_secs_f64(),
         throughput_gib
     );

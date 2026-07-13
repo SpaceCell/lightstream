@@ -6,7 +6,7 @@
 
 //! # Asynchronous stdin byte stream
 //!
-//! Type alias over [`AsyncReadByteStream`] for standard input.
+//! Type alias over [`AsyncReadByteStream`](crate::models::streams::async_read::AsyncReadByteStream) for standard input.
 //!
 //! ## Use cases
 //! - Receive Arrow IPC streams from Unix pipes without loading them fully into memory.

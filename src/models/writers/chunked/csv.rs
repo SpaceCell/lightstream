@@ -109,17 +109,17 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let mut w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
         let p0 = w
-            .write_chunk(&Table::new("b".into(), Some(vec![fa_i32!("n", 0, 1, 2)])))
+            .write_chunk(&Table::new("b", Some(vec![fa_i32!("n", 0, 1, 2)])))
             .unwrap();
         let p1 = w
             .write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!("n", 10, 11, 12)]),
             ))
             .unwrap();
         let p2 = w
             .write_chunk(&Table::new(
-                "b".into(),
+                "b",
                 Some(vec![fa_i32!("n", 20, 21, 22)]),
             ))
             .unwrap();
@@ -143,7 +143,7 @@ mod tests {
 
         let w = ChunkedCsvWriter::new(&dir, "part", CsvEncodeOptions::default()).unwrap();
         let tables: Vec<Table> = (0..10i32)
-            .map(|i| Table::new("b".into(), Some(vec![fa_i32!("n", i, i + 100)])))
+            .map(|i| Table::new("b", Some(vec![fa_i32!("n", i, i + 100)])))
             .collect();
         let refs: Vec<&Table> = tables.iter().collect();
 

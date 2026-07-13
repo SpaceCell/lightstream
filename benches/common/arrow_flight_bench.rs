@@ -11,8 +11,9 @@
 //! minimal Flight service whose `DoGet` returns the pre-built batch repeated
 //! the number of times the ticket requests. Every other RPC is unsupported.
 //!
-//! The 8 MiB HTTP/2 windows and the raised message and flight-data limits let
-//! each batch travel as one message rather than the default 2 MiB slices.
+//! The 8 MiB HTTP/2 windows and the raised gRPC message limits remove the
+//! transport-level ceilings. Flight-data slicing stays at the encoder's
+//! default 2 MiB, matching how Arrow Flight ships.
 
 #![allow(dead_code)]
 
@@ -40,7 +41,8 @@ const WIDE_GROUP_SIZE: usize = 25;
 /// HTTP/2 flow-control window advertised on both the Flight server and client.
 pub const FLIGHT_HTTP2_WINDOW: u32 = 8 * 1024 * 1024;
 
-/// gRPC and flight-data size limit, raised so each batch ships as one message.
+/// gRPC message decode and encode limit, raised so no transport ceiling
+/// interferes with the encoder's own flight-data slicing.
 pub const FLIGHT_MAX_MESSAGE_BYTES: usize = i32::MAX as usize;
 
 /// Build the Arrow record batch matching `shape` at `n_rows` rows.
@@ -226,9 +228,14 @@ fn wide_batch(n_rows: usize) -> RecordBatch {
 
 /// Minimal Flight service. `DoGet` returns the pre-built batch repeated the
 /// number of times the ticket requests as a little-endian `u64`.
+///
+/// `single_message` raises the flight-data size so each batch ships as one
+/// gRPC message instead of the encoder's default 2 MiB slices. Used for the
+/// message-size sensitivity comparison.
 #[derive(Clone)]
 pub struct BenchFlightService {
     pub batch: Arc<RecordBatch>,
+    pub single_message: bool,
 }
 
 #[tonic::async_trait]
@@ -286,8 +293,15 @@ impl FlightService for BenchFlightService {
         let batch_stream = stream::iter((0..n).map(move |_| {
             Ok::<RecordBatch, arrow_flight::error::FlightError>((*batch).clone())
         }));
-        let flight_data = FlightDataEncoderBuilder::new()
-            .with_max_flight_data_size(FLIGHT_MAX_MESSAGE_BYTES)
+        // Default: the encoder keeps its shipped flight-data size, so batches
+        // above 2 MiB split into multiple messages per Arrow Flight's own
+        // tuning. Single-message mode raises the limit for the sensitivity
+        // comparison.
+        let mut builder = FlightDataEncoderBuilder::new();
+        if self.single_message {
+            builder = builder.with_max_flight_data_size(FLIGHT_MAX_MESSAGE_BYTES);
+        }
+        let flight_data = builder
             .build(batch_stream)
             .map_err(|err| Status::internal(format!("flight encode failure: {err}")));
         Ok(Response::new(Box::pin(flight_data)))

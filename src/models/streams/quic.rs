@@ -6,7 +6,7 @@
 
 //! # Asynchronous QUIC byte stream
 //!
-//! Type alias over [`AsyncReadByteStream`] for QUIC receive streams.
+//! Type alias over [`AsyncReadByteStream`](crate::models::streams::async_read::AsyncReadByteStream) for QUIC receive streams.
 //!
 //! ## Use cases
 //! - Receive Arrow IPC streams over QUIC without loading them fully into memory.

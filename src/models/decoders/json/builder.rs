@@ -10,8 +10,8 @@
 //! [`MaskedArray`] trait or each variant's inherent `push_str` method.
 //!
 //! Construction goes through `<Array>::with_capacity(n_rows, nullable)`,
-//! which pre-reserves the [`Vec64`]-backed data buffer and (when nullable)
-//! the [`Bitmask`] - so the JSON row loop performs zero reallocations on
+//! which pre-reserves the [`Vec64`](minarrow::Vec64)-backed data buffer and (when nullable)
+//! the [`Bitmask`](minarrow::Bitmask) - so the JSON row loop performs zero reallocations on
 //! the hot path. `push_null` lazily materialises the mask in the
 //! `MaskedArray` default implementation when the column is non-nullable
 //! but a null shows up at runtime.
@@ -26,20 +26,15 @@ use minarrow::{
 };
 
 /// Strategy for handling a JSON value whose type does not match the schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TypeMismatchPolicy {
     /// Return an error identifying the row and column.
+    #[default]
     Error,
     /// Attempt to coerce (string<->number, bool<->0/1). On failure, write null.
     Coerce,
     /// Silently record the cell as null.
     Null,
-}
-
-impl Default for TypeMismatchPolicy {
-    fn default() -> Self {
-        TypeMismatchPolicy::Error
-    }
 }
 
 /// Per-column accumulator that wraps a typed minarrow array. The decoder calls
@@ -250,6 +245,12 @@ impl ColumnBuilder {
             #[cfg(feature = "extended_numeric_types")]
             ColumnBuilder::UInt16(a) => a.len(),
         }
+    }
+
+    /// Returns `true` when no cells have been appended.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Wrap the inner typed array in a [`FieldArray`] tagged with `field`.

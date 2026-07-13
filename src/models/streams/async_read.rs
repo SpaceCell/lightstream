@@ -6,13 +6,13 @@
 
 //! # Generic asynchronous byte stream adapter
 //!
-//! Wraps any [`AsyncRead`] source as both [`AsyncRead`] and [`Stream`].
+//! Wraps any [`AsyncRead`](tokio::io::AsyncRead) source as both [`AsyncRead`](tokio::io::AsyncRead) and [`Stream`](futures_core::Stream).
 //!
 //! ## AsyncRead
 //! Passthrough to the inner source for the direct decode path.
 //!
 //! ## Stream
-//! Yields [`SharedBuffer`] windows from a [`StreamArena`] for zero-allocation
+//! Yields [`SharedBuffer`](minarrow::structs::shared_buffer::SharedBuffer) windows from a [`StreamArena`](crate::models::streams::stream_arena::StreamArena) for zero-allocation
 //! streaming. This is the generic building block behind transport-specific
 //! byte streams - QUIC, WebTransport, and Stdin are type aliases over this.
 

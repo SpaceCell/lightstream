@@ -30,7 +30,7 @@ use std::sync::Arc;
 use helpers::{make_table, table_schema};
 use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
 use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
-use lightstream::traits::parallel_transport_reader::ParallelTransportReader;
+use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
 use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
 const STREAMS: usize = 4;
@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let connection = incoming.await.unwrap();
         println!("Server accepted QUIC connection.");
 
-        let reader = QuicParallelTableReader::accept(&connection, STREAMS)
+        let reader = QuicParallelTableReader::accept(&connection, STREAMS, SortBehaviour::Ordered)
             .await
             .unwrap();
         let tables = reader.read_all_tables().await.unwrap();
@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     writer.finish().await?;
 
     let tables = server.await?;
-    let total_rows: usize = tables.iter().map(|t| t.n_rows).sum();
+    let total_rows: usize = tables.iter().map(|(t, _)| t.n_rows).sum();
     println!(
         "Server merged {} tables ({total_rows} rows) from {STREAMS} streams.",
         tables.len()
