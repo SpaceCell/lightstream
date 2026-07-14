@@ -192,6 +192,19 @@ mod pyarrow_roundtrip_tests {
         }
     }
 
+    /// Skip guard for tests that need the PyArrow fixture files. Prints the
+    /// regeneration instruction and returns true when the fixture is absent,
+    /// so a fresh clone passes with a visible skip rather than failing.
+    fn missing_fixture(path: &str) -> bool {
+        if std::path::Path::new(path).exists() {
+            return false;
+        }
+        eprintln!(
+            "skipping: {path} missing - generate it with `python3 python/generate_pyarrow_files.py`"
+        );
+        true
+    }
+
     /// Create the expected table that matches PyArrow-generated data (basic types only)
     fn create_expected_table(n_rows: usize) -> Table {
         let int32 = NumericArray::Int32(Arc::new(IntegerArray::from_vec64(
@@ -281,6 +294,9 @@ mod pyarrow_roundtrip_tests {
 
         // Read PyArrow-generated Arrow file
         let file_path = "python/pyarrow_basic_types.arrow";
+        if missing_fixture(file_path) {
+            return;
+        }
         let reader = FileTableReader::open(file_path).expect("Failed to open file");
 
         // Read the first (and likely only) table
@@ -300,6 +316,46 @@ mod pyarrow_roundtrip_tests {
         validate_table_data(&expected_table, &actual_table);
 
         println!("✅ PyArrow file format read successfully!");
+    }
+
+    /// Read a PyArrow-generated file through the mmap reader, both as a
+    /// whole batch and as row-chunked windows. The 2048-row fixture with a
+    /// 16 KiB chunk cap splits into several 512-row-aligned windows, which
+    /// consolidate back into the full batch for comparison.
+    #[cfg(feature = "mmap")]
+    #[test]
+    fn test_read_pyarrow_file_mmap_whole_and_chunked() {
+        use ::lightstream::models::readers::ipc::mmap_table::MmapTableReader;
+        use minarrow::Consolidate;
+
+        println!("Testing PyArrow -> lightstream mmap roundtrip (file format)");
+
+        let file_path = "python/pyarrow_basic_types_2048.arrow";
+        if missing_fixture(file_path) {
+            return;
+        }
+
+        let reader = MmapTableReader::open(file_path).expect("Failed to mmap file");
+        assert!(reader.num_batches() > 0, "No record batches found");
+
+        let expected = create_expected_table(2048);
+
+        // Whole-batch read
+        let whole = reader.read_batch(0).expect("Failed to read batch");
+        validate_table_data(&expected, &whole);
+
+        // Chunked read
+        let chunked = reader
+            .read_batch_chunked(0, 16 * 1024)
+            .expect("Failed to read batch chunks");
+        assert!(
+            chunked.batches.len() > 1,
+            "chunk cap did not split the batch"
+        );
+        let consolidated = chunked.consolidate();
+        validate_table_data(&expected, &consolidated);
+
+        println!("✅ PyArrow file read via mmap, whole and chunked!");
     }
 
     #[tokio::test]
@@ -348,6 +404,9 @@ mod pyarrow_roundtrip_tests {
         }
 
         let file_path = "python/pyarrow_basic_types.stream";
+        if missing_fixture(file_path) {
+            return;
+        }
         use ::lightstream::enums::BufferChunkSize;
         let disk = DiskByteStream::open(file_path, BufferChunkSize::Custom(1024))
             .await
@@ -392,6 +451,7 @@ mod pyarrow_roundtrip_tests {
             .collect::<Vec<_>>();
 
         // Write with lightstream to file format
+        std::fs::create_dir_all("python").expect("Failed to create python dir");
         let file_path = "python/lightstream_basic_types.arrow";
         write_tables_to_file(file_path, &[test_table], schema)
             .await
@@ -415,6 +475,7 @@ mod pyarrow_roundtrip_tests {
             .collect::<Vec<_>>();
 
         // Write with lightstream to stream format
+        std::fs::create_dir_all("python").expect("Failed to create python dir");
         let file_path = "python/lightstream_basic_types.stream";
         let file = tokio::fs::File::create(file_path)
             .await

@@ -28,7 +28,10 @@ target
 # Repo additions
 ###########################
 # Pyarrow roundtrip testing
-python
+python/*.arrow
+python/*.stream
+python/__pycache__/
+python/.venv/
 .vscode/
 
 # Cross-host benchmark rigs - result captures, terraform provider downloads

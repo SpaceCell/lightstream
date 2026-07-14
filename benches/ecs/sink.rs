@@ -110,6 +110,7 @@ struct Args {
     streams: Vec<usize>,
     runs: u32,
     data_source: DataSource,
+    max_chunk_size: usize,
     source_flight_addr: String,
     source_echo_addr: String,
     source_ctrl_addr: String,
@@ -147,6 +148,7 @@ fn parse_args() -> Result<Args, String> {
     let mut streams = vec![1usize, 4, 8, 16];
     let mut runs: u32 = 5;
     let mut data_source = DataSource::Memory;
+    let mut max_chunk_size: usize = 0;
     let mut source_flight_addr = "127.0.0.1:9101".to_string();
     let mut source_echo_addr = "127.0.0.1:9102".to_string();
     let mut source_ctrl_addr = "127.0.0.1:9104".to_string();
@@ -164,6 +166,9 @@ fn parse_args() -> Result<Args, String> {
             "--streams" => streams = parse_streams(&next()?)?,
             "--runs" => runs = next()?.parse().map_err(|e| format!("--runs: {e}"))?,
             "--data-source" => data_source = parse_data_source(&next()?)?,
+            "--max-chunk-size" => {
+                max_chunk_size = next()?.parse().map_err(|e| format!("--max-chunk-size: {e}"))?
+            }
             "--source-flight-addr" => source_flight_addr = next()?,
             "--source-echo-addr" => source_echo_addr = next()?,
             "--source-ctrl-addr" => source_ctrl_addr = next()?,
@@ -177,6 +182,8 @@ fn parse_args() -> Result<Args, String> {
                 println!("  --streams LIST            comma-separated stream counts (default 1,4,8,16)");
                 println!("  --runs N                  warm runs per cell (default 5)");
                 println!("  --data-source SRC         memory | nvme (default memory)");
+                println!("  --max-chunk-size N           nvme replay chunk size in bytes, 0 replays");
+                println!("                            whole batches (default 0)");
                 println!("  --source-flight-addr ADDR source Flight address (host:port)");
                 println!("  --source-echo-addr ADDR  source latency echo address (host:port)");
                 println!("  --source-ctrl-addr ADDR  source control address (host:port)");
@@ -198,6 +205,7 @@ fn parse_args() -> Result<Args, String> {
         streams,
         runs,
         data_source,
+        max_chunk_size,
         source_flight_addr,
         source_echo_addr,
         source_ctrl_addr,
@@ -212,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches_per_stream =
         batches_per_stream_for_budget(args.shape, args.rows, max_streams, args.dataset_gb);
     eprintln!(
-        "[sink] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} source_flight={}",
+        "[sink] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_chunk_size={} source_flight={}",
         args.shape.label(),
         args.rows,
         args.dataset_gb,
@@ -220,11 +228,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.streams,
         args.runs,
         args.data_source.label(),
+        args.max_chunk_size,
         args.source_flight_addr
     );
 
     let shape = args.shape.label();
     let data = args.data_source.label();
+    // Tags Lightstream nvme RESULT lines so chunked and whole-batch replays
+    // are distinguishable in the summary. Flight replays are unaffected by
+    // the chunk size, so their lines stay untagged.
+    let ls_chunk = if args.max_chunk_size > 0 && args.data_source == DataSource::Nvme {
+        format!(" max_chunk_size={}", args.max_chunk_size)
+    } else {
+        String::new()
+    };
     let per_table_bytes = logical_payload_bytes_shape(args.shape, args.rows, 1);
 
     let rtt_ms = measure_rtt(&args.source_echo_addr).await?;
@@ -349,7 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await?;
                 println!(
-                    "RESULT protocol=lightstream shape={shape} data={data} cache=cold rows={} streams={streams} batches={total} gib_per_s={cold_gib:.3}",
+                    "RESULT protocol=lightstream shape={shape} data={data}{ls_chunk} cache=cold rows={} streams={streams} batches={total} gib_per_s={cold_gib:.3}",
                     args.rows
                 );
                 report_series(
@@ -368,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?;
                     println!(
-                        "RESULT protocol=lightstream shape={shape} data={data} cache=warm rows={} streams={streams} batches={total} run={run} gib_per_s={ls_gib:.3}",
+                        "RESULT protocol=lightstream shape={shape} data={data}{ls_chunk} cache=warm rows={} streams={streams} batches={total} run={run} gib_per_s={ls_gib:.3}",
                         args.rows
                     );
                     report_series(
@@ -387,7 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let (min, median, max) = spread(&mut ls_runs);
         println!(
-            "RESULT protocol=lightstream shape={shape} data={data}{summary_cache} rows={} streams={streams} batches={total} stat=median runs={} gib_per_s={median:.3} min_gib_per_s={min:.3} max_gib_per_s={max:.3}",
+            "RESULT protocol=lightstream shape={shape} data={data}{ls_chunk}{summary_cache} rows={} streams={streams} batches={total} stat=median runs={} gib_per_s={median:.3} min_gib_per_s={min:.3} max_gib_per_s={max:.3}",
             args.rows, args.runs
         );
     }
@@ -546,7 +563,15 @@ async fn lightstream_phase(
     logical_gib: f64,
 ) -> Result<(f64, Vec<u64>), Box<dyn std::error::Error>> {
     let total = batches_per_stream * streams as u64;
-    let mut next: Vec<u64> = vec![0; streams];
+    // Per-stream replay cursors: the global sequence of the batch being
+    // received and the rows delivered into it so far. Whole batches and row
+    // chunks both continue a cursor, so one verification covers chunked and
+    // unchunked replays.
+    let mut cursor_global: Vec<u64> = (0..streams as u64)
+        .map(|s| s * batches_per_stream)
+        .collect();
+    let mut cursor_rows: Vec<usize> = vec![0; streams];
+    let mut cursor_batches: Vec<u64> = vec![0; streams];
     let mut stamps: Vec<Instant> = Vec::with_capacity(total as usize);
 
     let (start, elapsed) = if streams == 1 {
@@ -561,11 +586,22 @@ async fn lightstream_phase(
         let mut received = 0u64;
         while let Some(table) = reader.read_next().await? {
             stamps.push(Instant::now());
-            verify_table(&table, data_source, batches_per_stream, rows, &mut next);
+            match data_source {
+                DataSource::Memory => assert_eq!(table.n_rows, rows, "row count mismatch"),
+                DataSource::Nvme => verify_replay_table(
+                    &table,
+                    rows,
+                    &mut cursor_global,
+                    &mut cursor_rows,
+                    &mut cursor_batches,
+                ),
+            }
             std::hint::black_box(&table.cols);
             received += 1;
         }
-        assert_eq!(received, total, "lightstream batch count mismatch");
+        if data_source == DataSource::Memory {
+            assert_eq!(received, total, "lightstream batch count mismatch");
+        }
         (start, start.elapsed())
     } else {
         let sort = match data_source {
@@ -578,17 +614,29 @@ async fn lightstream_phase(
         while let Some(item) = reader.next().await {
             let (table, _seq) = item?;
             stamps.push(Instant::now());
-            verify_table(&table, data_source, batches_per_stream, rows, &mut next);
+            match data_source {
+                DataSource::Memory => assert_eq!(table.n_rows, rows, "row count mismatch"),
+                DataSource::Nvme => verify_replay_table(
+                    &table,
+                    rows,
+                    &mut cursor_global,
+                    &mut cursor_rows,
+                    &mut cursor_batches,
+                ),
+            }
             std::hint::black_box(&table.cols);
             received += 1;
         }
-        assert_eq!(received, total, "lightstream batch count mismatch");
+        if data_source == DataSource::Memory {
+            assert_eq!(received, total, "lightstream batch count mismatch");
+        }
         (start, start.elapsed())
     };
 
     if data_source == DataSource::Nvme {
-        for (stream, count) in next.iter().enumerate() {
+        for (stream, count) in cursor_batches.iter().enumerate() {
             assert_eq!(*count, batches_per_stream, "stream {stream} arrived incomplete");
+            assert_eq!(cursor_rows[stream], 0, "stream {stream} ended mid-batch");
         }
     }
     let offsets = stamps
@@ -598,31 +646,38 @@ async fn lightstream_phase(
     Ok((logical_gib / elapsed.as_secs_f64(), offsets))
 }
 
-/// Check one received table against the workload. Under `nvme` the first
-/// column's first value is the batch's global sequence, which must be the
-/// next batch of its stream, so ordered, complete delivery is proven from
-/// the data itself. Under `memory` every send carries the one shared bench
-/// table and the row count is checked.
-fn verify_table(
+/// Check one received replay table against the dataset. The first value of
+/// the leading `i32` column must continue one stream's cursor, since batch
+/// `b` of stream `s` holds `s * batches_per_stream + b + i` at row `i`, and
+/// whole batches or row chunks of them both satisfy that. Streams whose
+/// cursors expect the same value carry identical content there, so advancing
+/// either cursor verifies the same delivery.
+fn verify_replay_table(
     table: &Table,
-    data_source: DataSource,
-    batches_per_stream: u64,
     rows: usize,
-    next: &mut [u64],
+    cursor_global: &mut [u64],
+    cursor_rows: &mut [usize],
+    cursor_batches: &mut [u64],
 ) {
-    assert_eq!(table.n_rows, rows, "row count mismatch");
-    if data_source != DataSource::Nvme {
-        return;
-    }
-    let seq = match &table.cols[0].array {
-        Array::NumericArray(NumericArray::Int32(a)) => a.data[0] as u64,
+    let first = match &table.cols[0].array {
+        Array::NumericArray(NumericArray::Int32(a)) => a.data[0] as i64,
         _ => panic!("replay batch missing leading i32 column"),
     };
-    let stream = (seq / batches_per_stream) as usize;
-    let batch = seq % batches_per_stream;
-    assert!(stream < next.len(), "sequence {seq} outside the cell's streams");
-    assert_eq!(batch, next[stream], "out-of-order batch for stream {stream}");
-    next[stream] += 1;
+    let stream = cursor_global
+        .iter()
+        .zip(cursor_rows.iter())
+        .position(|(g, r)| *g as i64 + *r as i64 == first)
+        .unwrap_or_else(|| panic!("first value {first} continues no stream cursor"));
+    assert!(
+        table.n_rows <= rows - cursor_rows[stream],
+        "chunk overruns its batch"
+    );
+    cursor_rows[stream] += table.n_rows;
+    if cursor_rows[stream] == rows {
+        cursor_rows[stream] = 0;
+        cursor_global[stream] += 1;
+        cursor_batches[stream] += 1;
+    }
 }
 
 /// Values per `RAW` line, sized to keep each log event comfortably under

@@ -241,7 +241,7 @@ fn build_flatbuf_field<'fbb>(
         #[cfg(feature = "large_string")]
         ArrowType::LargeString => {
             let s = fbm::LargeUtf8::create(fbb, &fbm::LargeUtf8Args {});
-            (fbm::Type::Utf8, Some(s.as_union_value()), None)
+            (fbm::Type::LargeUtf8, Some(s.as_union_value()), None)
         }
         #[cfg(feature = "datetime")]
         ArrowType::Date32 => {
@@ -480,24 +480,23 @@ pub fn encode_flatbuf_dictionary<B: StreamBuffer>(
     debug_println!("Encoding flatbuffers dictionary.");
     fbb.reset();
 
-    // Build the string data and offsets. The offset width is u32 by
-    // default and i64 under `large_string`, matching the width the decoder
-    // reads for the build.
-    #[cfg(not(feature = "large_string"))]
-    type DictOffset = u32;
-    #[cfg(feature = "large_string")]
-    type DictOffset = i64;
-
+    // Build the string data and offsets. Note these are byte payload offsets,
+    // not the offsets from `StringArray` in minarrow. Confusingly, we are dealing
+    // with the unique values payload here.
+    //
+    // minarrow uses plain rust String for that (but, allows up to u64 for its internal `StringArray`
+    // array offsets), targeting simplicity ergonomics, hence it is u32 for the String transport payload offsets
+    // here always.
     let mut data_buf = Vec::<u8>::new();
-    let mut offs = Vec::<DictOffset>::with_capacity(uniques.len() + 1);
+    let mut offs = Vec::<u32>::with_capacity(uniques.len() + 1);
     offs.push(0);
 
     for s in uniques {
         data_buf.extend_from_slice(s.as_bytes());
-        offs.push(data_buf.len() as DictOffset);
+        offs.push(data_buf.len() as u32);
     }
 
-    let offset_size = std::mem::size_of::<DictOffset>();
+    let offset_size = std::mem::size_of::<u32>();
 
     // Create the body buffer with proper alignment
     let mut body = B::with_capacity(offset_size + offs.len() * offset_size + data_buf.len());
@@ -508,8 +507,8 @@ pub fn encode_flatbuf_dictionary<B: StreamBuffer>(
     // 3. Data buffer
 
     // The offsets need to be written as raw bytes.
-    // SAFETY: `offs` is a `Vec<DictOffset>` so `offs.as_ptr()` points to
-    // `offs.len() * size_of::<DictOffset>()` valid bytes living for the
+    // SAFETY: `offs` is a `Vec<u32>` so `offs.as_ptr()` points to
+    // `offs.len() * size_of::<u32>()` valid bytes living for the
     // encode call. The integer offset type has no padding or invalid bit
     // patterns, so a byte view is sound for the duration of the body
     // construction.
@@ -735,7 +734,7 @@ fn build_flatbuf_field_file<'fbb>(
         #[cfg(feature = "large_string")]
         ArrowType::LargeString => {
             let s = fbf::LargeUtf8::create(fbb, &fbf::LargeUtf8Args {});
-            (fbf::Type::Utf8, Some(s.as_union_value()), None)
+            (fbf::Type::LargeUtf8, Some(s.as_union_value()), None)
         }
         #[cfg(feature = "datetime")]
         ArrowType::Date32 => {

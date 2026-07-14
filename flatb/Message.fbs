@@ -16,8 +16,6 @@
 // under the License.
 
 include "Schema.fbs";
-include "SparseTensor.fbs";
-include "Tensor.fbs";
 
 namespace org.apache.arrow.flatbuf;
 
@@ -143,8 +141,11 @@ table DictionaryBatch {
 /// Arrow implementations do not need to implement all of the message types,
 /// which may include experimental metadata types. For maximum compatibility,
 /// it is best to send data using RecordBatch
+///
+/// The tag values match the member positions in the official Arrow
+/// MessageHeader union, which also carries Tensor = 4 and SparseTensor = 5.
 union MessageHeader {
-  Schema, DictionaryBatch, RecordBatch, Tensor, SparseTensor
+  Schema = 1, DictionaryBatch = 2, RecordBatch = 3
 }
 
 table Message {

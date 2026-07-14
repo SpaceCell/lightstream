@@ -38,6 +38,8 @@
 #                      under the container memory ceiling for the warm runs.
 #   STREAMS            Comma-separated stream counts. Defaults to 1,4,8,16.
 #   RUNS               Warm runs per cell. Defaults to 5.
+#   MAX_CHUNK_SIZE     Nvme replay chunk size in bytes for Lightstream. 0
+#                      replays whole batches. Defaults to 0.
 #   FLIGHT_PORT        Source Flight port. Defaults to 9101.
 #   ECHO_PORT          Source latency echo port. Defaults to 9102.
 #   LS_PORT            Sink Lightstream port. Defaults to 9103.
@@ -63,6 +65,7 @@ ROWS="${ROWS:-1000000}"
 DATASET_GB="${DATASET_GB:-350}"
 STREAMS="${STREAMS:-1,4,8,16}"
 RUNS="${RUNS:-5}"
+MAX_CHUNK_SIZE="${MAX_CHUNK_SIZE:-0}"
 FLIGHT_PORT="${FLIGHT_PORT:-9101}"
 ECHO_PORT="${ECHO_PORT:-9102}"
 LS_PORT="${LS_PORT:-9103}"
@@ -234,7 +237,7 @@ wait_task_stopped() {
 
 for SHAPE in $SHAPES; do
   for DS in $DATA_SOURCES; do
-    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS"
+    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS max_chunk_size=$MAX_CHUNK_SIZE"
 
     # Source starts first and listens; the sink then drives both transfers.
     SOURCE_ARN="$(run_task "$SOURCE_FAMILY" source source \
@@ -242,6 +245,7 @@ for SHAPE in $SHAPES; do
       --shape "$SHAPE" --rows "$ROWS" \
       --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
       --data-source "$DS" --dataset-dir /data \
+      --max-chunk-size "$MAX_CHUNK_SIZE" \
       --flight-bind "0.0.0.0:${FLIGHT_PORT}" --echo-bind "0.0.0.0:${ECHO_PORT}" \
       --ctrl-bind "0.0.0.0:${CTRL_PORT}" \
       --sink-ls-addr "${SINK_IP}:${LS_PORT}")"
@@ -255,6 +259,7 @@ for SHAPE in $SHAPES; do
       --shape "$SHAPE" --rows "$ROWS" \
       --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
       --data-source "$DS" \
+      --max-chunk-size "$MAX_CHUNK_SIZE" \
       --source-flight-addr "${SOURCE_IP}:${FLIGHT_PORT}" \
       --source-echo-addr "${SOURCE_IP}:${ECHO_PORT}" \
       --source-ctrl-addr "${SOURCE_IP}:${CTRL_PORT}" \
@@ -273,18 +278,27 @@ for SHAPE in $SHAPES; do
       --query 'tasks[0].stoppedReason' --output text 2>/dev/null || true)"
 
     # Fetch the sink task's log stream. The awslogs stream name is
-    # <prefix>/<container>/<task-id>.
+    # <prefix>/<container>/<task-id>. get-log-events returns about 1 MB per
+    # page, so follow nextForwardToken until it repeats to capture the whole
+    # stream.
     SINK_TASK_ID="${SINK_ARN##*/}"
     SINK_STREAM="sink/sink/${SINK_TASK_ID}"
     echo "[run] collecting sink logs for shape=$SHAPE data=$DS"
-    aws logs get-log-events \
-      --log-group-name "$SINK_LOG_GROUP" \
-      --log-stream-name "$SINK_STREAM" \
-      --region "$REGION" \
-      --start-from-head \
-      --query 'events[].message' --output text 2>/dev/null \
-      | tr '\t' '\n' > "$RESULTS_DIR/$SHAPE-$DS.log" || true
-    extract_series "$RESULTS_DIR/$SHAPE-$DS.log" "$RESULTS_DIR/series"
+    SINK_LOG="$RESULTS_DIR/$SHAPE-$DS.log"
+    : > "$SINK_LOG"
+    TOKEN=""
+    while true; do
+      FETCH_ARGS=(--log-group-name "$SINK_LOG_GROUP" \
+                  --log-stream-name "$SINK_STREAM" \
+                  --region "$REGION" --start-from-head --output json)
+      [ -n "$TOKEN" ] && FETCH_ARGS+=(--next-token "$TOKEN")
+      PAGE="$(aws logs get-log-events "${FETCH_ARGS[@]}" 2>/dev/null)" || break
+      printf '%s' "$PAGE" | jq -r '.events[].message' >> "$SINK_LOG"
+      NEXT="$(printf '%s' "$PAGE" | jq -r '.nextForwardToken')"
+      [ "$NEXT" = "$TOKEN" ] && break
+      TOKEN="$NEXT"
+    done
+    extract_series "$SINK_LOG" "$RESULTS_DIR/series"
 
     # Stop the source task before the next combination so it rebuilds its batch.
     aws ecs stop-task --cluster "$CLUSTER" --region "$REGION" --task "$SOURCE_ARN" \

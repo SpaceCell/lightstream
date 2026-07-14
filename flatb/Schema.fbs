@@ -16,15 +16,12 @@
 // under the License.
 
 /// Logical types, vector layouts, and schemas
-
-/// Format Version History.
-/// Version 1.0 - Forward and backwards compatibility guaranteed.
-/// Version 1.1 - Add Decimal256.
-/// Version 1.2 - Add Interval MONTH_DAY_NANO.
-/// Version 1.3 - Add Run-End Encoded.
-/// Version 1.4 - Add BinaryView, Utf8View, variadicBufferCounts, ListView, and
-/// LargeListView.
-/// Version 1.5 - Add 32-bit and 64-bit as allowed bit widths for Decimal
+///
+/// This is the official Apache Arrow Schema.fbs reduced to the types
+/// Minarrow supports. The `Type` union members carry the tag values
+/// from the official Arrow specification so the wire format matches
+/// other Arrow implementations. When adding a type, take its table and
+/// tag value from the official file.
 
 namespace org.apache.arrow.flatbuf;
 
@@ -85,77 +82,6 @@ enum Feature : long {
 table Null {
 }
 
-/// A Struct_ in the flatbuffer metadata is the same as an Arrow Struct
-/// (according to the physical memory layout). We used Struct_ here as
-/// Struct is a reserved word in Flatbuffers
-table Struct_ {
-}
-
-table List {
-}
-
-/// Same as List, but with 64-bit offsets, allowing to represent
-/// extremely large data values.
-table LargeList {
-}
-
-/// Represents the same logical types that List can, but contains offsets and
-/// sizes allowing for writes in any order and sharing of child values among
-/// list values.
-table ListView {
-}
-
-/// Same as ListView, but with 64-bit offsets and sizes, allowing to represent
-/// extremely large data values.
-table LargeListView {
-}
-
-table FixedSizeList {
-  /// Number of list items per value
-  listSize: int;
-}
-
-/// A Map is a logical nested type that is represented as
-///
-/// List<entries: Struct<key: K, value: V>>
-///
-/// In this layout, the keys and values are each respectively contiguous. We do
-/// not constrain the key and value types, so the application is responsible
-/// for ensuring that the keys are hashable and unique. Whether the keys are sorted
-/// may be set in the metadata for this field.
-///
-/// In a field with Map type, the field has a child Struct field, which then
-/// has two children: key type and the second the value type. The names of the
-/// child fields may be respectively "entries", "key", and "value", but this is
-/// not enforced.
-///
-/// Map
-/// ```text
-///   - child[0] entries: Struct
-///     - child[0] key: K
-///     - child[1] value: V
-/// ```
-/// Neither the "entries" field nor the "key" field may be nullable.
-///
-/// The metadata is structured so that Arrow systems without special handling
-/// for Map can make Map an alias for List. The "layout" attribute for the Map
-/// field must have the same contents as a List.
-table Map {
-  /// Set to true if the keys within each value are sorted
-  keysSorted: bool;
-}
-
-enum UnionMode:short { Sparse, Dense }
-
-/// A union is a complex type with children in Field
-/// By default ids in the type vector refer to the offsets in the children
-/// optionally typeIds provides an indirection between the child offset and the type id
-/// for each child `typeIds[offset]` is the id used in the type vector
-table Union {
-  mode: UnionMode;
-  typeIds: [ int ]; // optional, describes typeid of each child.
-}
-
 table Int {
   bitWidth: int; // restricted to 8, 16, 32, and 64 in v1
   is_signed: bool;
@@ -171,18 +97,9 @@ table FloatingPoint {
 table Utf8 {
 }
 
-/// Opaque binary data
-table Binary {
-}
-
 /// Same as Utf8, but with 64-bit offsets, allowing to represent
 /// extremely large data values.
 table LargeUtf8 {
-}
-
-/// Same as Binary, but with 64-bit offsets, allowing to represent
-/// extremely large data values.
-table LargeBinary {
 }
 
 /// Logically the same as Utf8, but the internal representation uses a view
@@ -195,47 +112,7 @@ table LargeBinary {
 table Utf8View {
 }
 
-/// Logically the same as Binary, but the internal representation uses a view
-/// struct that contains the string length and either the string's entire data
-/// inline (for small strings) or an inlined prefix, an index of another buffer,
-/// and an offset pointing to a slice in that buffer (for non-small strings).
-///
-/// Since it uses a variable number of data buffers, each Field with this type
-/// must have a corresponding entry in `variadicBufferCounts`.
-table BinaryView {
-}
-
-
-table FixedSizeBinary {
-  /// Number of bytes per value
-  byteWidth: int;
-}
-
 table Bool {
-}
-
-/// Contains two child arrays, run_ends and values.
-/// The run_ends child array must be a 16/32/64-bit integer array
-/// which encodes the indices at which the run with the value in 
-/// each corresponding index in the values child array ends.
-/// Like list/struct types, the value array can be of any type.
-table RunEndEncoded {
-}
-
-/// Exact decimal value represented as an integer value in two's
-/// complement. Currently 32-bit (4-byte), 64-bit (8-byte), 
-/// 128-bit (16-byte) and 256-bit (32-byte) integers are used.
-/// The representation uses the endianness indicated in the Schema.
-table Decimal {
-  /// Total number of decimal digits
-  precision: int;
-
-  /// Number of digits after the decimal point "."
-  scale: int;
-
-  /// Number of bits per value. The accepted widths are 32, 64, 128 and 256.
-  /// We use bitWidth for consistency with Int::bitWidth.
-  bitWidth: int = 128;
 }
 
 enum DateUnit: short {
@@ -438,34 +315,24 @@ table Duration {
 /// ----------------------------------------------------------------------
 /// Top-level Type value, enabling extensible type-specific metadata. We can
 /// add new logical types to Type without breaking backwards compatibility
+///
+/// The tag values below match the member positions in the official Arrow
+/// Type union. Types Minarrow does not support are omitted, so every new
+/// member must state its official tag value.
 
 union Type {
-  Null,
-  Int,
-  FloatingPoint,
-  Binary,
-  Utf8,
-  Bool,
-  Decimal,
-  Date,
-  Time,
-  Timestamp,
-  Interval,
-  List,
-  Struct_,
-  Union,
-  FixedSizeBinary,
-  FixedSizeList,
-  Map,
-  Duration,
-  LargeBinary,
-  LargeUtf8,
-  LargeList,
-  RunEndEncoded,
-  BinaryView,
-  Utf8View,
-  ListView,
-  LargeListView,
+  Null = 1,
+  Int = 2,
+  FloatingPoint = 3,
+  Utf8 = 5,
+  Bool = 6,
+  Date = 8,
+  Time = 9,
+  Timestamp = 10,
+  Interval = 11,
+  Duration = 18,
+  LargeUtf8 = 20,
+  Utf8View = 23,
 }
 
 /// ----------------------------------------------------------------------

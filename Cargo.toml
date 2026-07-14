@@ -242,7 +242,7 @@ vmap64 = ["vec64/mmap", "minarrow/vmap64"]
 # Long-lived shared backing for reader/writer block buffers.
 arena = ["minarrow/arena"]
 
-default = ["default_categorical_8", "arena"]
+default = ["default_categorical_8", "arena", "large_string"]
 
 [[example]]
 name = "lightstream"

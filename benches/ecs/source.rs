@@ -108,6 +108,7 @@ struct Args {
     runs: u32,
     data_source: DataSource,
     dataset_dir: PathBuf,
+    max_chunk_size: usize,
     flight_bind: String,
     echo_bind: String,
     ctrl_bind: String,
@@ -147,6 +148,7 @@ fn parse_args() -> Result<Args, String> {
     let mut runs: u32 = 5;
     let mut data_source = DataSource::Memory;
     let mut dataset_dir = PathBuf::from("/data");
+    let mut max_chunk_size: usize = 0;
     let mut flight_bind = "0.0.0.0:9101".to_string();
     let mut echo_bind = "0.0.0.0:9102".to_string();
     let mut ctrl_bind = "0.0.0.0:9104".to_string();
@@ -166,6 +168,9 @@ fn parse_args() -> Result<Args, String> {
             "--runs" => runs = next()?.parse().map_err(|e| format!("--runs: {e}"))?,
             "--data-source" => data_source = parse_data_source(&next()?)?,
             "--dataset-dir" => dataset_dir = PathBuf::from(next()?),
+            "--max-chunk-size" => {
+                max_chunk_size = next()?.parse().map_err(|e| format!("--max-chunk-size: {e}"))?
+            }
             "--flight-bind" => flight_bind = next()?,
             "--echo-bind" => echo_bind = next()?,
             "--ctrl-bind" => ctrl_bind = next()?,
@@ -181,6 +186,8 @@ fn parse_args() -> Result<Args, String> {
                 println!("  --runs N                  warm runs per cell (default 5)");
                 println!("  --data-source SRC         memory | nvme (default memory)");
                 println!("  --dataset-dir PATH        nvme dataset directory (default /data)");
+                println!("  --max-chunk-size N           nvme replay chunk size in bytes, 0 replays");
+                println!("                            whole batches (default 0)");
                 println!("  --flight-bind ADDR        Flight server bind (default 0.0.0.0:9101)");
                 println!("  --echo-bind ADDR          latency echo bind (default 0.0.0.0:9102)");
                 println!("  --ctrl-bind ADDR          sink control bind (default 0.0.0.0:9104)");
@@ -204,6 +211,7 @@ fn parse_args() -> Result<Args, String> {
         runs,
         data_source,
         dataset_dir,
+        max_chunk_size,
         flight_bind,
         echo_bind,
         ctrl_bind,
@@ -248,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches_per_stream =
         batches_per_stream_for_budget(args.shape, args.rows, max_streams, args.dataset_gb);
     eprintln!(
-        "[source] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} sink_ls={} flight_single_message={}",
+        "[source] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_chunk_size={} sink_ls={} flight_single_message={}",
         args.shape.label(),
         args.rows,
         args.dataset_gb,
@@ -256,6 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.streams,
         args.runs,
         args.data_source.label(),
+        args.max_chunk_size,
         args.sink_ls_addr,
         args.flight_single_message
     );
@@ -346,8 +355,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for file in &dataset.files[..streams] {
                     evict_file(file)?;
                 }
-                push_replay_workload(&args.sink_ls_addr, streams, &schema, &dict_regs, dataset)
-                    .await?;
+                push_replay_workload(
+                    &args.sink_ls_addr,
+                    streams,
+                    &schema,
+                    &dict_regs,
+                    dataset,
+                    args.max_chunk_size,
+                )
+                .await?;
                 eprintln!("[source] pushed streams={streams} cache=cold tables={total}");
                 for run in 1..=args.runs {
                     read_pulse(&mut ctrl, b'W').await?;
@@ -357,6 +373,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &schema,
                         &dict_regs,
                         dataset,
+                        args.max_chunk_size,
                     )
                     .await?;
                     eprintln!(
@@ -546,12 +563,15 @@ async fn push_memory_workload(
 /// stream, each replaying its own file through the zero-copy mmap reader.
 /// Streams are independent replays with per-stream ordering, matching the
 /// Flight side's independent `DoGet` streams, and the sink merges arrivals.
+/// A nonzero `max_chunk_size` replays each batch as row chunks of at most that
+/// size through the reader's windowed chunk iteration.
 async fn push_replay_workload(
     addr: &str,
     streams: usize,
     schema: &[Field],
     dict_regs: &[(i64, Vec<String>)],
     dataset: &Arc<ReplayDataset>,
+    max_chunk_size: usize,
 ) -> io::Result<()> {
     let mut tasks = Vec::with_capacity(streams);
     for i in 0..streams {
@@ -564,8 +584,16 @@ async fn push_replay_workload(
             let reader = MmapTableReader::open(&file)?;
             let mut writer = connect_single_retry(&addr, &schema, &dict_regs).await?;
             let n = (batches as usize).min(reader.num_batches());
-            for idx in 0..n {
-                writer.write_table(reader.read_batch(idx)?).await?;
+            if max_chunk_size == 0 {
+                for idx in 0..n {
+                    writer.write_table(reader.read_batch(idx)?).await?;
+                }
+            } else {
+                for idx in 0..n {
+                    for chunk in reader.batch_chunks(idx, max_chunk_size)? {
+                        writer.write_table(chunk?).await?;
+                    }
+                }
             }
             writer.finish().await
         }));

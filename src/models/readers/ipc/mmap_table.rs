@@ -31,7 +31,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use flatbuffers::Vector;
-use minarrow::{Field, SuperTable, Table};
+use minarrow::{
+    Array, Bitmask, BooleanArray, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
+    Integer, IntegerArray, NumericArray, StringArray, SuperTable, Table, TextArray, Vec64,
+};
+#[cfg(feature = "datetime")]
+use minarrow::{DatetimeArray, TemporalArray};
 
 use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
@@ -288,6 +293,67 @@ impl MmapTableReader {
         self.parse_batch_block(blk, Some(&projection))
     }
 
+    /// Read the row window `[row_offset, row_offset + rows)` of record
+    /// batch `idx` as a standalone `Table`.
+    ///
+    /// Column buffers window zero-copy through the map's shared owner,
+    /// so only the pages the window touches fault in. String columns
+    /// rewrite their small offsets strip against the window base, which
+    /// is the only data written. `row_offset` must be a multiple of 512
+    /// rows so bit-packed buffers cut on 64-byte boundaries. Whole-batch
+    /// and whole-file reads are unchanged: `read_batch` and the load
+    /// methods still fault in their full range.
+    pub fn read_batch_window(
+        &self,
+        idx: usize,
+        row_offset: usize,
+        rows: usize,
+    ) -> io::Result<Table> {
+        let blk = self
+            .record_blocks
+            .get(idx)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
+        let table = self.parse_batch_block(blk, None)?;
+        window_table(&table, row_offset, rows)
+    }
+
+    /// Read record batch `idx` as row chunks of at most `max_bytes`
+    /// each, returned as a `SuperTable` of standalone chunk tables.
+    ///
+    /// The chunk row count derives from the batch's on-disk body size,
+    /// so the cap is exact arithmetic on the footer metadata. A batch
+    /// that already fits yields one chunk sharing the batch's buffers.
+    pub fn read_batch_chunked(&self, idx: usize, max_bytes: usize) -> io::Result<SuperTable> {
+        let mut batches = Vec::new();
+        for chunk in self.batch_chunks(idx, max_bytes)? {
+            batches.push(Arc::new(chunk?));
+        }
+        Ok(SuperTable::from_batches(batches, None))
+    }
+
+    /// Iterate record batch `idx` as row chunks of at most `max_bytes`
+    /// each. As [`Self::read_batch_chunked`] without collecting, so a
+    /// streaming consumer holds one chunk at a time and the map's pages
+    /// fault in chunk by chunk.
+    pub fn batch_chunks(
+        &self,
+        idx: usize,
+        max_bytes: usize,
+    ) -> io::Result<impl Iterator<Item = io::Result<Table>> + '_> {
+        let blk = self
+            .record_blocks
+            .get(idx)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
+        let body_bytes = blk.body_bytes;
+        let table = self.parse_batch_block(blk, None)?;
+        let rows = table.n_rows;
+        let per_row = (body_bytes / rows.max(1)).max(1);
+        let stride = ((max_bytes / per_row) & !511).max(512).min(rows.max(1));
+        Ok((0..rows.max(1))
+            .step_by(stride)
+            .map(move |off| window_table(&table, off, stride.min(rows - off))))
+    }
+
     /// Read every record batch into a `SuperTable` whose batches are
     /// zero-copy views over the mmap region. Each `Arc<Table>` holds
     /// `SharedBuffer` references into the mapping; total resident
@@ -389,20 +455,17 @@ impl MmapTableReader {
     ) -> io::Result<Table> {
         let data = self.region.as_ref();
         let meta_slice = self.slice_message(data, blk)?;
-        let original_body_offset = blk.offset + blk.meta_bytes;
+
+        // The body begins at the block offset plus the footer-declared
+        // metadata length, which includes the length prefix and padding per
+        // the Arrow file format. Files written by this crate pad the
+        // metadata so the body lands on a 64-byte boundary and buffers map
+        // zero-copy; other writers pad to 8 bytes and their buffers copy
+        // into aligned allocations during decode.
+        let body_offset = blk.offset + blk.meta_bytes;
         let body_len = blk.body_bytes;
 
-        // Adjust body_offset so that buffer addresses land on 64-byte boundaries.
-        let data_base_addr = data.as_ptr() as usize;
-        let desired_first_buffer_addr = (data_base_addr + original_body_offset + 63) & !63;
-        let body_offset = desired_first_buffer_addr - data_base_addr;
-
-        debug_println!(
-            "Original body_offset: {}, Adjusted body_offset: {}, First buffer will be at: 0x{:x}",
-            original_body_offset,
-            body_offset,
-            desired_first_buffer_addr
-        );
+        debug_println!("Body offset: {}, body len: {}", body_offset, body_len);
 
         let fb_msg: &fbm::Message =
             &flatbuffers::root::<fbm::Message>(meta_slice).map_err(|e| {
@@ -461,16 +524,244 @@ impl MmapTableReader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Row windowing
+// ---------------------------------------------------------------------------
+
+// TODO: Put these in a general location when extending to the regular Arrow and/or other readers.
+
+/// Build a standalone table for the row window `[offset, offset + len)`
+/// of a decoded batch. A window covering the whole table returns a
+/// clone, which bumps the columns' reference counts without touching
+/// data.
+fn window_table(table: &Table, offset: usize, len: usize) -> io::Result<Table> {
+    if offset == 0 && len == table.n_rows {
+        return Ok(table.clone());
+    }
+    if offset % 512 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("window start {offset} is not a multiple of 512 rows"),
+        ));
+    }
+    if offset + len > table.n_rows {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "window {offset}..{} exceeds the table's {} rows",
+                offset + len,
+                table.n_rows
+            ),
+        ));
+    }
+    let mut cols = Vec::with_capacity(table.cols.len());
+    for col in &table.cols {
+        cols.push(FieldArray {
+            field: col.field.clone(),
+            array: window_array(&col.array, offset, len)?,
+            null_count: col.null_count.min(len),
+        });
+    }
+    Ok(Table::new(table.name.clone(), Some(cols)))
+}
+
+/// Window one column's array by buffer arithmetic.
+fn window_array(array: &Array, offset: usize, len: usize) -> io::Result<Array> {
+    Ok(match array {
+        Array::NumericArray(num) => {
+            macro_rules! win_int {
+                ($variant:ident, $arr:expr) => {
+                    NumericArray::$variant(Arc::new(IntegerArray {
+                        data: window_buffer(&$arr.data, offset, len),
+                        null_mask: window_mask($arr.null_mask.as_ref(), offset, len),
+                    }))
+                };
+            }
+            macro_rules! win_float {
+                ($variant:ident, $arr:expr) => {
+                    NumericArray::$variant(Arc::new(FloatArray {
+                        data: window_buffer(&$arr.data, offset, len),
+                        null_mask: window_mask($arr.null_mask.as_ref(), offset, len),
+                    }))
+                };
+            }
+            Array::NumericArray(match num {
+                NumericArray::Int32(arr) => win_int!(Int32, arr),
+                NumericArray::Int64(arr) => win_int!(Int64, arr),
+                NumericArray::UInt32(arr) => win_int!(UInt32, arr),
+                NumericArray::UInt64(arr) => win_int!(UInt64, arr),
+                NumericArray::Float32(arr) => win_float!(Float32, arr),
+                NumericArray::Float64(arr) => win_float!(Float64, arr),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(arr) => win_int!(Int8, arr),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(arr) => win_int!(UInt8, arr),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(arr) => win_int!(Int16, arr),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(arr) => win_int!(UInt16, arr),
+                NumericArray::Null => NumericArray::Null,
+            })
+        }
+
+        Array::BooleanArray(arr) => {
+            let bits = Bitmask::new(
+                window_buffer(&arr.data.bits, offset / 8, len.div_ceil(8)),
+                len,
+            );
+            Array::BooleanArray(Arc::new(BooleanArray::new(
+                bits,
+                window_mask(arr.null_mask.as_ref(), offset, len),
+            )))
+        }
+
+        Array::TextArray(text) => Array::TextArray(match text {
+            TextArray::String32(arr) => {
+                TextArray::String32(Arc::new(window_string(arr, offset, len)))
+            }
+            #[cfg(feature = "large_string")]
+            TextArray::String64(arr) => {
+                TextArray::String64(Arc::new(window_string(arr, offset, len)))
+            }
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            TextArray::Categorical32(arr) => {
+                TextArray::Categorical32(Arc::new(window_categorical(arr, offset, len)))
+            }
+            #[cfg(feature = "default_categorical_8")]
+            TextArray::Categorical8(arr) => {
+                TextArray::Categorical8(Arc::new(window_categorical(arr, offset, len)))
+            }
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical16(arr) => {
+                TextArray::Categorical16(Arc::new(window_categorical(arr, offset, len)))
+            }
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical64(arr) => {
+                TextArray::Categorical64(Arc::new(window_categorical(arr, offset, len)))
+            }
+            TextArray::Null => TextArray::Null,
+        }),
+
+        #[cfg(feature = "datetime")]
+        Array::TemporalArray(temp) => {
+            Array::TemporalArray(match temp {
+                TemporalArray::Datetime32(arr) => {
+                    TemporalArray::Datetime32(Arc::new(DatetimeArray {
+                        data: window_buffer(&arr.data, offset, len),
+                        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+                        time_unit: arr.time_unit,
+                    }))
+                }
+                TemporalArray::Datetime64(arr) => {
+                    TemporalArray::Datetime64(Arc::new(DatetimeArray {
+                        data: window_buffer(&arr.data, offset, len),
+                        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+                        time_unit: arr.time_unit,
+                    }))
+                }
+                TemporalArray::Null => TemporalArray::Null,
+            })
+        }
+
+        Array::Null => Array::Null,
+    })
+}
+
+/// Window a string array: zero-copy values sub-slice, offsets borrowed
+/// at row zero or rebased against the window base otherwise.
+fn window_string<T>(arr: &StringArray<T>, offset: usize, len: usize) -> StringArray<T>
+where
+    T: Integer + Into<u64> + std::ops::Sub<Output = T>,
+{
+    let offs = arr.offsets.as_slice();
+    let base = offs[offset];
+    let base_bytes: u64 = base.into();
+    let end_bytes: u64 = offs[offset + len].into();
+    // A len-row window spans len + 1 offsets entries, the fence-posts
+    // around its rows.
+    let offsets = if offset == 0 {
+        window_buffer(&arr.offsets, 0, len + 1)
+    } else {
+        Buffer::from_vec64(rebase_offsets(&offs[offset..offset + len + 1], base))
+    };
+    StringArray::new(
+        window_buffer(
+            &arr.data,
+            base_bytes as usize,
+            (end_bytes - base_bytes) as usize,
+        ),
+        window_mask(arr.null_mask.as_ref(), offset, len),
+        offsets,
+    )
+}
+
+/// Window a categorical array: indices sub-slice with the dictionary
+/// carried across.
+fn window_categorical<T: Integer>(
+    arr: &CategoricalArray<T>,
+    offset: usize,
+    len: usize,
+) -> CategoricalArray<T> {
+    CategoricalArray {
+        data: window_buffer(&arr.data, offset, len),
+        unique_values: arr.unique_values.clone(),
+        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+    }
+}
+
+/// Window a buffer to elements `[offset, offset + len)`. Shared-backed
+/// buffers window through their owner with a reference-count bump.
+/// Owned buffers copy the window, which arises only for columns that
+/// were not decoded from shared memory.
+fn window_buffer<T: Clone>(buf: &Buffer<T>, offset: usize, len: usize) -> Buffer<T> {
+    match buf.shared_parts() {
+        Some((owner, base, _)) => Buffer::from_shared_column(owner.clone(), base + offset, len),
+        None => Buffer::from_slice(&buf.as_slice()[offset..offset + len]),
+    }
+}
+
+/// Window a null mask, cut at the same boundaries as the data buffers.
+fn window_mask(mask: Option<&Bitmask>, offset: usize, len: usize) -> Option<Bitmask> {
+    mask.map(|m| Bitmask::new(window_buffer(&m.bits, offset / 8, len.div_ceil(8)), len))
+}
+
+/// Subtract the window base from a window's string offsets so the
+/// values buffer the receiver sees starts at zero. One exact-size
+/// buffer holds the rewritten offsets. Windows starting at row zero
+/// keep their offsets zero-copy instead of coming through here.
+fn rebase_offsets<T: Copy + std::ops::Sub<Output = T>>(offs: &[T], base: T) -> Vec64<T> {
+    let mut rebased: Vec64<T> = Vec64::with_capacity(offs.len());
+    // SAFETY: the capacity was just allocated for `offs.len()` values and
+    // every element is written before the length is set.
+    unsafe {
+        let out = std::slice::from_raw_parts_mut(rebased.as_mut_ptr(), offs.len());
+        for (o, v) in out.iter_mut().zip(offs) {
+            *o = *v - base;
+        }
+        rebased.set_len(offs.len());
+    }
+    rebased
+}
+
 #[cfg(test)]
 mod tests {
 
     use tracing::debug;
 
+    use tempfile::NamedTempFile;
+
     use crate::{
         models::readers::ipc::mmap_table::MmapTableReader,
+        models::writers::ipc::table::write_tables_to_file,
         test_helpers::{make_all_types_table, write_test_table_to_file},
     };
-    use minarrow::{Array, NumericArray, Table, TextArray};
+    use minarrow::{
+        Array, Field, FieldArray, NumericArray, Table, TextArray, Vec64, arr_f64, arr_i32,
+        arr_str32,
+    };
 
     // -------------------- Tests -------------------- //
 
@@ -726,6 +1017,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_read_batch_window_matches_slice_clone() {
+        let n: usize = 2048;
+        let ids: Vec64<i32> = (0..n as i32).collect();
+        let vals: Vec64<f64> = (0..n).map(|i| i as f64 * 0.5).collect();
+        let labels: Vec<String> = (0..n).map(|i| format!("row_{i}")).collect();
+        let label_refs: Vec64<&str> = labels.iter().map(String::as_str).collect();
+        let table = Table::new(
+            "windowed".to_string(),
+            Some(vec![
+                FieldArray::from_arr("ids", arr_i32!(ids)),
+                FieldArray::from_arr("vals", arr_f64!(vals)),
+                FieldArray::from_arr("labels", arr_str32!(label_refs)),
+            ]),
+        );
+
+        let schema: Vec<Field> = table.schema().iter().map(|f| (**f).clone()).collect();
+        let temp = NamedTempFile::new().unwrap();
+        write_tables_to_file(temp.path().to_str().unwrap(), &[table.clone()], schema)
+            .await
+            .unwrap();
+        let rdr = MmapTableReader::open(&temp.path()).unwrap();
+
+        // Windows at 512-row starts, including the ragged tail.
+        for (off, len) in [(0usize, 512usize), (512, 512), (1024, 1024), (1536, 512)] {
+            let window = rdr.read_batch_window(0, off, len).unwrap();
+            let expected = table.slice_clone(off, len);
+            assert_eq!(window.n_rows, len);
+            for (w, e) in window.cols.iter().zip(expected.cols.iter()) {
+                assert_eq!(w.array.to_string(), e.array.to_string(), "col {}", w.field.name);
+            }
+        }
+
+        // Chunk iteration covers every row once, in order.
+        let mut rows = 0usize;
+        for chunk in rdr.batch_chunks(0, 4096).unwrap() {
+            let chunk = chunk.unwrap();
+            let expected = table.slice_clone(rows, chunk.n_rows);
+            for (w, e) in chunk.cols.iter().zip(expected.cols.iter()) {
+                assert_eq!(w.array.to_string(), e.array.to_string(), "col {}", w.field.name);
+            }
+            rows += chunk.n_rows;
+        }
+        assert_eq!(rows, n);
+
+        // SuperTable variant carries the same total.
+        let st = rdr.read_batch_chunked(0, 4096).unwrap();
+        assert_eq!(st.n_rows(), n);
+
+        // Misaligned window start raises an error.
+        assert!(rdr.read_batch_window(0, 100, 100).is_err());
     }
 
     #[tokio::test]

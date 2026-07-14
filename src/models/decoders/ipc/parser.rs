@@ -52,23 +52,6 @@ use crate::models::decoders::limits::DecodeLimits;
 use crate::{AFMessage, AFMessageHeader};
 use std::collections::{HashMap, HashSet};
 
-/// Compute `(n + 1) * elem` with overflow detection. Used to size offset
-/// buffers from an untrusted row count read out of the IPC RecordBatch
-/// metadata. A peer that claims `n_rows = usize::MAX` can otherwise wrap
-/// the multiplication to a small value and cause an out-of-bounds slice
-/// against the buffer descriptor.
-///
-/// Only the LargeString arms of `decode_record_batch` and the in-module
-/// unit tests need this today; gating keeps a non-`large_string` library
-/// build clean of dead-code warnings.
-#[cfg(any(test, feature = "large_string"))]
-#[inline]
-fn checked_offsets_size(n: usize, elem: usize) -> io::Result<usize> {
-    n.checked_add(1)
-        .and_then(|v| v.checked_mul(elem))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "offset buffer size overflow"))
-}
-
 /// Used for parsing a RecordBatch into a Minarrow `Table`.
 ///
 /// Can also be 'intercepted' and used in extreme performance-critical
@@ -333,126 +316,36 @@ impl RecordBatchParser {
                 }
 
                 // ---- UTF-8 -----------------------------------------------------------------
+                // The schema declares the offset width: Utf8 carries u32
+                // offsets and LargeUtf8 carries u64 offsets.
                 ArrowType::String => {
-                    // Detect offset type from the buffer size. Utf8 on the wire
-                    // may carry either u32 or i64 offsets depending on whether
-                    // the encoder used LargeString.
-                    #[cfg(feature = "large_string")]
-                    {
-                        let peek_offs = if let Some(c) = corrections {
-                            c[buffer_idx].1
-                        } else {
-                            fbuf_meta.get(buffer_idx).length() as usize
-                        };
-                        let expected_u32 = (field_len + 1) * std::mem::size_of::<u32>();
-
-                        if peek_offs == expected_u32 {
-                            let (data, offsets) = Self::parse_utf8_array::<u32>(
-                                arrow_buf,
-                                &fbuf_meta,
-                                &mut buffer_idx,
-                                field_len,
-                                &field.name,
-                                &arc_opt,
-                                corrections,
-                            )?;
-                            Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                                data, null_mask, offsets,
-                            ))))
-                        } else {
-                            let (data, offsets) = Self::parse_utf8_array::<u64>(
-                                arrow_buf,
-                                &fbuf_meta,
-                                &mut buffer_idx,
-                                field_len,
-                                &field.name,
-                                &arc_opt,
-                                corrections,
-                            )?;
-                            let corrected_field = Field::new(
-                                field.name.clone(),
-                                ArrowType::LargeString,
-                                field.nullable,
-                                Some(field.metadata.clone()),
-                            );
-                            let arr = Array::TextArray(TextArray::String64(Arc::new(
-                                StringArray::new(data, null_mask, offsets),
-                            )));
-                            cols.push(FieldArray::new(corrected_field, arr));
-                            continue;
-                        }
-                    }
-
-                    #[cfg(not(feature = "large_string"))]
-                    {
-                        let (data, offsets) = Self::parse_utf8_array::<u32>(
-                            arrow_buf,
-                            &fbuf_meta,
-                            &mut buffer_idx,
-                            field_len,
-                            &field.name,
-                            &arc_opt,
-                            corrections,
-                        )?;
-                        Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                            data, null_mask, offsets,
-                        ))))
-                    }
+                    let (data, offsets) = Self::parse_utf8_array::<u32>(
+                        arrow_buf,
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        field_len,
+                        &field.name,
+                        &arc_opt,
+                        corrections,
+                    )?;
+                    Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
+                        data, null_mask, offsets,
+                    ))))
                 }
                 #[cfg(feature = "large_string")]
                 ArrowType::LargeString => {
-                    // Check buffer size to determine if this should be parsed as String32 vs String64
-                    let offsets_buf = fbuf_meta.get(buffer_idx);
-                    let offsets_l = offsets_buf.length() as usize;
-                    let expected_u32_size = (field_len + 1) * 4;
-                    let expected_u64_size = (field_len + 1) * 8;
-
-                    if offsets_l == expected_u32_size {
-                        // Likely u32 offsets, parse as String32 instead
-                        let (data, offsets) = Self::parse_utf8_array::<u32>(
-                            arrow_buf,
-                            &fbuf_meta,
-                            &mut buffer_idx,
-                            field_len,
-                            &field.name,
-                            &arc_opt,
-                            corrections,
-                        )?;
-                        let arr = Array::TextArray(TextArray::String32(Arc::new(
-                            StringArray::new(data, null_mask, offsets),
-                        )));
-                        // Create corrected field with String type instead of LargeString
-                        let corrected_field = Field::new(
-                            field.name.clone(),
-                            ArrowType::String,
-                            field.nullable,
-                            Some(field.metadata.clone()),
-                        );
-                        cols.push(FieldArray::new(corrected_field, arr));
-                        continue;
-                    } else if offsets_l == expected_u64_size {
-                        // u64 offsets, parse normally as String64
-                        let (data, offsets) = Self::parse_utf8_array::<u64>(
-                            arrow_buf,
-                            &fbuf_meta,
-                            &mut buffer_idx,
-                            field_len,
-                            &field.name,
-                            &arc_opt,
-                            corrections,
-                        )?;
-                        Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
-                            data, null_mask, offsets,
-                        ))))
-                    } else {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "Invalid offset buffer size for field {}: got {}, expected {} (u32) or {} (u64)",
-                                field.name, offsets_l, expected_u32_size, expected_u64_size
-                            ),
-                        ));
-                    }
+                    let (data, offsets) = Self::parse_utf8_array::<u64>(
+                        arrow_buf,
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        field_len,
+                        &field.name,
+                        &arc_opt,
+                        corrections,
+                    )?;
+                    Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
+                        data, null_mask, offsets,
+                    ))))
                 }
                 #[cfg(feature = "datetime")]
                 ArrowType::Date32 | ArrowType::Time32(_) => {
@@ -925,20 +818,15 @@ pub(crate) fn handle_dictionary_batch(
 
 /// Parse dictionary string values from offset and data buffers.
 ///
-/// Offsets are u32 by default and i64 under the `large_string` feature,
-/// matching the width the encoder writes for the build. Per the Arrow
-/// columnar format, N strings carry N+1 offsets, where the final offset is
-/// the total length of the data buffer.
+/// Dictionary values are declared string (Utf8) in the schema, so the body
+/// carries u32 offsets. Per the Arrow columnar format, N strings carry N+1
+/// offsets, where the final offset is the total length of the data buffer.
 fn parse_dictionary_strings(
     offs_slice: &[u8],
     data_slice: &[u8],
     limits: DecodeLimits,
 ) -> io::Result<Vec64<String>> {
-    let offset_size = if cfg!(feature = "large_string") {
-        std::mem::size_of::<i64>()
-    } else {
-        std::mem::size_of::<u32>()
-    };
+    let offset_size = std::mem::size_of::<u32>();
     let count = offs_slice.len() / offset_size;
     // The Arrow columnar format stores N+1 offsets for N strings, so a valid
     // buffer holds at least 2 - one string plus the final total-length
@@ -954,14 +842,7 @@ fn parse_dictionary_strings(
     limits.check(count - 1, limits.max_dictionary_entries, "dictionary entries")?;
     let read_offset = |k: usize| -> usize {
         let bytes = &offs_slice[k * offset_size..(k + 1) * offset_size];
-        #[cfg(feature = "large_string")]
-        {
-            i64::from_le_bytes(bytes.try_into().unwrap()) as usize
-        }
-        #[cfg(not(feature = "large_string"))]
-        {
-            u32::from_le_bytes(bytes.try_into().unwrap()) as usize
-        }
+        u32::from_le_bytes(bytes.try_into().unwrap()) as usize
     };
     let mut values = Vec64::with_capacity(count - 1);
     for i in 0..(count - 1) {
@@ -1176,44 +1057,11 @@ pub fn decode_record_batch(
                 let offs_buf = shared.slice(offs_off..offs_off + offs_len);
                 let data_buf = shared.slice(data_off..data_off + data_len);
 
-                // Detect offset type from the buffer size. Utf8 on the wire
-                // may carry either u32 or i64 offsets depending on whether the
-                // encoder used LargeString.
-                #[cfg(feature = "large_string")]
-                {
-                    let expected_u32 = checked_offsets_size(n_rows, std::mem::size_of::<u32>())?;
-                    if offs_len == expected_u32 {
-                        Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                            minarrow::Buffer::from_shared(data_buf),
-                            null_mask,
-                            minarrow::Buffer::from_shared(offs_buf),
-                        ))))
-                    } else {
-                        // i64 offsets - correct the field dtype to LargeString
-                        let corrected_field = Field::new(
-                            field.name.clone(),
-                            ArrowType::LargeString,
-                            field.nullable,
-                            Some(field.metadata.clone()),
-                        );
-                        let array =
-                            Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
-                                minarrow::Buffer::from_shared(data_buf),
-                                null_mask,
-                                minarrow::Buffer::from_shared(offs_buf),
-                            ))));
-                        cols.push(FieldArray::new(corrected_field, array));
-                        continue;
-                    }
-                }
-                #[cfg(not(feature = "large_string"))]
-                {
-                    Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                        minarrow::Buffer::from_shared(data_buf),
-                        null_mask,
-                        minarrow::Buffer::from_shared(offs_buf),
-                    ))))
-                }
+                Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
+                    minarrow::Buffer::from_shared(data_buf),
+                    null_mask,
+                    minarrow::Buffer::from_shared(offs_buf),
+                ))))
             }
 
             #[cfg(feature = "large_string")]
@@ -1234,20 +1082,11 @@ pub fn decode_record_batch(
                     &field.name,
                     corrections,
                 )?;
-                let expected_u32 = checked_offsets_size(n_rows, 4)?;
-                if offs_len == expected_u32 {
-                    Array::TextArray(TextArray::String32(Arc::new(StringArray::new(
-                        minarrow::Buffer::from_shared(shared.slice(data_off..data_off + data_len)),
-                        null_mask,
-                        minarrow::Buffer::from_shared(shared.slice(offs_off..offs_off + offs_len)),
-                    ))))
-                } else {
-                    Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
-                        minarrow::Buffer::from_shared(shared.slice(data_off..data_off + data_len)),
-                        null_mask,
-                        minarrow::Buffer::from_shared(shared.slice(offs_off..offs_off + offs_len)),
-                    ))))
-                }
+                Array::TextArray(TextArray::String64(Arc::new(StringArray::new(
+                    minarrow::Buffer::from_shared(shared.slice(data_off..data_off + data_len)),
+                    null_mask,
+                    minarrow::Buffer::from_shared(shared.slice(offs_off..offs_off + offs_len)),
+                ))))
             }
 
             #[cfg(feature = "datetime")]
@@ -1868,6 +1707,8 @@ fn extract_base_type(fb_field: &fb::Field) -> io::Result<ArrowType> {
             }
         }
         fb::Type::Utf8 => Ok(ArrowType::String),
+        #[cfg(feature = "large_string")]
+        fb::Type::LargeUtf8 => Ok(ArrowType::LargeString),
         fb::Type::FloatingPoint => {
             let f = fb_field.type__as_floating_point().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "missing FloatingPoint type")
@@ -1940,6 +1781,17 @@ fn extract_base_type(fb_field: &fb::Field) -> io::Result<ArrowType> {
 /// Returns wrapped type if dictionary encoding present, otherwise raw type.
 fn extract_dtype(fb_field: &fb::Field, base_type: ArrowType) -> io::Result<ArrowType> {
     if let Some(dict) = fb_field.dictionary() {
+        // Dictionary values are strings with u32 offsets, so the field must
+        // declare Utf8 as its value type.
+        if fb_field.type_type() != fb::Type::Utf8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported dictionary value type {:?}",
+                    fb_field.type_type()
+                ),
+            ));
+        }
         let idx_ty = extract_categorical_index_type(dict.indexType().as_ref())?;
         Ok(ArrowType::Dictionary(idx_ty))
     } else {
@@ -1979,6 +1831,17 @@ pub fn convert_fb_field_to_arrow(
     // Check for dictionary encoding first, regardless of the underlying type
     let base_type = if let Some(dict) = fbf_field.dictionary() {
         use minarrow::ffi::arrow_dtype::CategoricalIndexType as Idx;
+        // Dictionary values are strings with u32 offsets, so the field must
+        // declare Utf8 as its value type.
+        if fbf_field.type_type() != fbf::Type::Utf8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported dictionary value type {:?}",
+                    fbf_field.type_type()
+                ),
+            ));
+        }
         let idx = dict
             .indexType()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing dict idx"))?;
@@ -2056,6 +1919,8 @@ pub fn convert_fb_field_to_arrow(
                 }
             }
             fbf::Type::Utf8 => ArrowType::String,
+            #[cfg(feature = "large_string")]
+            fbf::Type::LargeUtf8 => ArrowType::LargeString,
             fbf::Type::Bool => ArrowType::Boolean,
             #[cfg(feature = "datetime")]
             fbf::Type::Date => {
@@ -2127,10 +1992,7 @@ mod tests {
         // Offsets: [0, 3, 8, 12]
         let data = b"redgreenblue";
 
-        #[cfg(not(feature = "large_string"))]
         let offsets: Vec<u8> = [0u32, 3, 8, 12].iter().flat_map(|v| v.to_le_bytes()).collect();
-        #[cfg(feature = "large_string")]
-        let offsets: Vec<u8> = [0i64, 3, 8, 12].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["red", "green", "blue"]);
@@ -2140,10 +2002,7 @@ mod tests {
     fn test_parse_dictionary_strings_single() {
         let data = b"hello";
 
-        #[cfg(not(feature = "large_string"))]
         let offsets: Vec<u8> = [0u32, 5].iter().flat_map(|v| v.to_le_bytes()).collect();
-        #[cfg(feature = "large_string")]
-        let offsets: Vec<u8> = [0i64, 5].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["hello"]);
@@ -2154,10 +2013,7 @@ mod tests {
         // Two empty strings: offsets [0, 0, 0]
         let data = b"";
 
-        #[cfg(not(feature = "large_string"))]
         let offsets: Vec<u8> = [0u32, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
-        #[cfg(feature = "large_string")]
-        let offsets: Vec<u8> = [0i64, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default()).unwrap();
         assert_eq!(result.as_slice(), &["", ""]);
@@ -2167,10 +2023,7 @@ mod tests {
     fn test_parse_dictionary_strings_out_of_bounds() {
         let data = b"abc";
 
-        #[cfg(not(feature = "large_string"))]
         let offsets: Vec<u8> = [0u32, 99].iter().flat_map(|v| v.to_le_bytes()).collect();
-        #[cfg(feature = "large_string")]
-        let offsets: Vec<u8> = [0i64, 99].iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let result = parse_dictionary_strings(&offsets, data, DecodeLimits::default());
         assert!(result.is_err());
@@ -2179,10 +2032,7 @@ mod tests {
     #[test]
     fn test_parse_dictionary_strings_too_few_offsets() {
         // Only one offset - need at least 2
-        #[cfg(not(feature = "large_string"))]
         let offsets = 0u32.to_le_bytes().to_vec();
-        #[cfg(feature = "large_string")]
-        let offsets = 0i64.to_le_bytes().to_vec();
 
         let result = parse_dictionary_strings(&offsets, b"", DecodeLimits::default());
         assert!(result.is_err());
@@ -2201,24 +2051,12 @@ mod tests {
         let concat: String = strings.iter().copied().collect();
         let data_bytes = concat.as_bytes();
 
-        #[cfg(not(feature = "large_string"))]
         let offset_bytes: Vec<u8> = {
             let mut offs = Vec::with_capacity(strings.len() + 1);
             let mut pos = 0u32;
             offs.push(pos);
             for s in strings {
                 pos += s.len() as u32;
-                offs.push(pos);
-            }
-            offs.iter().flat_map(|v| v.to_le_bytes()).collect()
-        };
-        #[cfg(feature = "large_string")]
-        let offset_bytes: Vec<u8> = {
-            let mut offs = Vec::with_capacity(strings.len() + 1);
-            let mut pos = 0i64;
-            offs.push(pos);
-            for s in strings {
-                pos += s.len() as i64;
                 offs.push(pos);
             }
             offs.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -2323,16 +2161,6 @@ mod tests {
     }
 
     // -- DecodeLimits enforcement ---------------------------------------------
-
-    #[test]
-    fn checked_offsets_size_detects_overflow() {
-        // (n + 1) * elem with n = usize::MAX wraps on add; with a smaller n
-        // but elem = usize::MAX it wraps on multiply. Both must surface as Err.
-        assert!(checked_offsets_size(usize::MAX, 4).is_err());
-        assert!(checked_offsets_size(usize::MAX / 2, usize::MAX).is_err());
-        assert!(checked_offsets_size(0, 4).is_ok());
-        assert_eq!(checked_offsets_size(7, 4).unwrap(), 32);
-    }
 
     #[test]
     fn decode_record_batch_rejects_length_beyond_max_n_rows() {
