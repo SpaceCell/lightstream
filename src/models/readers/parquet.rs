@@ -254,6 +254,7 @@ fn read_parquet_impl<R: Read + Seek>(
         cols: columns,
         n_rows: meta.num_rows as usize,
         name: String::new(),
+        ..Default::default()
     })
 }
 

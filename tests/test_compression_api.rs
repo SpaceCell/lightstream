@@ -48,6 +48,7 @@ async fn test_compression_api_compilation() {
         name: "compression_test".to_string(),
         n_rows,
         cols: vec![int_field],
+        ..Default::default()
     };
 
     // Test uncompressed writer

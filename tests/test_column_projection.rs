@@ -57,6 +57,7 @@ fn make_test_table() -> Table {
         cols: vec![int_col, float_col, str_col, bool_col],
         n_rows: 3,
         name: "test".into(),
+        ..Default::default()
     }
 }
 
@@ -274,6 +275,7 @@ mod parquet {
             cols: vec![int_col, float_col, str_col],
             n_rows: 3,
             name: "test".into(),
+            ..Default::default()
         }
     }
 

@@ -242,6 +242,7 @@ mod tests {
             cols: vec![arr],
             n_rows,
             name: "tbl".to_string(),
+            ..Default::default()
         }
     }
 

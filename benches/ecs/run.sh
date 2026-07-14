@@ -29,7 +29,7 @@
 #
 # Configuration:
 #
-#   REGION             AWS region. Defaults to us-east-1.
+#   REGION             AWS region. Defaults to eu-west-2.
 #   SHAPES             Space-separated data shapes. Defaults to all four.
 #   DATA_SOURCES       Space-separated data sources. Defaults to "memory nvme".
 #   ROWS               Rows per table. Defaults to 1000000.
@@ -43,6 +43,10 @@
 #   LS_PORT            Sink Lightstream port. Defaults to 9103.
 #   CTRL_PORT          Source control port. Defaults to 9104.
 #   INSTANCE_TYPE      Container-instance type. Defaults to the Terraform value.
+#   TASK_MEMORY        Container memory limit in MiB. Defaults to the Terraform
+#                      value, sized for the default instance type. Lower it
+#                      together with INSTANCE_TYPE and DATASET_GB for smaller
+#                      hosts.
 #   KEEP               Set to 1 to retain the infrastructure after the run.
 
 set -euo pipefail
@@ -52,7 +56,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"           # the lightstream repo root
 CONTEXT="$(cd "$ROOT/.." && pwd)"           # parent dir holding lightstream + minarrow
 TF="$HERE/terraform"
 
-REGION="${REGION:-us-east-1}"
+REGION="${REGION:-eu-west-2}"
 SHAPES="${SHAPES:-mixed narrow_numeric string_heavy wide}"
 DATA_SOURCES="${DATA_SOURCES:-memory nvme}"
 ROWS="${ROWS:-1000000}"
@@ -73,6 +77,9 @@ TF_VARS=(-var "region=${REGION}" \
 if [ -n "${INSTANCE_TYPE:-}" ]; then
   TF_VARS+=(-var "instance_type=${INSTANCE_TYPE}")
 fi
+if [ -n "${TASK_MEMORY:-}" ]; then
+  TF_VARS+=(-var "task_memory=${TASK_MEMORY}")
+fi
 
 teardown() {
   if [ "$KEEP" = "1" ]; then
@@ -87,27 +94,15 @@ teardown() {
     echo "      terraform -chdir=$TF destroy -auto-approve -var region=$REGION"
   fi
 }
-trap teardown EXIT
+# The Dockerfile's cache mounts require BuildKit.
+export DOCKER_BUILDKIT=1
 
-echo "[run] provisioning ECS infrastructure (region=$REGION)"
-terraform -chdir="$TF" init -input=false
-terraform -chdir="$TF" apply -auto-approve -input=false "${TF_VARS[@]}"
+# The image is built before any infrastructure exists, so a failed build costs
+# nothing and the instances only start billing once there is an image to run.
+TAG="$(git -C "$ROOT" rev-parse --short HEAD)"
+LOCAL_IMAGE="lightstream-ecs-bench:${TAG}"
 
-CLUSTER="$(terraform -chdir="$TF" output -raw cluster_name)"
-ECR="$(terraform -chdir="$TF" output -raw ecr_repository_url)"
-REGISTRY="${ECR%/*}"
-SOURCE_IP="$(terraform -chdir="$TF" output -raw source_private_ip)"
-SINK_IP="$(terraform -chdir="$TF" output -raw sink_private_ip)"
-SOURCE_FAMILY="$(terraform -chdir="$TF" output -raw source_task_family)"
-SINK_FAMILY="$(terraform -chdir="$TF" output -raw sink_task_family)"
-SINK_LOG_GROUP="$(terraform -chdir="$TF" output -raw sink_log_group)"
-
-echo "[run] building and pushing image"
-aws ecr get-login-password --region "$REGION" \
-  | docker login --username AWS --password-stdin "$REGISTRY"
-IMAGE="$ECR:$(git -C "$ROOT" rev-parse --short HEAD)"
-
-# The workspace depends on minarrow through a `path = "../../minarrow"` sibling
+# The workspace depends on minarrow through a `path = "../minarrow"` sibling
 # checkout, which lives outside the repo. The Dockerfile therefore expects the
 # build context to be the parent directory that holds both `lightstream` and
 # `minarrow`. Docker only reads `.dockerignore` from the context root, so stage
@@ -123,14 +118,35 @@ restore_ignore() {
   rm -f "$STAGED_IGNORE"
   if [ -n "$STAGED_IGNORE_BAK" ]; then
     mv "$STAGED_IGNORE_BAK" "$STAGED_IGNORE"
+    STAGED_IGNORE_BAK=""
   fi
 }
-trap 'restore_ignore; teardown' EXIT
+trap restore_ignore EXIT
 
-docker build -f "$HERE/Dockerfile" -t "$IMAGE" "$CONTEXT"
-docker push "$IMAGE"
+echo "[run] building image $LOCAL_IMAGE"
+docker build -f "$HERE/Dockerfile" -t "$LOCAL_IMAGE" "$CONTEXT"
 restore_ignore
 trap teardown EXIT
+
+echo "[run] provisioning ECS infrastructure (region=$REGION)"
+terraform -chdir="$TF" init -input=false
+terraform -chdir="$TF" apply -auto-approve -input=false "${TF_VARS[@]}"
+
+CLUSTER="$(terraform -chdir="$TF" output -raw cluster_name)"
+ECR="$(terraform -chdir="$TF" output -raw ecr_repository_url)"
+REGISTRY="${ECR%/*}"
+SOURCE_IP="$(terraform -chdir="$TF" output -raw source_private_ip)"
+SINK_IP="$(terraform -chdir="$TF" output -raw sink_private_ip)"
+SOURCE_FAMILY="$(terraform -chdir="$TF" output -raw source_task_family)"
+SINK_FAMILY="$(terraform -chdir="$TF" output -raw sink_task_family)"
+SINK_LOG_GROUP="$(terraform -chdir="$TF" output -raw sink_log_group)"
+
+echo "[run] pushing image"
+aws ecr get-login-password --region "$REGION" \
+  | docker login --username AWS --password-stdin "$REGISTRY"
+IMAGE="$ECR:$TAG"
+docker tag "$LOCAL_IMAGE" "$IMAGE"
+docker push "$IMAGE"
 
 # Re-apply so the task definitions carry the freshly pushed image reference.
 terraform -chdir="$TF" apply -auto-approve -input=false "${TF_VARS[@]}" -var "image_ref=${IMAGE}"

@@ -18,6 +18,9 @@
 
 set -euo pipefail
 
+# The Dockerfile's cache mounts require BuildKit.
+export DOCKER_BUILDKIT=1
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"       # the lightstream repo root
 CONTEXT="$(cd "$ROOT/.." && pwd)"       # parent dir holding lightstream + minarrow

@@ -183,7 +183,12 @@ fn combine_batches_to_table(batches: Vec<Table>, name: Option<String>) -> io::Re
         .map(concat_field_arrays)
         .collect::<Result<Vec<FieldArray>, io::Error>>()?;
 
-    Ok(Table { cols, n_rows, name })
+    Ok(Table {
+        cols,
+        n_rows,
+        name,
+        ..Default::default()
+    })
 }
 
 /// Concatenate multiple `FieldArray` segments of the same schema into one.

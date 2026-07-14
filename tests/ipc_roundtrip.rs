@@ -248,6 +248,7 @@ mod integration {
             cols,
             n_rows: n,
             name: "test".to_owned(),
+            ..Default::default()
         }
     }
 
@@ -709,6 +710,7 @@ mod integration {
             cols,
             n_rows: n,
             name: "nulls".into(),
+            ..Default::default()
         };
 
         // ---------- write to file -------------

@@ -594,6 +594,7 @@ impl RecordBatchParser {
             cols,
             n_rows,
             name: "RecordBatch".to_owned(),
+            ..Default::default()
         })
     }
 
@@ -1310,6 +1311,7 @@ pub fn decode_record_batch(
         cols,
         n_rows,
         name: "RecordBatch".to_string(),
+        ..Default::default()
     };
     Ok((table, shared))
 }

@@ -261,6 +261,7 @@ mod tests {
             )],
             n_rows: 4,
             name: "tbl".to_string(),
+            ..Default::default()
         }
     }
 

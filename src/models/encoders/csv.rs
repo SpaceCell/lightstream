@@ -457,6 +457,7 @@ mod tests {
             name: "test".to_string(),
             cols: vec![int_col, str_col],
             n_rows: 4,
+            ..Default::default()
         }
     }
 
@@ -518,6 +519,7 @@ mod tests {
             name: "".into(),
             cols: vec![col1, col2],
             n_rows: 1,
+            ..Default::default()
         };
         let mut out = Vec::new();
         encode_table_csv(&tbl, &mut out, &CsvEncodeOptions::default()).unwrap();
@@ -543,6 +545,7 @@ mod tests {
             name: "".into(),
             cols: vec![col],
             n_rows: 1,
+            ..Default::default()
         };
         let mut out = Vec::new();
         encode_table_csv(&tbl, &mut out, &CsvEncodeOptions::default()).unwrap();
@@ -581,6 +584,7 @@ mod tests {
             cols: vec![col],
             n_rows: 1,
             name: "test_null".to_string(),
+            ..Default::default()
         };
         let mut buf = Vec::new();
         encode_table_csv(&tbl, &mut buf, &opts).unwrap();
@@ -645,6 +649,7 @@ mod tests {
             cols: vec![col],
             n_rows: 4,
             name: "mixed_null_test".to_string(),
+            ..Default::default()
         };
 
         // Verify null_count is correct
@@ -687,6 +692,7 @@ mod tests {
             cols: vec![col],
             n_rows: 3,
             name: "all_null_test".to_string(),
+            ..Default::default()
         };
 
         // Verify null_count is correct

@@ -271,6 +271,7 @@ mod pyarrow_roundtrip_tests {
             cols,
             n_rows: n_rows,
             name: "test".to_owned(),
+            ..Default::default()
         }
     }
 

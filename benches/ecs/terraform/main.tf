@@ -432,7 +432,7 @@ resource "aws_ecs_task_definition" "sink" {
 variable "region" {
   description = "AWS region in which to create the benchmark infrastructure."
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-2"
 }
 
 variable "instance_type" {

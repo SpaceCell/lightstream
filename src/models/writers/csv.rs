@@ -180,6 +180,7 @@ mod tests {
             name: "test".to_string(),
             cols: vec![int_col, str_col],
             n_rows: 3,
+            ..Default::default()
         }
     }
 

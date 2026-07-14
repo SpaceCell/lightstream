@@ -74,6 +74,7 @@ fn create_test_table() -> (Table, Vec<Field>) {
             FieldArray::new(int2_field, int2_array),
             FieldArray::new(float_field, float_array),
         ],
+        ..Default::default()
     };
 
     (table, schema)

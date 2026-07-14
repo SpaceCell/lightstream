@@ -441,6 +441,7 @@ pub(crate) fn make_all_types_table() -> Table {
         cols,
         n_rows: 4,
         name: "all_types".to_owned(),
+        ..Default::default()
     }
 }
 

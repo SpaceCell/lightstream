@@ -31,10 +31,14 @@ target
 python
 .vscode/
 
-# Cross-host benchmark result captures written by bench/cluster/run.sh
-bench/cluster/results-*.txt
-bench/aws/results*
-bench/aws/terraform/.terraform.lock.hcl
-bench/aws/terraform/.terraform/
-bench/aws/terraform/terraform.tfstate
-bench/aws/terraform/terraform.tfstate.backup
+# Cross-host benchmark rigs - result captures, terraform provider downloads
+# and state. The .terraform.lock.hcl files are committed so a reproduction
+# resolves the same pinned providers.
+benches/aws/results*
+benches/aws/terraform/.terraform/
+benches/aws/terraform/terraform.tfstate
+benches/aws/terraform/terraform.tfstate.backup
+benches/ecs/results/
+benches/ecs/terraform/.terraform/
+benches/ecs/terraform/terraform.tfstate
+benches/ecs/terraform/terraform.tfstate.backup

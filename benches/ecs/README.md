@@ -81,8 +81,8 @@ Lightstream allows one to 'practically keep the on-disk data faulted into RAM wh
 pay disk-speed reads when not), and then be able to transfer an ordered data stream utilising all available cores at high speed.
 
 ## AWS Costs
-The approximate on-demand price of the pair in `us-east-1` is around
-$10.9/hour (check AWS for latest spot pricing).
+The approximate on-demand price of the pair in `eu-west-2` is around
+$12/hour (check AWS for the latest pricing).
 
 `KEEP=1` leaves the pair running and billing until it is destroyed.
 
@@ -127,7 +127,7 @@ Run with the default configuration:
 
 The defaults are:
 
-* Region: `us-east-1`
+* Region: `eu-west-2`
 * Shapes: `mixed narrow_numeric string_heavy wide`
 * Data sources: `memory nvme`
 * Rows per table: `1000000`
@@ -139,7 +139,7 @@ The defaults are:
 Override the workload or region with environment variables:
 
 ```bash
-REGION=us-west-2 \
+REGION=us-east-1 \
 SHAPES="narrow_numeric" \
 DATA_SOURCES="memory nvme" \
 ROWS=1000000 \
@@ -233,7 +233,7 @@ time by `run.sh`.
 ## Docker build context
 
 The workspace depends on `minarrow` through a
-`minarrow = { path = "../../minarrow" }` sibling checkout that lives outside the
+`minarrow = { path = "../minarrow" }` sibling checkout that lives outside the
 repository. The Dockerfile therefore sets the build context to the parent
 directory that holds both the `lightstream` and `minarrow` checkouts and copies
 them into the image so the relative path resolves. `run.sh` and

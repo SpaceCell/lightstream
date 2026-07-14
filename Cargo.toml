@@ -154,6 +154,8 @@ large_string = ["minarrow/large_string"]
 datetime = ["minarrow/datetime"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
 lbuffer = ["minarrow/lbuffer"]
+# Schema-level Table metadata as key-value pairs
+table_metadata = ["minarrow/table_metadata"]
 mmap = ["libc"]
 
 # Adds parquet IO

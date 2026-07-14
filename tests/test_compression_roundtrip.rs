@@ -94,6 +94,7 @@ fn create_test_table() -> (Table, Vec<Field>) {
             FieldArray::new(bool_field, bool_array),
             FieldArray::new(string_field, string_array),
         ],
+        ..Default::default()
     };
 
     (table, schema)
@@ -325,6 +326,7 @@ async fn test_compression_large_table_roundtrip() {
         name: "large_compression_test".to_string(),
         n_rows,
         cols: vec![FieldArray::new(int_field, int_array)],
+        ..Default::default()
     };
 
     // Test with compression that should be effective on repetitive data
@@ -421,6 +423,7 @@ async fn test_compression_data_integrity() {
         name: "data_integrity_test".to_string(),
         n_rows,
         cols: vec![FieldArray::new(int_field, int_array)],
+        ..Default::default()
     };
 
     // Write with compression

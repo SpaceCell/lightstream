@@ -169,6 +169,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
             name: "csv".to_string(),
             cols: Vec::new(),
             n_rows: 0,
+            ..Default::default()
         });
     }
 
@@ -250,6 +251,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
             name: "csv".to_string(),
             cols: Vec::new(),
             n_rows: 0,
+            ..Default::default()
         });
     }
 
@@ -543,6 +545,7 @@ pub fn decode_csv_bytes(buf: &[u8], options: &CsvDecodeOptions) -> io::Result<Ta
         name: "csv".to_string(),
         cols,
         n_rows,
+        ..Default::default()
     })
 }
 
