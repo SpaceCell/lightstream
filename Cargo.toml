@@ -1,6 +1,6 @@
 [package]
 name = "lightstream"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 license = "MPL-2.0"
 keywords = [
@@ -21,9 +21,7 @@ description = "Composable, zero-copy Arrow IPC and native data streaming for Rus
 repository = "https://github.com/SpaceCell/lightstream"
 homepage = "https://github.com/SpaceCell/lightstream"
 documentation = "https://docs.rs/lightstream"
-# Deployment infrastructure for the cross-host benchmark rigs. The bench
-# binaries themselves ship as examples. The provisioning files do not
-# belong in the published library crate.
+# Deployment infrastructure for the cross-host benchmarks. 
 exclude = [
     ".github/",
     "benches/aws/Dockerfile",
@@ -80,7 +78,7 @@ bytes = { version = "1", optional = true }
 arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
 # Apache Arrow Flight + tonic - only pulled in by the `bench_arrow_flight`
 # bench feature. Outside that feature these are not in the dependency
-# graph at all.
+# graph.
 arrow-flight = { version = "58", optional = true }
 tonic = { version = "0.14", optional = true, features = ["transport"] }
 tokio-stream = { version = "0.1", optional = true, features = ["net"] }
@@ -161,10 +159,9 @@ mmap = ["libc"]
 # Adds parquet IO
 parquet = []
 
-# CSV reader/writer/encoder/decoder. Pulls in itoa+ryu+memchr for the
+# CSV reader/writer/encoder/decoder. Pulls in itoa+ryu+memchr for 
 # fast formatter and quote scanner, atoi+fast-float2 for SIMD-accelerated
-# integer and float parsing on the decode path. Off-by-default footprint
-# is smaller; included in `default` so existing users see no change.
+# integer and float parsing on the decode path. 
 csv = ["dep:ryu", "dep:memchr", "dep:fast-float2"]
 
 # TCP transport

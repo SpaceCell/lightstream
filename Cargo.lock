@@ -1903,7 +1903,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "lightstream"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "arrow-flight",

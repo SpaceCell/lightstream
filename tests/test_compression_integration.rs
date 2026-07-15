@@ -14,7 +14,6 @@ use tempfile::NamedTempFile;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-use lightstream::compression::Compression;
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::writers::ipc::table::TableWriter;
 
@@ -116,6 +115,8 @@ async fn test_compression_none_integration() {
 #[cfg(feature = "snappy")]
 #[tokio::test]
 async fn test_snappy_compression_integration() {
+    use lightstream::compression::Compression;
+
     // Arrow IPC BodyCompression permits only LZ4_FRAME and ZSTD, so the IPC
     // writer must reject Snappy rather than emit a non-conformant file.
     let temp_file = NamedTempFile::new().unwrap();
@@ -148,6 +149,8 @@ async fn test_zstd_compression_integration() {
 
     // Write with Zstd compression
     {
+        use lightstream::compression::Compression;
+
         let file = File::create(file_path).await.unwrap();
         let mut writer = TableWriter::new(
             file,
@@ -201,6 +204,7 @@ async fn test_compression_size_comparison() {
     // Write with Zstd (if available)
     #[cfg(feature = "zstd")]
     {
+        use lightstream::compression::Compression;
         let file = File::create(_temp_zstd.path()).await.unwrap();
         let mut writer = TableWriter::new(
             file,

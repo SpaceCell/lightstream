@@ -12,7 +12,6 @@
 use tempfile::NamedTempFile;
 use tokio::fs::File;
 
-use lightstream::compression::Compression;
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::writers::ipc::table::TableWriter;
 
@@ -75,6 +74,7 @@ async fn test_compression_api_compilation() {
 
         #[cfg(feature = "snappy")]
         {
+            use lightstream::compression::Compression;
             let file = File::create(file_path).await.unwrap();
             let _writer_snappy = TableWriter::new(
                 file,
@@ -87,6 +87,7 @@ async fn test_compression_api_compilation() {
 
         #[cfg(feature = "zstd")]
         {
+            use lightstream::compression::Compression;
             let file = File::create(file_path).await.unwrap();
             let _writer_zstd = TableWriter::new(
                 file,

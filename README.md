@@ -14,7 +14,7 @@ Representative local benchmark results:
 | Arrow IPC file read          |   ~9 GiB/s |
 | Warm memory-mapped Arrow IPC (RAM speed) | ~170 GiB/s |
 
-The same schema-aware interfaces cover local IPC, service-to-service streaming and persistent storage. Lower-level codecs, frames and byte streams remain available when an application needs direct control.
+The same schema-aware interfaces cover local IPC, service-to-service streaming and persistent storage. Lower-level codecs, frames and byte streams remain available when an application requires direct control.
 
 ```rust
 use lightstream::models::readers::tcp::TcpTableReader;
@@ -30,16 +30,17 @@ let upload = HttpTableWriter::post("https://api/ingest", schema, None).await?;
 
 Lightstream includes:
 
-- Arrow IPC stream and file formats
-- CSV, JSON, NDJSON and Parquet
+- Lightstream protocol - multiplex Arrow, Protobuf and MessagePack over a single connection
+- Dedicated Arrow IPC stream and file implementations- CSV, JSON, NDJSON and Parquet
 - TCP, Unix domain sockets, standard I/O, WebSocket, HTTP/2, QUIC and WebTransport
-- Linux `io_uring` support
-- Memory-mapped Arrow IPC reads
-- Chunked Arrow IPC, CSV and Parquet datasets
+- Linux `io_uring` support for fast asynchronous I/O
+- Warm memory-mapped Arrow IPC reads - measured at approximately 170 GiB/s with warm pages on the benchmark fixture; see Performance
+- Chunked Arrow IPC, CSV and Parquet readers/writers that preserve 64-byte SIMD alignment 
 - Parallel TCP, QUIC and HTTP/2 streams with optional ordering
-- TLV framing and the multiplexed Lightstream protocol
+- TLV framing
 - Optional zstd and Snappy compression
 - Configurable decode limits for untrusted input
+- A minimal, opt-in dependency footprint, with core functionality implemented from scratch
 
 The table encoding and framing layers are independent of the transport, so applications can move the same table model and protocol between connection types without changing the analytical data structures.
 
@@ -52,12 +53,14 @@ Enable only the formats and transports required by the application:
 ```toml
 [dependencies]
 lightstream = {
-    version = "*",
+    version = "0.5.0",
     features = ["tcp", "mmap", "zstd"]
 }
 ```
 
 See [Feature flags](#feature-flags) for the complete list.
+
+Lightstream currently requires Rust Nightly; supporting Stable Rust is an active priority.
 
 ## TCP table streaming
 
@@ -194,6 +197,8 @@ MessagePack support requires `msgpack`. Protobuf support requires `protobuf`. Bo
 
 Message and table channels can also be distributed across several connections, with their original order restored on read. See [Parallel streams](#parallel-streams).
 
+A max_batch_size of approximately 8 MiB is recommended. Larger Tables are transparently and efficiently split into smaller batches, balancing framing overhead against predictable latency.
+
 ## Parallel streams
 
 TCP, QUIC and HTTP/2 provide parallel readers and writers that distribute a table sequence across several connections. This can increase throughput when one connection is the limiting factor.
@@ -206,16 +211,21 @@ The Lightstream protocol also has a parallel form, allowing messages and tables 
 | ------------------- | -------------- | ------------ | ------------------------------------------------------------------ |
 | TCP                 | `tcp`          | Stable       | Raw TCP with optional TLS.                                         |
 | Unix domain sockets | `uds`          | Stable       | Local inter-process communication.                                 |
-| Standard I/O        | `stdio`        | Stable       | Arrow streams over standard input and output.                      |
+| Standard I/O        | `stdio`        | Stable       | Arrow streams over standard input and output. E.g. pipe data into terminal processes. |
 | WebSocket           | `websocket`    | Stable       | Binary WebSocket transport with optional TLS.                      |
 | HTTP/2              | `http`         | Stable       | Direct `h2` integration for streaming request and response bodies. |
 | QUIC                | `quic`         | Stable       | Multiplexed QUIC transport with protocol-level TLS.                |
 | WebTransport        | `webtransport` | Experimental | WebTransport support through the `wtransport` crate.               |
-| `io_uring` | `io_uring` | Experimental | Linux-only asynchronous I/O. Because `io_uring` exposes a broad kernel interface and increases the host attack surface, it should be enabled only in trusted environments. |
 
 Lightstream handles table encoding, framing and decoding. Applications remain responsible for listener setup, authentication, authorisation, routing and connection lifecycle.
 
 Readers and writers can wrap accepted connections or protocol-specific stream halves through constructors such as `from_stream`, `from_recv` and `from_halves`.
+
+### Additional I/O backends
+
+| Backend     | Feature      | Status       | Notes |
+| ----------- | ------------ | ------------ | ----- |
+| `io_uring`  | `io_uring`   | Experimental | Linux-only asynchronous I/O. Because `io_uring` exposes a broad kernel interface and increases the host attack surface, it should be enabled only in trusted environments. |
 
 ## TLS
 
@@ -284,11 +294,11 @@ Lightstream separates table access, protocols, formats, framing, buffering and t
 | Transport | TCP, UDS, standard I/O, WebSocket, HTTP/2, QUIC, WebTransport and `io_uring`             |
 | Storage   | Files, memory maps, chunked directories and asynchronous disk streams                    |
 
-Applications can use complete table readers and writers or assemble lower-level encoders, decoders, frames and byte streams directly.
+Applications can use complete table readers and writers or assemble lower-level encoders, decoders, frames and byte streams.
 
 ## Buffering and decode safety
 
-Supported paths use Minarrow `Vec64` buffers with 64-byte alignment and can expose buffer-backed decoded columns where the underlying format and transport permit it.
+Minarrow-native readers, writers and transports preserve 64-byte alignment, allowing downstream SIMD processing without an additional realignment step.
 
 Byte-oriented decoders accept configurable limits through `DecodeLimits`. These limits cover values derived from input metadata, including:
 
@@ -309,7 +319,7 @@ Applications processing untrusted data should set limits appropriate to the expe
 
 Representative results from the repository benchmarks:
 
-| Workload                                 | Throughput |
+| Localhost loopback                       | Throughput |
 | ---------------------------------------- | ---------: |
 | Lightstream TCP with epoll parallelism   | ~8 GiB/s   |
 | Lightstream TCP with epoll               | ~5.0 GiB/s |
@@ -330,7 +340,9 @@ Results from the same file-read fixture:
 | Arrow-rs                          |   ~7 GiB/s |
 | Polars                            | ~1.3 GiB/s |
 
-These figures were produced on a single consumer-class laptop. Results depend on the processor, operating system, transport, storage device, workload shape, enabled features and page-cache state.
+These figures were produced on a single consumer-class laptop with an Intel Core Ultra 7 155H, 32 GB of RAM and Ubuntu 24.04, compiled in release mode using Rust 1.97 nightly.
+
+Results depend on the processor, operating system, transport, storage device, workload shape, enabled features and page-cache state.
 
 The repository includes Criterion benchmarks for:
 
@@ -343,7 +355,7 @@ The repository includes Criterion benchmarks for:
 - JSON encoding and decoding
 - Apache Arrow Flight comparison
 
-Cross-host benchmark rigs are also provided for EC2 and Amazon ECS.
+Cross-host benchmark rigs are also provided for Amazon EC2.
 
 See [`benches/README.md`](benches/README.md) for the benchmark matrix, methodology and commands.
 
@@ -363,7 +375,7 @@ LIGHTSTREAM_INMEMORY_CHUNK_SIZE=524288
 | ---------------- | -------------------------------------------------------------------- |
 | Arrow IPC        | File and stream protocols, schemas, dictionaries and aligned buffers |
 | TLV              | Compact framed messages                                              |
-| CSV              | Table ("RecordBatch") and SuperTable (Vec<"RecordBatch">) encoding and decoding                           |
+| CSV              | `Table` (`RecordBatch`) and `SuperTable` (`Vec<RecordBatch>`) encoding and decoding                           |
 | JSON             | Arrays of objects and NDJSON                                          |
 | Parquet          | Feature-gated reader and writer support                              |
 | Memory maps      | Arrow IPC batch access through mapped files                          |
