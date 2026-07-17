@@ -89,6 +89,7 @@ async fn main() -> std::io::Result<()> {
             &["Subscribe"],
             &table_types,
             SortBehaviour::Ordered,
+            None,
         )
         .await
         .unwrap();

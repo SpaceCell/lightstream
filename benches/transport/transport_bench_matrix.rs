@@ -266,6 +266,7 @@ fn bench_tcp(
                     read_half,
                     BufferChunkSize::Http.chunk_size(),
                     IPCMessageProtocol::Stream,
+                    None,
                 );
 
                 let start = std::time::Instant::now();
@@ -338,6 +339,7 @@ fn bench_uds(
                     read_half,
                     BufferChunkSize::Http.chunk_size(),
                     IPCMessageProtocol::Stream,
+                    None,
                 );
 
                 let start = std::time::Instant::now();
@@ -418,6 +420,7 @@ fn bench_websocket(
                     ws_read,
                     BufferChunkSize::WebSocket.chunk_size(),
                     IPCMessageProtocol::Stream,
+                    None,
                 );
 
                 let start = std::time::Instant::now();
@@ -464,7 +467,7 @@ fn bench_protocol_tcp(
 
                 let writer = tokio::spawn(async move {
                     let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-                    let mut conn = TcpLightstreamConnection::from_tcp(stream);
+                    let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
                         conn.send_table("Data", &write_table).await.unwrap();
@@ -474,7 +477,7 @@ fn bench_protocol_tcp(
                 });
 
                 let (socket, _) = listener.accept().await.unwrap();
-                let mut conn = TcpLightstreamConnection::from_tcp(socket);
+                let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -578,6 +581,7 @@ fn bench_quic(
                     recv,
                     BufferChunkSize::WebTransport.chunk_size(),
                     IPCMessageProtocol::Stream,
+                    None,
                 );
 
                 let start = std::time::Instant::now();
@@ -674,6 +678,7 @@ fn bench_webtransport(
                     recv,
                     BufferChunkSize::WebTransport.chunk_size(),
                     IPCMessageProtocol::Stream,
+                    None,
                 );
 
                 let start = std::time::Instant::now();
@@ -815,6 +820,7 @@ fn bench_tcp_tls(
                         byte_stream,
                         BufferChunkSize::Http.chunk_size(),
                         IPCMessageProtocol::Stream,
+                        None,
                     );
 
                     let start = std::time::Instant::now();
@@ -919,6 +925,7 @@ fn bench_websocket_tls(
                         ws_read,
                         BufferChunkSize::WebSocket.chunk_size(),
                         IPCMessageProtocol::Stream,
+                        None,
                     );
 
                     let start = std::time::Instant::now();
@@ -1013,7 +1020,7 @@ fn bench_http2(
                     let _ = respond.send_response(response, true).unwrap();
                     let driver =
                         tokio::spawn(async move { while h2.accept().await.is_some() {} });
-                    let reader = HttpTableReader::from_recv(req.into_body());
+                    let reader = HttpTableReader::from_recv(req.into_body(), None);
                     let tables = reader.read_all_tables().await.unwrap();
                     driver.abort();
                     let _ = driver.await;
@@ -1075,7 +1082,7 @@ fn bench_uds_io_uring(
                 let n = iters;
 
                 let writer = tokio_uring::spawn(async move {
-                    let mut conn = IoUringUdsConnection::new(stream_a);
+                    let mut conn = IoUringUdsConnection::new(stream_a, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
                         conn.send_table("Data", &write_table).await.unwrap();
@@ -1084,7 +1091,7 @@ fn bench_uds_io_uring(
                     conn.shutdown().await.unwrap();
                 });
 
-                let mut conn = IoUringUdsConnection::new(stream_b);
+                let mut conn = IoUringUdsConnection::new(stream_b, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -1127,7 +1134,7 @@ fn bench_tcp_io_uring(
 
                 let writer = tokio_uring::spawn(async move {
                     let stream = tokio_uring::net::TcpStream::connect(addr).await.unwrap();
-                    let mut conn = IoUringTcpConnection::new(stream);
+                    let mut conn = IoUringTcpConnection::new(stream, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
                         conn.send_table("Data", &write_table).await.unwrap();
@@ -1137,7 +1144,7 @@ fn bench_tcp_io_uring(
                 });
 
                 let (stream, _) = listener.accept().await.unwrap();
-                let mut conn = IoUringTcpConnection::new(stream);
+                let mut conn = IoUringTcpConnection::new(stream, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();

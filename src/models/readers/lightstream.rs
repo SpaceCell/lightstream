@@ -27,6 +27,7 @@ use minarrow::{Field, Vec64};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::models::codecs::lightstream::LightstreamCodec;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::lightstream_message::{FRAME_HEADER_SIZE, LightstreamMessage};
 use crate::traits::stream_buffer::StreamBuffer;
 
@@ -50,14 +51,19 @@ pub struct LightstreamReader<B: StreamBuffer = Vec64<u8>> {
     tag: u8,
     chunk_size: usize,
     eof: bool,
+    limits: DecodeLimits,
 }
 
 impl<B: StreamBuffer + Unpin> LightstreamReader<B> {
     /// Create a new reader from any AsyncRead source.
-    pub fn new(source: impl AsyncRead + Unpin + Send + 'static) -> Self {
+    pub fn new(
+        source: impl AsyncRead + Unpin + Send + 'static,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        let limits = limits.unwrap_or_default();
         Self {
             source: Box::new(source),
-            codec: LightstreamCodec::new(),
+            codec: LightstreamCodec::new(Some(limits)),
             header: [0u8; FRAME_HEADER_SIZE],
             header_filled: 0,
             payload: Vec64::with_capacity(0),
@@ -65,6 +71,7 @@ impl<B: StreamBuffer + Unpin> LightstreamReader<B> {
             tag: 0,
             chunk_size: DEFAULT_CHUNK,
             eof: false,
+            limits,
         }
     }
 
@@ -124,10 +131,19 @@ impl<B: StreamBuffer + Unpin> Stream for LightstreamReader<B> {
                     }
                 }
 
-                // Header complete - parse tag and payload length.
+                // Header complete - parse tag and payload length. The
+                // declared length is wire data from the peer, so cap it
+                // before any allocation.
                 this.tag = this.header[0];
                 let payload_len =
                     u32::from_le_bytes(this.header[1..5].try_into().unwrap()) as usize;
+                if let Err(e) =
+                    this.limits
+                        .check(payload_len, this.limits.max_frame_bytes, "TLV frame bytes")
+                {
+                    this.eof = true;
+                    return Poll::Ready(Some(Err(e)));
+                }
                 this.payload_target = payload_len;
 
                 // Prepare the payload buffer. Reuse the existing
@@ -171,14 +187,7 @@ impl<B: StreamBuffer + Unpin> Stream for LightstreamReader<B> {
 
                 let spare = this.payload.spare_capacity_mut();
                 let read_len = spare.len().min(remaining);
-                // SAFETY: `spare` is the uninitialised tail of `this.payload`,
-                // borrowed exclusively here; reinterpreting MaybeUninit<u8>
-                // as u8 produces a sound write target for tokio's ReadBuf,
-                // bounded to `read_len <= spare.len()`.
-                let spare_slice = unsafe {
-                    std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, read_len)
-                };
-                let mut read_buf = ReadBuf::new(spare_slice);
+                let mut read_buf = ReadBuf::uninit(&mut spare[..read_len]);
 
                 match Pin::new(&mut *this.source).poll_read(cx, &mut read_buf) {
                     Poll::Ready(Ok(())) => {
@@ -209,5 +218,30 @@ impl<B: StreamBuffer + Unpin> Stream for LightstreamReader<B> {
             let msg = this.codec.decode_frame(this.tag, frame_payload)?;
             return Poll::Ready(Some(Ok(msg)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::StreamExt;
+
+    use super::*;
+
+    /// A frame header declaring more bytes than `max_frame_bytes` is
+    /// refused before any allocation happens.
+    #[tokio::test]
+    async fn oversized_frame_length_is_refused() {
+        let mut header = vec![1u8];
+        header.extend_from_slice(&u32::MAX.to_le_bytes());
+        let mut reader: LightstreamReader = LightstreamReader::new(
+            std::io::Cursor::new(header),
+            Some(DecodeLimits {
+                max_frame_bytes: 1024,
+                ..DecodeLimits::default()
+            }),
+        );
+        let err = reader.next().await.unwrap().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("TLV frame bytes"));
     }
 }

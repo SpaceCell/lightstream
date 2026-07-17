@@ -38,6 +38,7 @@ static HTTP_CHUNK: OnceLock<usize> = OnceLock::new();
 static WEBSOCKET_CHUNK: OnceLock<usize> = OnceLock::new();
 static WEBTRANSPORT_CHUNK: OnceLock<usize> = OnceLock::new();
 static INMEMORY_CHUNK: OnceLock<usize> = OnceLock::new();
+static ARENA_CAPACITY: OnceLock<usize> = OnceLock::new();
 
 /// File I/O chunk size. Override with `LIGHTSTREAM_FILE_IO_CHUNK_SIZE`.
 pub fn file_io_chunk_size() -> usize {
@@ -81,6 +82,29 @@ pub fn inmemory_chunk_size() -> usize {
         &INMEMORY_CHUNK,
         "LIGHTSTREAM_INMEMORY_CHUNK_SIZE",
         DEFAULT_INMEMORY_CHUNK,
+    )
+}
+
+/// Default stream arena capacity.
+///
+/// 2 GiB of virtual address space per arena.
+/// With Vec64/MAllocPg64 backing, physical memory is committed
+/// only as bytes are written, so the reservation is cheap under normal
+/// Linux overcommit. Each stream decoder and, under the `arena` feature,
+/// each file reader holds one arena.
+pub const DEFAULT_ARENA_CAPACITY: usize = 2 * 1024 * 1024 * 1024;
+
+/// Stream arena capacity in bytes. Override with
+/// `LIGHTSTREAM_ARENA_CAPACITY` on hosts where per-stream virtual
+/// address reservations must stay small, such as strict-overcommit or
+/// address-space-limited deployments. Frames larger than the capacity
+/// grow a dedicated generation on demand, so correctness does not
+/// depend on the value - only steady-state allocation behaviour.
+pub fn arena_capacity() -> usize {
+    cached_env(
+        &ARENA_CAPACITY,
+        "LIGHTSTREAM_ARENA_CAPACITY",
+        DEFAULT_ARENA_CAPACITY,
     )
 }
 

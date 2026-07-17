@@ -35,6 +35,7 @@ use tokio::task::JoinHandle;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::decoders::ipc::table_stream_decoder::TableStreamDecoder;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::streams::http::{H2RecvRead, HttpByteStream};
 use crate::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
 use crate::traits::parallel_transport_writer::SEQ_ID_META_KEY;
@@ -80,6 +81,7 @@ impl HttpParallelTableReader {
         mut connection: h2::server::Connection<T, Bytes>,
         stream_count: usize,
         sort: SortBehaviour,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self>
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -109,7 +111,7 @@ impl HttpParallelTableReader {
                 HttpByteStream::new(H2RecvRead::new(request.into_body()), BufferChunkSize::Http),
                 BufferChunkSize::Http.chunk_size(),
                 IPCMessageProtocol::Stream,
-                None,
+                limits,
             );
             let (tx, rx) = mpsc::channel(STREAM_CHANNEL_DEPTH);
             let task = tokio::spawn(async move {
@@ -165,6 +167,7 @@ impl HttpParallelTableReader {
         tcp: TcpStream,
         stream_count: usize,
         sort: SortBehaviour,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         let connection_window =
             (stream_count as u64 * STREAM_WINDOW_BYTES as u64).min(u32::MAX as u64) as u32;
@@ -174,7 +177,7 @@ impl HttpParallelTableReader {
             .handshake::<_, Bytes>(tcp)
             .await
             .map_err(io::Error::other)?;
-        Self::accept(connection, stream_count, sort).await
+        Self::accept(connection, stream_count, sort, limits).await
     }
 }
 

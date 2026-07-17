@@ -300,7 +300,15 @@ Applications can use complete table readers and writers or assemble lower-level 
 
 Minarrow-native readers, writers and transports preserve 64-byte alignment, allowing downstream SIMD processing without an additional realignment step.
 
-Byte-oriented decoders accept configurable limits through `DecodeLimits`. These limits cover values derived from input metadata, including:
+### Stream arena
+
+Streaming decode paths buffer incoming frames in a per-stream arena that reserves `LIGHTSTREAM_ARENA_CAPACITY` bytes of virtual address space,  which is 2 GiB by default. Physical memory is committed only as bytes arrive, so the reservation costs address space as opposed than RAM. The sizing rule of thumb is:
+
+- Virtual address space scales as **streams * capacity**. Sixteen parallel streams reserve 32 GiB of address space at the default, which standard Linux overcommit absorbs. Hosts with strict overcommit (`vm.overcommit_memory=2`) or address-space-limited containers should lower the capacity.
+- Physical memory scales as ***x* streams * *y* bytes in flight**. This is the largest frame being received plus any decoded tables the application still holds, because decoded columns reference the arena zero-copy until dropped.
+- Consider setting the capacity to several multiples of the largest expected record batch. Larger frames still work, as the arena grows a dedicated generation on demand, however steady-state recycling performs best when several batches fit within one arena.
+
+Note that byte-oriented decoders accept configurable limits through `DecodeLimits`. These limits cover values derived from input metadata, including:
 
 - Frame size
 - Row count
@@ -313,7 +321,7 @@ Byte-oriented decoders accept configurable limits through `DecodeLimits`. These 
 
 Decode paths validate signed descriptors before converting them to `usize`, use checked arithmetic for offsets and lengths, and return structured errors for malformed input.
 
-Applications processing untrusted data should set limits appropriate to the expected workload rather than relying solely on the defaults.
+Additionally, applications processing untrusted data should set limits appropriate to the expected workload rather than relying solely on the defaults.
 
 ## Performance
 
@@ -359,7 +367,7 @@ Cross-host benchmark rigs are also provided for Amazon EC2.
 
 See [`benches/README.md`](benches/README.md) for the benchmark matrix, methodology and commands.
 
-Runtime chunk sizes can be configured without recompiling:
+Runtime buffer sizes can be configured without recompiling:
 
 ```text
 LIGHTSTREAM_HTTP_CHUNK_SIZE=262144
@@ -367,7 +375,10 @@ LIGHTSTREAM_WEBSOCKET_CHUNK_SIZE=131072
 LIGHTSTREAM_WEBTRANSPORT_CHUNK_SIZE=262144
 LIGHTSTREAM_FILE_IO_CHUNK_SIZE=1048576
 LIGHTSTREAM_INMEMORY_CHUNK_SIZE=524288
+LIGHTSTREAM_ARENA_CAPACITY=2147483648
 ```
+
+`LIGHTSTREAM_ARENA_CAPACITY` sets the per-stream decode arena reservation. See [Stream arena](#stream-arena) for the sizing guidance.
 
 ## Format support
 

@@ -47,7 +47,7 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
     /// Create a new writer over the given destination.
     pub fn new(dest: W) -> Self {
         Self {
-            codec: LightstreamCodec::new(),
+            codec: LightstreamCodec::new(None),
             dest,
             encode_buf: B::with_capacity(0),
         }

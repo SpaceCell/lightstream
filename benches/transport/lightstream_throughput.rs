@@ -54,7 +54,7 @@ fn bench_throughput(c: &mut Criterion) {
 
                 let writer = tokio::spawn(async move {
                     let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-                    let mut conn = TcpLightstreamConnection::from_tcp(stream);
+                    let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
@@ -67,7 +67,7 @@ fn bench_throughput(c: &mut Criterion) {
                 // Accept blocks until the writer connects, excluding connection
                 // setup from the timed region.
                 let (socket, _) = listener.accept().await.unwrap();
-                let mut conn = TcpLightstreamConnection::from_tcp(socket);
+                let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -101,7 +101,7 @@ fn bench_throughput(c: &mut Criterion) {
 
                 let writer = tokio::spawn(async move {
                     let stream = tokio::net::UnixStream::connect(&path).await.unwrap();
-                    let mut conn = UdsLightstreamConnection::from_uds(stream);
+                    let mut conn = UdsLightstreamConnection::from_uds(stream, None);
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
@@ -112,7 +112,7 @@ fn bench_throughput(c: &mut Criterion) {
                 });
 
                 let (socket, _) = listener.accept().await.unwrap();
-                let mut conn = UdsLightstreamConnection::from_uds(socket);
+                let mut conn = UdsLightstreamConnection::from_uds(socket, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -147,7 +147,7 @@ fn bench_throughput(c: &mut Criterion) {
 
                 let writer = tokio::spawn(async move {
                     let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-                    let mut conn = WebSocketLightstreamConnection::from_websocket(ws);
+                    let mut conn = WebSocketLightstreamConnection::from_websocket(ws, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
                         conn.send_table("Data", &write_table).await.unwrap();
@@ -158,7 +158,7 @@ fn bench_throughput(c: &mut Criterion) {
 
                 let (socket, _) = listener.accept().await.unwrap();
                 let ws = tokio_tungstenite::accept_async(socket).await.unwrap();
-                let mut conn = WebSocketLightstreamConnection::from_websocket(ws);
+                let mut conn = WebSocketLightstreamConnection::from_websocket(ws, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -221,7 +221,7 @@ fn bench_throughput(c: &mut Criterion) {
                     client_ep.set_default_client_config(client_config);
                     let conn = client_ep.connect(addr, "localhost").unwrap().await.unwrap();
                     let (send, recv) = conn.open_bi().await.unwrap();
-                    let mut conn = QuicLightstreamConnection::from_quic(recv, send);
+                    let mut conn = QuicLightstreamConnection::from_quic(recv, send, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
                         conn.send_table("Data", &write_table).await.unwrap();
@@ -233,7 +233,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let incoming = endpoint.accept().await.unwrap();
                 let qconn = incoming.await.unwrap();
                 let (send, recv) = qconn.accept_bi().await.unwrap();
-                let mut conn = QuicLightstreamConnection::from_quic(recv, send);
+                let mut conn = QuicLightstreamConnection::from_quic(recv, send, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -284,7 +284,8 @@ fn bench_throughput(c: &mut Criterion) {
                         .unwrap();
                     let opening = conn.open_bi().await.unwrap();
                     let (send, recv) = opening.await.unwrap();
-                    let mut conn = WebTransportLightstreamConnection::from_webtransport(recv, send);
+                    let mut conn =
+                        WebTransportLightstreamConnection::from_webtransport(recv, send, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
                         conn.send_table("Data", &write_table).await.unwrap();
@@ -297,7 +298,8 @@ fn bench_throughput(c: &mut Criterion) {
                 let session_request = incoming.await.unwrap();
                 let sconn = session_request.accept().await.unwrap();
                 let (send, recv) = sconn.accept_bi().await.unwrap();
-                let mut conn = WebTransportLightstreamConnection::from_webtransport(recv, send);
+                let mut conn =
+                    WebTransportLightstreamConnection::from_webtransport(recv, send, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -346,7 +348,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let n = iters;
 
                 let writer = tokio_uring::spawn(async move {
-                    let mut conn = IoUringUdsConnection::new(stream_a);
+                    let mut conn = IoUringUdsConnection::new(stream_a, None);
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
@@ -356,7 +358,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.shutdown().await.unwrap();
                 });
 
-                let mut conn = IoUringUdsConnection::new(stream_b);
+                let mut conn = IoUringUdsConnection::new(stream_b, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -390,7 +392,7 @@ fn bench_throughput(c: &mut Criterion) {
 
                 let writer = tokio_uring::spawn(async move {
                     let stream = tokio_uring::net::TcpStream::connect(addr).await.unwrap();
-                    let mut conn = IoUringTcpConnection::new(stream);
+                    let mut conn = IoUringTcpConnection::new(stream, None);
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
@@ -401,7 +403,7 @@ fn bench_throughput(c: &mut Criterion) {
                 });
 
                 let (stream, _) = listener.accept().await.unwrap();
-                let mut conn = IoUringTcpConnection::new(stream);
+                let mut conn = IoUringTcpConnection::new(stream, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();
@@ -461,15 +463,15 @@ fn bench_throughput(c: &mut Criterion) {
 
             // Now run the data path on io_uring
             tokio_uring::start(async move {
-                let write_stream = tokio_uring::net::TcpStream::from_std(client_raw);
-                let read_stream = tokio_uring::net::TcpStream::from_std(server_raw);
+                let write_stream = tokio_uring::net::TcpStream::from_std(server_raw);
+                let read_stream = tokio_uring::net::TcpStream::from_std(client_raw);
 
                 let write_table = Arc::clone(&table);
                 let write_schema = schema.clone();
                 let n = iters;
 
                 let writer = tokio_uring::spawn(async move {
-                    let mut conn = IoUringWsConnection::new(write_stream);
+                    let mut conn = IoUringWsConnection::new(write_stream, None);
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
@@ -479,7 +481,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.shutdown().await.unwrap();
                 });
 
-                let mut conn = IoUringWsConnection::new(read_stream);
+                let mut conn = IoUringWsConnection::new_client(read_stream, None);
                 conn.register_table("Data", schema);
 
                 let start = std::time::Instant::now();

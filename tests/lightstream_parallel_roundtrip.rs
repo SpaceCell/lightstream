@@ -49,7 +49,7 @@ async fn test_lightstream_parallel_roundtrip() {
     let server = tokio::spawn(async move {
         let table_types = [(TYPE_NAME, server_schema)];
         let reader =
-            LightstreamParallelReader::accept(&listener, STREAMS, &[], &table_types, SortBehaviour::None)
+            LightstreamParallelReader::accept(&listener, STREAMS, &[], &table_types, SortBehaviour::None, None)
                 .await
                 .unwrap();
         reader.read_all().await.unwrap()
@@ -88,7 +88,7 @@ async fn test_lightstream_parallel_ordering_and_round_robin() {
     let server = tokio::spawn(async move {
         let table_types = [(TYPE_NAME, server_schema)];
         let reader =
-            LightstreamParallelReader::accept(&listener, STREAMS, &[], &table_types, SortBehaviour::None)
+            LightstreamParallelReader::accept(&listener, STREAMS, &[], &table_types, SortBehaviour::None, None)
                 .await
                 .unwrap();
         reader.read_all().await.unwrap()
@@ -146,6 +146,7 @@ async fn test_lightstream_parallel_ordered_uneven_streams() {
             &[],
             &table_types,
             SortBehaviour::Ordered,
+            None,
         )
         .await
         .unwrap();

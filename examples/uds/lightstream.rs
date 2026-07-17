@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (stream, _) = listener.accept().await.unwrap();
         println!("Server accepted connection.");
 
-        let mut conn = UdsLightstreamConnection::from_uds(stream);
+        let mut conn = UdsLightstreamConnection::from_uds(stream, None);
         register_demo_types(&mut conn);
         recv_and_print_all(&mut conn).await;
         println!("Server connection closed.");
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_stream = tokio::net::UnixStream::connect(&path_clone).await?;
     println!("Client connected.");
 
-    let mut client = UdsLightstreamConnection::from_uds(client_stream);
+    let mut client = UdsLightstreamConnection::from_uds(client_stream, None);
     register_demo_types(&mut client);
     send_demo_messages(&mut client, "uds").await?;
 

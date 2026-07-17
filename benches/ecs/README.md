@@ -24,9 +24,9 @@ reads the same files through the `arrow` IPC file reader.
 | Network path | One `cluster` placement group in a single AZ. Host networking, so traffic flows over the instances' private IPs. |
 | Data sources | `memory` resends one RAM-resident table, bumping column reference counts per send. `nvme` replays one Arrow IPC file per stream off local NVMe. |
 | Cache passes (nvme) | Per transport: evict, one `cache=cold` pass off the device, then `RUNS` `cache=warm` passes from the page cache. A control pulse from sink to source sequences the phases. |
-| Verified delivery | nvme batches carry a global sequence in their first column. The sink requires every stream ordered and complete with the expected row counts. `memory` checks row totals. |
-| Transports | Arrow Flight, N concurrent `DoGet` streams, against Lightstream TCP, one connection or N merged. Merge order is global write order under `memory` and arrival order under `nvme`. |
-| Runs and stats | `RUNS` (default 5) timed runs per transport per cell. Median with min and max, `metric=gaps` percentiles labelled with sample counts, `RAW` arrival series split into CSVs. |
+| Verified delivery | nvme batches carry a global sequence in their first column. Lightstream must deliver files, record batches and row windows in dataset order; each Flight endpoint must deliver its range in order and complete. `memory` checks row totals. |
+| Transports | Arrow Flight obtains endpoints with `GetFlightInfo` and fetches their `DoGet` streams concurrently. Lightstream runs its protocol parallel reader with one connection per stream, merged in global write order via each connection's announced index. |
+| Runs and stats | `RUNS` (default 5) request-to-completion runs per transport per cell. Median with min and max, `metric=gaps` percentiles labelled with sample counts, `RAW` receiver-visible arrival series split into CSVs. |
 | Transport order | `memory` interleaves the transports run by run. `nvme` runs each transport as a block so neither inherits the other's page cache. |
 | Cleanup | Infrastructure destroyed on exit unless `KEEP=1` is set. |
 
@@ -205,8 +205,8 @@ RESULT metric=gaps protocol=lightstream shape=mixed data=nvme streams=4 cache=wa
 The `data` field is `memory` or `nvme`, matching the data source the line was
 produced under. Under `nvme` the `cache` field is `cold` for the single
 eviction-first pass and `warm` for the timed runs, and the medians cover the
-warm runs. The `metric=gaps` lines summarise the inter-batch arrival gaps
-within one run, with `p95_us` present from 100 samples and `p99_us` from
+warm runs. The `metric=gaps` lines summarise adjacent receiver-visible arrival
+gaps within one run, with `p95_us` present from 100 samples and `p99_us` from
 1000. The full arrival series ride along as `RAW` lines and land as CSVs
 under the results directory's `series/` folder. `shape`, `rows`,
 `dataset-gb`, `streams` and `runs` must match between the source and sink,
@@ -214,11 +214,19 @@ and `run.sh` passes the same values to both.
 
 ## Transports
 
-The source and sink compare Arrow Flight `DoGet` with Lightstream TCP - the
-plain table writer and reader for the single-stream cell, and the parallel
-TCP writer and reader for the multi-stream cells. Under `nvme` each stream is
-an independent file replay, Lightstream reading through its zero-copy mmap
-reader and Arrow Flight reading the same files through the `arrow` IPC file
+The source and sink compare Arrow Flight `DoGet` with the Lightstream
+protocol - the parallel protocol writer and reader with one TCP connection
+per stream. Flight calls `GetFlightInfo` and consumes each returned
+endpoint's `DoGet` concurrently over Tonic gRPC. Lightstream distributes
+tables across its connections round-robin and reconstructs global write
+order at the sink. Each connection announces its index at open, so the
+ordered merge holds regardless of the order connections are accepted.
+Flight endpoints are consumed unordered because Flight defines no
+cross-endpoint order for a partitioned dataset: each endpoint carries a
+contiguous range, so a globally ordered read would serialise the endpoints.
+Under `nvme`, both replay
+the same selected files in file-index and record-batch order: Lightstream reads
+through its zero-copy mmap reader and Arrow Flight through the `arrow` IPC file
 reader. The Flight ticket carries an evict flag for the cold pass and the
 Lightstream cold pass is triggered by the control channel, so both transports
 evict the same way. Both transports run plaintext over the trusted-VPC
@@ -226,7 +234,7 @@ network. TLS is assumed terminated at the ingress boundary and is excluded,
 so neither side pays encryption overhead.
 
 The Dockerfile accepts a `FEATURES` build argument and builds with
-`bench_arrow_flight,tcp,mmap`. The mmap feature supplies the zero-copy reader
+`bench_arrow_flight,protocol,tcp,mmap`. The mmap feature supplies the zero-copy reader
 the `nvme` source replays through. The task workload is supplied at run-task
 time by `run.sh`.
 

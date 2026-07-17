@@ -160,7 +160,7 @@ async fn test_ws_single_table_roundtrip() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -197,7 +197,7 @@ async fn test_ws_multi_table_roundtrip() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -236,7 +236,7 @@ async fn test_ws_stream_trait() {
 
     let byte_stream = accept_ws_reader(&listener).await;
     let mut reader =
-        TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+        TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream, None);
 
     let mut count = 0;
     while let Some(result) = reader.next().await {
@@ -275,7 +275,7 @@ async fn test_ws_read_to_super_table() {
     });
 
     let byte_stream = accept_ws_reader(&listener).await;
-    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(byte_stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let super_table = reader
         .read_to_super_table(Some("merged".into()), None)
         .await

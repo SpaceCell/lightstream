@@ -237,7 +237,7 @@ async fn test_quic_single_table_roundtrip() {
     let conn = endpoint.accept().await.unwrap().await.unwrap();
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
 
@@ -283,7 +283,7 @@ async fn test_quic_multi_table_roundtrip() {
     let conn = endpoint.accept().await.unwrap().await.unwrap();
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
     conn.close(0u32.into(), b"done");
 
@@ -330,7 +330,7 @@ async fn test_quic_stream_trait() {
     let conn = endpoint.accept().await.unwrap().await.unwrap();
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-    let mut reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream);
+    let mut reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream, None);
 
     let mut count = 0;
     while let Some(result) = reader.next().await {
@@ -383,7 +383,7 @@ async fn test_quic_parallel_roundtrip() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Ordered)
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Ordered, None)
         .await
         .unwrap();
     assert_eq!(reader.stream_count(), STREAMS);
@@ -436,7 +436,7 @@ async fn test_quic_read_to_super_table() {
     let conn = endpoint.accept().await.unwrap().await.unwrap();
     let recv = conn.accept_uni().await.unwrap();
     let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream);
+    let reader = QuicTableReader::from_stream(stream, IPCMessageProtocol::Stream, None);
     let super_table = reader
         .read_to_super_table(Some("merged".into()), None)
         .await
@@ -543,7 +543,7 @@ async fn test_quic_parallel_ordering_and_round_robin() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None)
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None, None)
         .await
         .unwrap();
     let tables = reader.read_all_tables().await.unwrap();
@@ -610,7 +610,7 @@ async fn test_quic_parallel_ordered_uneven_streams() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Ordered)
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::Ordered, None)
         .await
         .unwrap();
     let tables = reader.read_all_tables().await.unwrap();
@@ -665,7 +665,7 @@ async fn test_quic_parallel_dictionary_per_stream() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None)
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None, None)
         .await
         .unwrap();
     let tables = reader.read_all_tables().await.unwrap();
@@ -716,7 +716,7 @@ async fn test_quic_parallel_backpressure_under_load() {
     });
 
     let conn = endpoint.accept().await.unwrap().await.unwrap();
-    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None)
+    let reader = QuicParallelTableReader::accept(&conn, STREAMS, SortBehaviour::None, None)
         .await
         .unwrap();
     let tables = reader.read_all_tables().await.unwrap();

@@ -63,7 +63,7 @@ async fn raw_messages() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("ping");
         conn.register_message("pong");
 
@@ -83,7 +83,7 @@ async fn raw_messages() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let client_stream = tokio::net::TcpStream::connect(addr).await?;
-    let mut client = TcpLightstreamConnection::from_tcp(client_stream);
+    let mut client = TcpLightstreamConnection::from_tcp(client_stream, None);
     client.register_message("ping");
     client.register_message("pong");
 
@@ -115,7 +115,7 @@ async fn msgpack_messages() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("command");
 
         // Receive two commands
@@ -127,7 +127,7 @@ async fn msgpack_messages() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let client_stream = tokio::net::TcpStream::connect(addr).await?;
-    let mut client = TcpLightstreamConnection::from_tcp(client_stream);
+    let mut client = TcpLightstreamConnection::from_tcp(client_stream, None);
     client.register_message("command");
 
     // Send typed msgpack commands
@@ -161,7 +161,7 @@ async fn arrow_tables() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_table("metrics", table_schema());
 
         // Receive two table batches
@@ -182,7 +182,7 @@ async fn arrow_tables() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let client_stream = tokio::net::TcpStream::connect(addr).await?;
-    let mut client = TcpLightstreamConnection::from_tcp(client_stream);
+    let mut client = TcpLightstreamConnection::from_tcp(client_stream, None);
     client.register_table("metrics", table_schema());
 
     // Send two batches. The first carries the schema header; the second
@@ -210,7 +210,7 @@ async fn mixed_stream() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("raw");
         conn.register_message("command");
         conn.register_table("metrics", table_schema());
@@ -250,7 +250,7 @@ async fn mixed_stream() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let client_stream = tokio::net::TcpStream::connect(addr).await?;
-    let mut client = TcpLightstreamConnection::from_tcp(client_stream);
+    let mut client = TcpLightstreamConnection::from_tcp(client_stream, None);
     client.register_message("raw");
     client.register_message("command");
     client.register_table("metrics", table_schema());

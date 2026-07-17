@@ -8,8 +8,9 @@
 # `portable_simd`. Set `RUST_IMAGE` to use a specific nightly release.
 #
 # `FEATURES` controls the enabled Cargo features. This rig needs Arrow Flight
-# (which pulls in tonic, hence protobuf-compiler), TCP and mmap. The mmap
-# feature supplies the zero-copy reader the nvme data source replays through.
+# (which pulls in tonic, hence protobuf-compiler), the Lightstream protocol
+# over TCP, and mmap. The mmap feature supplies the zero-copy reader the nvme
+# data source replays through.
 #
 # Build context: this Dockerfile expects the build context to be the parent
 # directory that contains both the `lightstream` and `minarrow` checkouts, so
@@ -20,7 +21,7 @@
 ARG RUST_IMAGE=rustlang/rust:nightly-bookworm-slim
 FROM ${RUST_IMAGE} AS build
 
-ARG FEATURES=bench_arrow_flight,tcp,mmap
+ARG FEATURES=bench_arrow_flight,protocol,tcp,mmap
 
 # Install native dependencies required by the workspace build. protobuf-compiler
 # supplies protoc, which tonic needs to generate the Arrow Flight gRPC stubs.
@@ -33,18 +34,24 @@ RUN apt-get update \
 # resolves. The workspace `Cargo.toml` declares
 # `minarrow = { path = "../minarrow" }`, one directory above the lightstream
 # checkout, so the two checkouts sit side by side under /build. The context
-# root is the parent directory holding both checkouts.
+# root is the parent directory holding both checkouts. `LIGHTSTREAM_DIR`
+# names the lightstream checkout within the context, so a git worktree with
+# a different directory name builds the code it sits in.
+ARG LIGHTSTREAM_DIR=lightstream
 COPY minarrow /build/minarrow
-COPY lightstream /build/lightstream
+COPY ${LIGHTSTREAM_DIR} /build/lightstream
 
 WORKDIR /build/lightstream
 
 # The cache mounts keep the cargo registry and incremental build artefacts on
 # the build host across image rebuilds, so a source change recompiles only the
 # affected crates. Artefacts inside a cache mount do not persist into the
-# image layer, so the binaries are copied out within the same step.
+# image layer, so the binaries are copied out within the same step. The target
+# cache is keyed by checkout name because cargo judges staleness by file
+# timestamps: a cache stamped by one checkout postdates another checkout's
+# files, and sharing it would hand back the other checkout's binaries.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/lightstream/target \
+    --mount=type=cache,id=target-${LIGHTSTREAM_DIR},target=/build/lightstream/target \
     cargo build --release \
         --example bench_ecs_source --example bench_ecs_sink \
         --features "${FEATURES}" \

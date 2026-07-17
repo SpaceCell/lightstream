@@ -8,8 +8,8 @@
 //!
 //! Serves the same Arrow payload two ways so the sink can measure both over
 //! the host-to-host network. It runs an Arrow Flight `DoGet` server and
-//! pushes the matched workload over Lightstream TCP on request. Data flows
-//! from source to sink for both, and the sink drives and reports.
+//! pushes the matched workload over the Lightstream protocol on request.
+//! Data flows from source to sink for both, and the sink drives and reports.
 //!
 //! Two data sources cover the two serving patterns:
 //!
@@ -17,7 +17,8 @@
 //!   it through its reference-counted columns, copying no payload bytes and
 //!   measuring pure transport throughput with no storage in the path.
 //! * `nvme` - a dataset of `--dataset-gb` gigabytes is written to local NVMe
-//!   as one Arrow IPC file per stream, then each stream replays its file.
+//!   as one Arrow IPC file per configured stream. A cell selects the first N
+//!   files and delivers their record batches in file-index order.
 //!   This is the replay-server pattern where a host streams a large recorded
 //!   dataset to a remote consumer. Lightstream replays through its zero-copy
 //!   mmap reader and Arrow Flight reads the same files through the `arrow`
@@ -27,9 +28,9 @@
 //!   page cache first, then `runs` warm passes over the cached files,
 //!   covering both the first-scan and steady-state replay cases.
 //!
-//! For each stream count the source opens Lightstream TCP to the sink - one
-//! connection for the single-stream cell, otherwise one connection per
-//! stream - and sends `batches_per_stream * streams` tables per pass. The
+//! For each stream count the source opens the Lightstream protocol parallel
+//! writer to the sink with one connection per stream and sends
+//! `batches_per_stream * streams` tables per pass. The
 //! sink pulses one control byte before each Lightstream pass (`C` for cold,
 //! `W` for warm or memory), and the source asserts the pulse against its own
 //! schedule, so an eviction never lands inside a timed Flight run and a
@@ -50,7 +51,7 @@ use std::time::Duration;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use futures::stream::{self, BoxStream, TryStreamExt};
@@ -63,10 +64,7 @@ use tonic::{Request, Response, Status, Streaming};
 use lightstream::enums::IPCMessageProtocol;
 use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 use lightstream::models::writers::ipc::sync_table::SyncTableWriter;
-use lightstream::models::writers::parallel::tcp::TcpParallelTableWriter;
-use lightstream::models::writers::tcp::TcpTableWriter;
-use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
-use lightstream::traits::transport_writer::IPCTransportWriter;
+use lightstream::models::writers::parallel::lightstream::LightstreamParallelWriter;
 
 #[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
@@ -84,6 +82,10 @@ use bench_helpers::{
 /// Deadline for the sink's reader to come up, and the pause between attempts.
 const CONNECT_DEADLINE: Duration = Duration::from_secs(120);
 const CONNECT_STEP: Duration = Duration::from_millis(200);
+
+/// Table type name registered on every Lightstream protocol connection. The
+/// sink registers the same name and schema so the wire tags agree.
+const TYPE_NAME: &str = "bench";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DataSource {
@@ -108,7 +110,8 @@ struct Args {
     runs: u32,
     data_source: DataSource,
     dataset_dir: PathBuf,
-    max_chunk_size: usize,
+    max_batch_size: usize,
+    out_of_core: bool,
     flight_bind: String,
     echo_bind: String,
     ctrl_bind: String,
@@ -148,7 +151,8 @@ fn parse_args() -> Result<Args, String> {
     let mut runs: u32 = 5;
     let mut data_source = DataSource::Memory;
     let mut dataset_dir = PathBuf::from("/data");
-    let mut max_chunk_size: usize = 0;
+    let mut max_batch_size: usize = 0;
+    let mut out_of_core = false;
     let mut flight_bind = "0.0.0.0:9101".to_string();
     let mut echo_bind = "0.0.0.0:9102".to_string();
     let mut ctrl_bind = "0.0.0.0:9104".to_string();
@@ -168,9 +172,10 @@ fn parse_args() -> Result<Args, String> {
             "--runs" => runs = next()?.parse().map_err(|e| format!("--runs: {e}"))?,
             "--data-source" => data_source = parse_data_source(&next()?)?,
             "--dataset-dir" => dataset_dir = PathBuf::from(next()?),
-            "--max-chunk-size" => {
-                max_chunk_size = next()?.parse().map_err(|e| format!("--max-chunk-size: {e}"))?
+            "--max-batch-size" => {
+                max_batch_size = next()?.parse().map_err(|e| format!("--max-batch-size: {e}"))?
             }
+            "--out-of-core" => out_of_core = true,
             "--flight-bind" => flight_bind = next()?,
             "--echo-bind" => echo_bind = next()?,
             "--ctrl-bind" => ctrl_bind = next()?,
@@ -186,8 +191,10 @@ fn parse_args() -> Result<Args, String> {
                 println!("  --runs N                  warm runs per cell (default 5)");
                 println!("  --data-source SRC         memory | nvme (default memory)");
                 println!("  --dataset-dir PATH        nvme dataset directory (default /data)");
-                println!("  --max-chunk-size N           nvme replay chunk size in bytes, 0 replays");
+                println!("  --max-batch-size N        nvme replay batch size limit in bytes, 0 replays");
                 println!("                            whole batches (default 0)");
+                println!("  --out-of-core             stream the nvme replay mappings with a bounded");
+                println!("                            resident footprint, for datasets larger than RAM");
                 println!("  --flight-bind ADDR        Flight server bind (default 0.0.0.0:9101)");
                 println!("  --echo-bind ADDR          latency echo bind (default 0.0.0.0:9102)");
                 println!("  --ctrl-bind ADDR          sink control bind (default 0.0.0.0:9104)");
@@ -211,7 +218,8 @@ fn parse_args() -> Result<Args, String> {
         runs,
         data_source,
         dataset_dir,
-        max_chunk_size,
+        max_batch_size,
+        out_of_core,
         flight_bind,
         echo_bind,
         ctrl_bind,
@@ -256,7 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches_per_stream =
         batches_per_stream_for_budget(args.shape, args.rows, max_streams, args.dataset_gb);
     eprintln!(
-        "[source] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_chunk_size={} sink_ls={} flight_single_message={}",
+        "[source] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_batch_size={} sink_ls={} flight_single_message={}",
         args.shape.label(),
         args.rows,
         args.dataset_gb,
@@ -264,14 +272,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.streams,
         args.runs,
         args.data_source.label(),
-        args.max_chunk_size,
+        args.max_batch_size,
         args.sink_ls_addr,
         args.flight_single_message
     );
 
     let table = Arc::new(make_bench_table_shape(args.shape, args.rows));
     let schema: Vec<Field> = bench_schema(&table);
-    let dict_regs = args.shape.dictionary_registrations();
 
     // The latency echo and the control listener come up first so the sink can
     // connect and measure round trips while the nvme dataset is still being
@@ -299,7 +306,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await??;
             eprintln!("[source] dataset ready: {} files", files.len());
-            Some(Arc::new(ReplayDataset { files, batches_per_stream }))
+            let file = std::fs::File::open(&files[0])?;
+            let reader = arrow::ipc::reader::FileReader::try_new(file, None)?;
+            Some(Arc::new(ReplayDataset {
+                files,
+                batches_per_stream,
+                schema: reader.schema(),
+            }))
         }
     };
 
@@ -327,53 +340,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Lightstream TCP push, one connection set per pass. The sink pulses one
-    // control byte before each pass, and the source asserts it against its
-    // own schedule, so both sides walk the same streams list and run count in
-    // lockstep and a cold eviction happens only between timed phases.
+    // Lightstream protocol push, one connection set per pass. Each writer
+    // connects before waiting for the sink's request pulse. The source checks
+    // each pulse against its schedule so both sides remain in lockstep.
     let (mut ctrl, _peer) = ctrl_listener.accept().await?;
     for &streams in &args.streams {
         let total = batches_per_stream * streams as u64;
         match &dataset {
             None => {
                 for run in 1..=args.runs {
-                    read_pulse(&mut ctrl, b'W').await?;
                     push_memory_workload(
                         &args.sink_ls_addr,
                         streams,
                         total,
                         &schema,
-                        &dict_regs,
                         &table,
+                        &mut ctrl,
+                        b'W',
                     )
                     .await?;
                     eprintln!("[source] pushed streams={streams} run={run} tables={total}");
                 }
             }
             Some(dataset) => {
-                read_pulse(&mut ctrl, b'C').await?;
-                for file in &dataset.files[..streams] {
-                    evict_file(file)?;
-                }
                 push_replay_workload(
                     &args.sink_ls_addr,
                     streams,
                     &schema,
-                    &dict_regs,
                     dataset,
-                    args.max_chunk_size,
+                    args.max_batch_size,
+                    args.out_of_core,
+                    &mut ctrl,
+                    b'C',
+                    true,
                 )
                 .await?;
                 eprintln!("[source] pushed streams={streams} cache=cold tables={total}");
                 for run in 1..=args.runs {
-                    read_pulse(&mut ctrl, b'W').await?;
                     push_replay_workload(
                         &args.sink_ls_addr,
                         streams,
                         &schema,
-                        &dict_regs,
                         dataset,
-                        args.max_chunk_size,
+                        args.max_batch_size,
+                        args.out_of_core,
+                        &mut ctrl,
+                        b'W',
+                        false,
                     )
                     .await?;
                     eprintln!(
@@ -424,6 +437,7 @@ where
 struct ReplayDataset {
     files: Vec<PathBuf>,
     batches_per_stream: u64,
+    schema: arrow::datatypes::SchemaRef,
 }
 
 /// Directory holding the dataset for one workload. The parameters are encoded
@@ -530,132 +544,88 @@ async fn read_pulse(ctrl: &mut TcpStream, expected: u8) -> io::Result<()> {
 // Lightstream push
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Send the in-memory table `total` times to the sink over Lightstream TCP -
-/// one connection when `streams` is 1, otherwise the parallel writer with
-/// one connection per stream. Each send bumps the reference counts on the
-/// table's shared columns without copying the payload. The sink merges
-/// parallel connections in global write order under `Ordered`, which follows
-/// this writer's round-robin rotation.
+/// Send the in-memory table `total` times to the sink over the Lightstream
+/// protocol parallel writer, one connection per stream. Each send bumps the
+/// reference counts on the table's shared columns without copying the
+/// payload. Each connection announces its index at open, so the sink merges
+/// the round-robin rotation back into global write order under `Ordered`.
 async fn push_memory_workload(
     addr: &str,
     streams: usize,
     total: u64,
     schema: &[Field],
-    dict_regs: &[(i64, Vec<String>)],
     table: &Arc<Table>,
+    ctrl: &mut TcpStream,
+    expected_pulse: u8,
 ) -> io::Result<()> {
-    if streams == 1 {
-        let mut writer = connect_single_retry(addr, schema, dict_regs).await?;
-        for _ in 0..total {
-            writer.write_table((**table).clone()).await?;
-        }
-        writer.finish().await
-    } else {
-        let mut writer = connect_parallel_retry(addr, streams, schema, dict_regs).await?;
-        for _ in 0..total {
-            writer.write_table((**table).clone()).await?;
-        }
-        writer.finish().await
+    let mut writer = connect_retry(addr, streams, schema).await?;
+    read_pulse(ctrl, expected_pulse).await?;
+    for _ in 0..total {
+        writer.send_table(TYPE_NAME, (**table).clone()).await?;
     }
+    writer.finish().await
 }
 
-/// Replay the dataset to the sink over Lightstream TCP, one connection per
-/// stream, each replaying its own file through the zero-copy mmap reader.
-/// Streams are independent replays with per-stream ordering, matching the
-/// Flight side's independent `DoGet` streams, and the sink merges arrivals.
-/// A nonzero `max_chunk_size` replays each batch as row chunks of at most that
-/// size through the reader's windowed chunk iteration.
+/// Replay batches from the selected files through the Lightstream protocol
+/// parallel writer. Files are visited by index, record batches retain their
+/// order within each file, and the writer distributes the resulting tables
+/// across its connection tasks round-robin. Each mmap-backed table owns its
+/// mapping while queued or in flight. A nonzero `max_batch_size` replays each
+/// record batch as row windows of at most that size through the reader's
+/// windowed batch iteration. `out_of_core` opens each reader in its
+/// streaming mode for datasets larger than RAM.
 async fn push_replay_workload(
     addr: &str,
     streams: usize,
     schema: &[Field],
-    dict_regs: &[(i64, Vec<String>)],
     dataset: &Arc<ReplayDataset>,
-    max_chunk_size: usize,
+    max_batch_size: usize,
+    out_of_core: bool,
+    ctrl: &mut TcpStream,
+    expected_pulse: u8,
+    evict: bool,
 ) -> io::Result<()> {
-    let mut tasks = Vec::with_capacity(streams);
-    for i in 0..streams {
-        let addr = addr.to_string();
-        let schema = schema.to_vec();
-        let dict_regs = dict_regs.to_vec();
-        let file = dataset.files[i].clone();
-        let batches = dataset.batches_per_stream;
-        tasks.push(tokio::spawn(async move {
-            let reader = MmapTableReader::open(&file)?;
-            let mut writer = connect_single_retry(&addr, &schema, &dict_regs).await?;
-            let n = (batches as usize).min(reader.num_batches());
-            if max_chunk_size == 0 {
-                for idx in 0..n {
-                    writer.write_table(reader.read_batch(idx)?).await?;
-                }
-            } else {
-                for idx in 0..n {
-                    for chunk in reader.batch_chunks(idx, max_chunk_size)? {
-                        writer.write_table(chunk?).await?;
-                    }
-                }
-            }
-            writer.finish().await
-        }));
+    let mut writer = connect_retry(addr, streams, schema).await?;
+    read_pulse(ctrl, expected_pulse).await?;
+    if evict {
+        for file in &dataset.files[..streams] {
+            evict_file(file)?;
+        }
     }
-    for task in tasks {
-        task.await.map_err(io::Error::other)??;
-    }
-    Ok(())
-}
-
-/// Open a single Lightstream TCP writer to the sink, resolving and retrying
-/// until its listener is up. Resolution is retried too, so the sink may
-/// appear after the source starts.
-async fn connect_single_retry(
-    addr: &str,
-    schema: &[Field],
-    dict_regs: &[(i64, Vec<String>)],
-) -> io::Result<TcpTableWriter> {
-    let mut waited = Duration::ZERO;
-    loop {
-        let attempt = match resolve(addr).await {
-            Ok(socket_addr) => TcpTableWriter::connect(socket_addr, schema.to_vec(), None).await,
-            Err(e) => Err(e),
-        };
-        match attempt {
-            Ok(mut writer) => {
-                for (dict_id, values) in dict_regs {
-                    writer.register_dictionary(*dict_id, values.clone());
-                }
-                return Ok(writer);
+    for file in &dataset.files[..streams] {
+        let reader = MmapTableReader::open(file, out_of_core)?;
+        let n = (dataset.batches_per_stream as usize).min(reader.num_batches());
+        if max_batch_size == 0 {
+            for idx in 0..n {
+                writer.send_table(TYPE_NAME, reader.read_batch(idx)?).await?;
             }
-            Err(e) => {
-                if waited >= CONNECT_DEADLINE {
-                    return Err(e);
+        } else {
+            for idx in 0..n {
+                for window in reader.batch_portions(idx, max_batch_size)? {
+                    writer.send_table(TYPE_NAME, window?).await?;
                 }
-                tokio::time::sleep(CONNECT_STEP).await;
-                waited += CONNECT_STEP;
             }
         }
     }
+    writer.finish().await
 }
 
-/// As [`connect_single_retry`], but opens the parallel TCP writer with one
-/// connection per stream. Dictionaries are registered on every connection.
-async fn connect_parallel_retry(
+/// Open the Lightstream protocol parallel writer to the sink with one
+/// connection per stream, resolving and retrying until its listener is up.
+/// Resolution is retried too, so the sink may appear after the source starts.
+/// Every connection registers the bench table type, and announces its index
+/// at open so the sink pairs it regardless of accept order.
+async fn connect_retry(
     addr: &str,
     streams: usize,
     schema: &[Field],
-    dict_regs: &[(i64, Vec<String>)],
-) -> io::Result<TcpParallelTableWriter> {
+) -> io::Result<LightstreamParallelWriter> {
+    let table_types = [(TYPE_NAME, schema.to_vec())];
     let mut waited = Duration::ZERO;
     loop {
         let attempt = match resolve(addr).await {
             Ok(socket_addr) => {
-                TcpParallelTableWriter::connect(
-                    socket_addr,
-                    streams,
-                    schema.to_vec(),
-                    dict_regs.to_vec(),
-                    None,
-                )
-                .await
+                LightstreamParallelWriter::connect(socket_addr, streams, &[], &table_types).await
             }
             Err(e) => Err(e),
         };
@@ -676,14 +646,12 @@ async fn connect_parallel_retry(
 // Replay Flight service
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Flight service for the nvme data source. `DoGet` takes a 17-byte ticket
-/// carrying the batch count and stream index as little-endian `u64`s plus an
-/// evict flag byte. When the flag is set the stream's file is flushed and
-/// dropped from the page cache before serving, so a cold pass reads the
-/// device. The handler opens the file with the `arrow` IPC file reader and
-/// hands the batch iterator to the flight-data encoder, following the
-/// reference arrow-flight serving pattern. Every other RPC is unsupported,
-/// as in [`BenchFlightService`].
+/// Flight service for the nvme data source. `GetFlightInfo` returns one
+/// ordered endpoint per selected file. Each endpoint ticket carries the batch
+/// count and file index as little-endian `u64`s plus an evict flag byte. When
+/// the flag is set the file is flushed and dropped from the page cache before
+/// serving, so a cold pass reads the device. `DoGet` opens the file with the
+/// `arrow` IPC reader and hands the batch iterator to the flight-data encoder.
 #[derive(Clone)]
 struct ReplayFlightService {
     dataset: Arc<ReplayDataset>,
@@ -716,9 +684,45 @@ impl FlightService for ReplayFlightService {
 
     async fn get_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info not implemented"))
+        let descriptor = request.into_inner();
+        let bytes: [u8; 17] = descriptor
+            .cmd
+            .as_ref()
+            .try_into()
+            .map_err(|_| Status::invalid_argument("flight descriptor must be 17 bytes"))?;
+        let batches_per_endpoint = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let endpoint_count = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        if endpoint_count == 0 || endpoint_count > self.dataset.files.len() {
+            return Err(Status::invalid_argument(format!(
+                "requested {endpoint_count} endpoints, dataset has {}",
+                self.dataset.files.len()
+            )));
+        }
+        if batches_per_endpoint > self.dataset.batches_per_stream {
+            return Err(Status::invalid_argument(format!(
+                "requested {batches_per_endpoint} batches per endpoint, dataset has {}",
+                self.dataset.batches_per_stream
+            )));
+        }
+
+        let endpoints = (0..endpoint_count)
+            .map(|idx| {
+                let mut ticket = Vec::with_capacity(17);
+                ticket.extend_from_slice(&batches_per_endpoint.to_le_bytes());
+                ticket.extend_from_slice(&(idx as u64).to_le_bytes());
+                ticket.push(bytes[16]);
+                FlightEndpoint::new().with_ticket(Ticket::new(ticket))
+            })
+            .collect();
+        let info = FlightInfo::new()
+            .try_with_schema(self.dataset.schema.as_ref())
+            .map_err(|e| Status::internal(format!("encode flight schema: {e}")))?
+            .with_descriptor(descriptor)
+            .with_endpoints(endpoints)
+            .with_ordered(true);
+        Ok(Response::new(info))
     }
 
     async fn poll_flight_info(

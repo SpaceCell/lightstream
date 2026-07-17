@@ -6,10 +6,10 @@
 # image, then for each data shape and data source runs the source and sink
 # tasks on separate container instances. At each stream count the sink
 # receives the same workload per transport and times each transfer
-# independently, once over Arrow Flight and once over Lightstream TCP,
+# independently, once over Arrow Flight and once over the Lightstream protocol,
 # printing one RESULT line per transport per run plus a median line carrying
 # min and max, and one round-trip latency line per shape. Each run also emits
-# a RESULT metric=gaps line summarising inter-batch arrival gaps and RAW
+# a RESULT metric=gaps line summarising adjacent receiver-visible arrivals and RAW
 # lines carrying the arrival series, which this script splits into CSV files
 # under the results directory. The infrastructure is destroyed at the end
 # unless KEEP=1 is set.
@@ -38,8 +38,11 @@
 #                      under the container memory ceiling for the warm runs.
 #   STREAMS            Comma-separated stream counts. Defaults to 1,4,8,16.
 #   RUNS               Warm runs per cell. Defaults to 5.
-#   MAX_CHUNK_SIZE     Nvme replay chunk size in bytes for Lightstream. 0
+#   MAX_BATCH_SIZE     Nvme replay batch size limit in bytes for Lightstream. 0
 #                      replays whole batches. Defaults to 0.
+#   OUT_OF_CORE        Set to 1 to stream the nvme replay mappings with a
+#                      bounded resident footprint. Use when DATASET_GB
+#                      exceeds the host's RAM. Defaults to 0.
 #   FLIGHT_PORT        Source Flight port. Defaults to 9101.
 #   ECHO_PORT          Source latency echo port. Defaults to 9102.
 #   LS_PORT            Sink Lightstream port. Defaults to 9103.
@@ -65,7 +68,8 @@ ROWS="${ROWS:-1000000}"
 DATASET_GB="${DATASET_GB:-350}"
 STREAMS="${STREAMS:-1,4,8,16}"
 RUNS="${RUNS:-5}"
-MAX_CHUNK_SIZE="${MAX_CHUNK_SIZE:-0}"
+MAX_BATCH_SIZE="${MAX_BATCH_SIZE:-0}"
+OUT_OF_CORE="${OUT_OF_CORE:-0}"
 FLIGHT_PORT="${FLIGHT_PORT:-9101}"
 ECHO_PORT="${ECHO_PORT:-9102}"
 LS_PORT="${LS_PORT:-9103}"
@@ -109,14 +113,15 @@ LOCAL_IMAGE="lightstream-ecs-bench:${TAG}"
 # checkout, which lives outside the repo. The Dockerfile therefore expects the
 # build context to be the parent directory that holds both `lightstream` and
 # `minarrow`. Docker only reads `.dockerignore` from the context root, so stage
-# this rig's ignore file there for the build and remove it afterwards.
+# this rig's ignore file there for the build and remove it afterwards.`
+REPO_DIR="$(basename "$ROOT")"
 STAGED_IGNORE="$CONTEXT/.dockerignore"
 STAGED_IGNORE_BAK=""
 if [ -e "$STAGED_IGNORE" ]; then
   STAGED_IGNORE_BAK="$STAGED_IGNORE.bench-ecs.bak"
   mv "$STAGED_IGNORE" "$STAGED_IGNORE_BAK"
 fi
-cp "$HERE/.dockerignore" "$STAGED_IGNORE"
+sed "s|^!lightstream$|!$REPO_DIR|" "$HERE/.dockerignore" > "$STAGED_IGNORE"
 restore_ignore() {
   rm -f "$STAGED_IGNORE"
   if [ -n "$STAGED_IGNORE_BAK" ]; then
@@ -127,9 +132,20 @@ restore_ignore() {
 trap restore_ignore EXIT
 
 echo "[run] building image $LOCAL_IMAGE"
-docker build -f "$HERE/Dockerfile" -t "$LOCAL_IMAGE" "$CONTEXT"
+docker build -f "$HERE/Dockerfile" --build-arg LIGHTSTREAM_DIR="$REPO_DIR" -t "$LOCAL_IMAGE" "$CONTEXT"
 restore_ignore
 trap teardown EXIT
+
+# Confirm the built binaries accept the arguments this script passes before
+# any infrastructure exists, so a stale build cannot reach the cluster.
+if ! docker run --rm "$LOCAL_IMAGE" bench_ecs_source --help | grep -q -- '--max-batch-size'; then
+  echo "[run] built image does not support --max-batch-size: stale binaries" >&2
+  exit 1
+fi
+if ! docker run --rm "$LOCAL_IMAGE" bench_ecs_source --help | grep -q -- '--out-of-core'; then
+  echo "[run] built image does not support --out-of-core: stale binaries" >&2
+  exit 1
+fi
 
 echo "[run] provisioning ECS infrastructure (region=$REGION)"
 terraform -chdir="$TF" init -input=false
@@ -143,13 +159,27 @@ SINK_IP="$(terraform -chdir="$TF" output -raw sink_private_ip)"
 SOURCE_FAMILY="$(terraform -chdir="$TF" output -raw source_task_family)"
 SINK_FAMILY="$(terraform -chdir="$TF" output -raw sink_task_family)"
 SINK_LOG_GROUP="$(terraform -chdir="$TF" output -raw sink_log_group)"
+SOURCE_LOG_GROUP="$(terraform -chdir="$TF" output -raw source_log_group)"
 
 echo "[run] pushing image"
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "$REGISTRY"
 IMAGE="$ECR:$TAG"
 docker tag "$LOCAL_IMAGE" "$IMAGE"
-docker push "$IMAGE"
+# Registry pushes can drop mid-transfer on transient network errors. A retry
+# resumes from the layers already uploaded, so failing the run on the first
+# error would forfeit a full provision and teardown cycle for nothing.
+for attempt in 1 2 3; do
+  if docker push "$IMAGE"; then
+    break
+  fi
+  if [ "$attempt" -eq 3 ]; then
+    echo "[run] docker push failed after $attempt attempts" >&2
+    exit 1
+  fi
+  echo "[run] docker push attempt $attempt failed - retrying"
+  sleep 5
+done
 
 # Re-apply so the task definitions carry the freshly pushed image reference.
 terraform -chdir="$TF" apply -auto-approve -input=false "${TF_VARS[@]}" -var "image_ref=${IMAGE}"
@@ -235,9 +265,32 @@ wait_task_stopped() {
   done
 }
 
+# Print why a task stopped before teardown destroys the evidence: the ECS
+# stopped reason, the container's own reason and exit code, and the tail of
+# its log stream.
+diagnose_task() {
+  local task_arn="$1" container="$2" log_group="$3"
+  local task_id="${task_arn##*/}"
+  aws ecs describe-tasks --cluster "$CLUSTER" --region "$REGION" --tasks "$task_arn" \
+    --query 'tasks[0].{stoppedReason:stoppedReason,containerReason:containers[0].reason,exitCode:containers[0].exitCode}' \
+    --output table 2>/dev/null || true
+  echo "[run] last log lines for $container task $task_id"
+  aws logs get-log-events --log-group-name "$log_group" \
+    --log-stream-name "$container/$container/$task_id" \
+    --region "$REGION" --limit 50 --output json 2>/dev/null \
+    | jq -r '.events[].message' || true
+}
+
 for SHAPE in $SHAPES; do
   for DS in $DATA_SOURCES; do
-    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS max_chunk_size=$MAX_CHUNK_SIZE"
+    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS max_batch_size=$MAX_BATCH_SIZE out_of_core=$OUT_OF_CORE"
+
+    # --out-of-core is a bare flag on the source, so it is appended only
+    # when OUT_OF_CORE is set.
+    OOC_ARGS=()
+    if [ "$OUT_OF_CORE" = "1" ]; then
+      OOC_ARGS=(--out-of-core)
+    fi
 
     # Source starts first and listens; the sink then drives both transfers.
     SOURCE_ARN="$(run_task "$SOURCE_FAMILY" source source \
@@ -245,21 +298,26 @@ for SHAPE in $SHAPES; do
       --shape "$SHAPE" --rows "$ROWS" \
       --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
       --data-source "$DS" --dataset-dir /data \
-      --max-chunk-size "$MAX_CHUNK_SIZE" \
+      --max-batch-size "$MAX_BATCH_SIZE" \
+      "${OOC_ARGS[@]}" \
       --flight-bind "0.0.0.0:${FLIGHT_PORT}" --echo-bind "0.0.0.0:${ECHO_PORT}" \
       --ctrl-bind "0.0.0.0:${CTRL_PORT}" \
       --sink-ls-addr "${SINK_IP}:${LS_PORT}")"
     echo "[run] source task: $SOURCE_ARN"
 
     echo "[run] waiting for source task to reach RUNNING"
-    aws ecs wait tasks-running --cluster "$CLUSTER" --region "$REGION" --tasks "$SOURCE_ARN"
+    if ! aws ecs wait tasks-running --cluster "$CLUSTER" --region "$REGION" --tasks "$SOURCE_ARN"; then
+      echo "[run] source task stopped before reaching RUNNING" >&2
+      diagnose_task "$SOURCE_ARN" source "$SOURCE_LOG_GROUP"
+      exit 1
+    fi
 
     SINK_ARN="$(run_task "$SINK_FAMILY" sink sink \
       bench_ecs_sink \
       --shape "$SHAPE" --rows "$ROWS" \
       --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
       --data-source "$DS" \
-      --max-chunk-size "$MAX_CHUNK_SIZE" \
+      --max-batch-size "$MAX_BATCH_SIZE" \
       --source-flight-addr "${SOURCE_IP}:${FLIGHT_PORT}" \
       --source-echo-addr "${SOURCE_IP}:${ECHO_PORT}" \
       --source-ctrl-addr "${SOURCE_IP}:${CTRL_PORT}" \
@@ -301,8 +359,12 @@ for SHAPE in $SHAPES; do
     extract_series "$SINK_LOG" "$RESULTS_DIR/series"
 
     # Stop the source task before the next combination so it rebuilds its batch.
+    # Wait for it to reach STOPPED so its host ports are released before the next
+    # source binds them, since the source holds its listeners until it exits.
     aws ecs stop-task --cluster "$CLUSTER" --region "$REGION" --task "$SOURCE_ARN" \
       --query 'task.taskArn' --output text >/dev/null || true
+    aws ecs wait tasks-stopped --cluster "$CLUSTER" --region "$REGION" \
+      --tasks "$SOURCE_ARN" 2>/dev/null || true
 
     if [ "$EXIT_CODE" != "0" ]; then
       echo "[run] ERROR: sink container for shape=$SHAPE data=$DS exited with code $EXIT_CODE" >&2

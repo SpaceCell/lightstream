@@ -194,9 +194,9 @@ impl Stream for TcpByteStream {
         // Read into the arena's spare capacity
         let chunk_start = me.arena.write_pos();
         let n = {
-            let spare = me.arena.spare_mut();
+            let spare = me.arena.spare_uninit();
             let read_len = spare.len().min(me.chunk_size);
-            let mut read_buf = ReadBuf::new(&mut spare[..read_len]);
+            let mut read_buf = ReadBuf::uninit(&mut spare[..read_len]);
             match Pin::new(&mut me.reader).poll_read(cx, &mut read_buf) {
                 Poll::Ready(Ok(())) => read_buf.filled().len(),
                 Poll::Ready(Err(e)) => {
@@ -212,7 +212,8 @@ impl Stream for TcpByteStream {
             return Poll::Ready(None);
         }
 
-        me.arena.advance(n);
+        // SAFETY: ReadBuf reports exactly the bytes initialised by poll_read.
+        unsafe { me.arena.advance(n) };
         let shared = me.arena.window(chunk_start, n);
         me.arena.align();
         Poll::Ready(Some(Ok(shared)))

@@ -172,7 +172,7 @@ async fn test_protocol_mixed_roundtrip() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let (read_half, _write_half) = socket.into_split();
-    let mut reader = LightstreamReader::<Vec64<u8>>::new(read_half);
+    let mut reader = LightstreamReader::<Vec64<u8>>::new(read_half, None);
     reader.register_message("Ping");
     reader.register_table("Events", schema);
 
@@ -228,7 +228,7 @@ async fn test_protocol_connection_roundtrip() {
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Ack");
         conn.register_table("Data", write_schema);
 
@@ -240,7 +240,7 @@ async fn test_protocol_connection_roundtrip() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Ack");
     conn.register_table("Data", schema);
 
@@ -319,7 +319,7 @@ async fn test_protocol_protobuf_roundtrip() {
 
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Trade");
         conn.register_message("Heartbeat");
 
@@ -353,7 +353,7 @@ async fn test_protocol_protobuf_roundtrip() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Trade");
     conn.register_message("Heartbeat");
 
@@ -399,7 +399,7 @@ async fn test_protocol_protobuf_mixed_with_tables() {
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Trade");
         conn.register_table("Prices", write_schema);
 
@@ -429,7 +429,7 @@ async fn test_protocol_protobuf_mixed_with_tables() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Trade");
     conn.register_table("Prices", schema);
 
@@ -468,7 +468,7 @@ async fn test_protocol_messages_only() {
 
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Cmd");
 
         conn.send("Cmd", b"start").await.unwrap();
@@ -478,7 +478,7 @@ async fn test_protocol_messages_only() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Cmd");
 
     let msg = conn.recv().await.unwrap().unwrap();
@@ -536,7 +536,7 @@ async fn test_protocol_msgpack_roundtrip() {
 
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Sensor");
 
         let reading = SensorReading {
@@ -563,7 +563,7 @@ async fn test_protocol_msgpack_roundtrip() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Sensor");
 
     // 1. First reading - decode by reference
@@ -598,7 +598,7 @@ async fn test_protocol_msgpack_nested_data() {
 
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Config");
 
         let mut metadata = std::collections::HashMap::new();
@@ -632,7 +632,7 @@ async fn test_protocol_msgpack_nested_data() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Config");
 
     // 1. Config with nested inner
@@ -671,7 +671,7 @@ async fn test_protocol_msgpack_mixed_with_tables() {
     let write_schema = schema.clone();
     let writer_handle = tokio::spawn(async move {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         conn.register_message("Sensor");
         conn.register_table("Readings", write_schema);
 
@@ -701,7 +701,7 @@ async fn test_protocol_msgpack_mixed_with_tables() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let mut conn = TcpLightstreamConnection::from_tcp(socket);
+    let mut conn = TcpLightstreamConnection::from_tcp(socket, None);
     conn.register_message("Sensor");
     conn.register_table("Readings", schema);
 

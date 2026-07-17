@@ -27,7 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use minarrow::structs::shared_buffer::SharedBuffer;
 
 use crate::models::frames::websocket::{
-    self, MAX_HEADER_LEN, OPCODE_BINARY, OPCODE_CLOSE, OPCODE_PING,
+    self, MAX_HEADER_LEN, OPCODE_BINARY, OPCODE_CLOSE, OPCODE_PING, OPCODE_PONG,
 };
 use crate::models::streams::stream_arena::StreamArena;
 
@@ -47,7 +47,14 @@ enum WsReadState {
         mask_offset: usize,
     },
     /// Reading a ping payload before sending the pong.
-    ReadingPing { remaining: usize, payload: Vec<u8> },
+    ReadingPing {
+        remaining: usize,
+        payload: Vec<u8>,
+        masked: bool,
+        mask_key: [u8; 4],
+    },
+    /// Consuming a valid control payload that needs no application action.
+    IgnoringControl { remaining: usize },
     /// Sending a pong response. Transitions to Header when done.
     SendingPong { buf: Vec<u8>, written: usize },
     /// Connection closed.
@@ -63,6 +70,19 @@ enum WsReadState {
 ///
 /// Also implements [`Stream`] yielding arena-backed [`SharedBuffer`]
 /// windows for zero-allocation streaming.
+/// Fresh 32-bit masking key for a client-to-server frame.
+///
+/// WebSocket masking prevents attacker-controlled clients from choosing wire
+/// bytes that resemble HTTP traffic and poison an intermediary proxy's cache.
+/// It is required framing, not encryption, so cryptographic secrecy is not
+/// needed from the key.
+pub(crate) fn fresh_mask_key() -> [u8; 4] {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let h = RandomState::new().build_hasher().finish();
+    ((h as u32) ^ ((h >> 32) as u32)).to_le_bytes()
+}
+
 pub struct WsRead<R, W> {
     inner: R,
     writer: Arc<Mutex<W>>,
@@ -70,6 +90,8 @@ pub struct WsRead<R, W> {
     header_buf: [u8; MAX_HEADER_LEN],
     arena: StreamArena,
     chunk_size: usize,
+    /// Client pong responses are masked per RFC 6455.
+    client: bool,
 }
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> WsRead<R, W> {
@@ -85,7 +107,47 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> WsRead<R, W> {
             header_buf: [0u8; MAX_HEADER_LEN],
             arena: StreamArena::new(),
             chunk_size: 64 * 1024,
+            client: false,
         }
+    }
+
+    /// Wrap a raw TCP read half as a client-side WebSocket reader.
+    ///
+    /// Identical to [`WsRead::new`] except pong responses are masked,
+    /// as RFC 6455 requires of every client-to-server frame.
+    pub fn new_client(inner: R, writer: Arc<Mutex<W>>) -> Self {
+        Self {
+            client: true,
+            ..Self::new(inner, writer)
+        }
+    }
+
+    /// Build the pong frame for `payload` according to the connection role.
+    fn build_pong(client: bool, payload: &[u8]) -> Vec<u8> {
+        let mut pong = vec![0u8; 6 + payload.len()];
+        let n = if client {
+            websocket::write_masked_pong_frame(&mut pong, payload, fresh_mask_key())
+        } else {
+            websocket::write_pong_frame(&mut pong, payload)
+        };
+        pong.truncate(n);
+        pong
+    }
+
+    fn checked_payload_len(header: websocket::WsHeader) -> io::Result<usize> {
+        let payload_len = usize::try_from(header.payload_len).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "WebSocket payload length exceeds usize",
+            )
+        })?;
+        if header.opcode & 0x08 != 0 && (!header.fin || payload_len > 125) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fragmented or oversized WebSocket control frame",
+            ));
+        }
+        Ok(payload_len)
     }
 }
 
@@ -153,7 +215,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                         }
                     };
 
-                    let payload_len = ws.payload_len as usize;
+                    let payload_len = match Self::checked_payload_len(ws) {
+                        Ok(len) => len,
+                        Err(error) => {
+                            me.state = WsReadState::Closed;
+                            return Poll::Ready(Err(error));
+                        }
+                    };
 
                     match ws.opcode {
                         OPCODE_BINARY | 0x0 => {
@@ -178,22 +246,34 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                                 me.state = WsReadState::ReadingPing {
                                     remaining: payload_len,
                                     payload: Vec::with_capacity(payload_len),
+                                    masked: ws.masked,
+                                    mask_key: ws.mask_key,
                                 };
                             } else {
                                 // Empty ping - send empty pong immediately
-                                let mut pong = vec![0u8; 2];
-                                let n = websocket::write_pong_frame(&mut pong, &[]);
-                                pong.truncate(n);
                                 me.state = WsReadState::SendingPong {
-                                    buf: pong,
+                                    buf: Self::build_pong(me.client, &[]),
                                     written: 0,
                                 };
                             }
                             continue;
                         }
-                        _ => {
-                            me.state = WsReadState::Header { filled: 0 };
+                        OPCODE_PONG => {
+                            me.state = if payload_len == 0 {
+                                WsReadState::Header { filled: 0 }
+                            } else {
+                                WsReadState::IgnoringControl {
+                                    remaining: payload_len,
+                                }
+                            };
                             continue;
+                        }
+                        _ => {
+                            me.state = WsReadState::Closed;
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "unsupported WebSocket opcode",
+                            )));
                         }
                     }
                 }
@@ -247,7 +327,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                     }
                 }
 
-                WsReadState::ReadingPing { remaining, payload } => {
+                WsReadState::ReadingPing {
+                    remaining,
+                    payload,
+                    masked,
+                    mask_key,
+                } => {
                     let mut ping_buf = [0u8; 125];
                     let to_read = (*remaining).min(ping_buf.len());
                     let mut rb = ReadBuf::new(&mut ping_buf[..to_read]);
@@ -258,21 +343,46 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for WsRead<R, W> {
                                 me.state = WsReadState::Closed;
                                 return Poll::Ready(Ok(()));
                             }
+                            if *masked {
+                                let offset = payload.len();
+                                for (i, byte) in ping_buf[..n].iter_mut().enumerate() {
+                                    *byte ^= mask_key[(offset + i) % 4];
+                                }
+                            }
                             payload.extend_from_slice(&ping_buf[..n]);
                             *remaining -= n;
                             if *remaining == 0 {
                                 // Build pong frame and transition to sending it
-                                let mut pong = vec![0u8; 2 + payload.len()];
-                                let pong_len = websocket::write_pong_frame(&mut pong, payload);
-                                pong.truncate(pong_len);
                                 me.state = WsReadState::SendingPong {
-                                    buf: pong,
+                                    buf: Self::build_pong(me.client, payload),
                                     written: 0,
                                 };
                             }
                             continue;
                         }
                         Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+
+                WsReadState::IgnoringControl { remaining } => {
+                    let mut scratch = [0u8; 125];
+                    let to_read = (*remaining).min(scratch.len());
+                    let mut rb = ReadBuf::new(&mut scratch[..to_read]);
+                    match Pin::new(&mut me.inner).poll_read(cx, &mut rb) {
+                        Poll::Ready(Ok(())) => {
+                            let n = rb.filled().len();
+                            if n == 0 {
+                                me.state = WsReadState::Closed;
+                                return Poll::Ready(Ok(()));
+                            }
+                            *remaining -= n;
+                            if *remaining == 0 {
+                                me.state = WsReadState::Header { filled: 0 };
+                            }
+                            continue;
+                        }
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                         Poll::Pending => return Poll::Pending,
                     }
                 }
@@ -361,7 +471,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
                         }
                     };
 
-                    let payload_len = ws.payload_len as usize;
+                    let payload_len = match Self::checked_payload_len(ws) {
+                        Ok(len) => len,
+                        Err(error) => {
+                            me.state = WsReadState::Closed;
+                            return Poll::Ready(Some(Err(error)));
+                        }
+                    };
                     match ws.opcode {
                         OPCODE_BINARY | 0x0 => {
                             if payload_len == 0 {
@@ -385,26 +501,43 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
                                 me.state = WsReadState::ReadingPing {
                                     remaining: payload_len,
                                     payload: Vec::with_capacity(payload_len),
+                                    masked: ws.masked,
+                                    mask_key: ws.mask_key,
                                 };
                             } else {
-                                let mut pong = vec![0u8; 2];
-                                let n = websocket::write_pong_frame(&mut pong, &[]);
-                                pong.truncate(n);
                                 me.state = WsReadState::SendingPong {
-                                    buf: pong,
+                                    buf: Self::build_pong(me.client, &[]),
                                     written: 0,
                                 };
                             }
                             continue;
                         }
-                        _ => {
-                            me.state = WsReadState::Header { filled: 0 };
+                        OPCODE_PONG => {
+                            me.state = if payload_len == 0 {
+                                WsReadState::Header { filled: 0 }
+                            } else {
+                                WsReadState::IgnoringControl {
+                                    remaining: payload_len,
+                                }
+                            };
                             continue;
+                        }
+                        _ => {
+                            me.state = WsReadState::Closed;
+                            return Poll::Ready(Some(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "unsupported WebSocket opcode",
+                            ))));
                         }
                     }
                 }
 
-                WsReadState::ReadingPing { remaining, payload } => {
+                WsReadState::ReadingPing {
+                    remaining,
+                    payload,
+                    masked,
+                    mask_key,
+                } => {
                     let mut ping_buf = [0u8; 125];
                     let to_read = (*remaining).min(ping_buf.len());
                     let mut rb = ReadBuf::new(&mut ping_buf[..to_read]);
@@ -415,20 +548,45 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
                                 me.state = WsReadState::Closed;
                                 return Poll::Ready(None);
                             }
+                            if *masked {
+                                let offset = payload.len();
+                                for (i, byte) in ping_buf[..n].iter_mut().enumerate() {
+                                    *byte ^= mask_key[(offset + i) % 4];
+                                }
+                            }
                             payload.extend_from_slice(&ping_buf[..n]);
                             *remaining -= n;
                             if *remaining == 0 {
-                                let mut pong = vec![0u8; 2 + payload.len()];
-                                let pong_len = websocket::write_pong_frame(&mut pong, payload);
-                                pong.truncate(pong_len);
                                 me.state = WsReadState::SendingPong {
-                                    buf: pong,
+                                    buf: Self::build_pong(me.client, payload),
                                     written: 0,
                                 };
                             }
                             continue;
                         }
                         Poll::Ready(Err(e)) => return Poll::Ready(Some(Err(e))),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+
+                WsReadState::IgnoringControl { remaining } => {
+                    let mut scratch = [0u8; 125];
+                    let to_read = (*remaining).min(scratch.len());
+                    let mut rb = ReadBuf::new(&mut scratch[..to_read]);
+                    match Pin::new(&mut me.inner).poll_read(cx, &mut rb) {
+                        Poll::Ready(Ok(())) => {
+                            let n = rb.filled().len();
+                            if n == 0 {
+                                me.state = WsReadState::Closed;
+                                return Poll::Ready(None);
+                            }
+                            *remaining -= n;
+                            if *remaining == 0 {
+                                me.state = WsReadState::Header { filled: 0 };
+                            }
+                            continue;
+                        }
+                        Poll::Ready(Err(error)) => return Poll::Ready(Some(Err(error))),
                         Poll::Pending => return Poll::Pending,
                     }
                 }
@@ -462,9 +620,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
 
                     let chunk_start = me.arena.write_pos();
                     let n = {
-                        let spare = me.arena.spare_mut();
+                        let spare = me.arena.spare_uninit();
                         let read_len = spare.len().min(*remaining);
-                        let mut read_buf = ReadBuf::new(&mut spare[..read_len]);
+                        let mut read_buf = ReadBuf::uninit(&mut spare[..read_len]);
                         match Pin::new(&mut me.inner).poll_read(cx, &mut read_buf) {
                             Poll::Ready(Ok(())) => read_buf.filled().len(),
                             Poll::Ready(Err(e)) => return Poll::Ready(Some(Err(e))),
@@ -478,14 +636,19 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Stream for WsRead<R, W> {
                     }
 
                     if *masked {
-                        let spare = me.arena.spare_mut();
+                        let spare = me.arena.spare_uninit();
+                        // SAFETY: the read above initialised the first `n`
+                        // bytes of the spare region.
                         for i in 0..n {
-                            spare[i] ^= mask_key[(*mask_offset + i) % 4];
+                            let b = unsafe { spare[i].assume_init() };
+                            spare[i].write(b ^ mask_key[(*mask_offset + i) % 4]);
                         }
                         *mask_offset = (*mask_offset + n) % 4;
                     }
 
-                    me.arena.advance(n);
+                    // SAFETY: ReadBuf reports exactly the bytes initialised
+                    // above, after optional in-place unmasking.
+                    unsafe { me.arena.advance(n) };
                     *remaining -= n;
 
                     if *remaining == 0 {
@@ -531,10 +694,16 @@ enum WsWriteState {
 pub struct WsWrite<W> {
     inner: Arc<Mutex<W>>,
     state: WsWriteState,
+    /// Client role: frames are masked per RFC 6455.
+    client: bool,
+    /// Masked copy of the current frame's payload for client writes.
+    masked_payload: Vec<u8>,
 }
 
 impl<W: AsyncWrite + Unpin> WsWrite<W> {
-    /// Create a WebSocket write adapter from a raw TCP write half.
+    /// Create a server-side WebSocket write adapter from a raw TCP
+    /// write half. Frames are written unmasked, as RFC 6455 requires of
+    /// server-to-client traffic.
     ///
     /// Returns the shared writer reference needed by WsRead for pong
     /// responses, and the WsWrite adapter for application data.
@@ -544,7 +713,19 @@ impl<W: AsyncWrite + Unpin> WsWrite<W> {
         let writer = Self {
             inner: Arc::clone(&shared),
             state: WsWriteState::Idle,
+            client: false,
+            masked_payload: Vec::new(),
         };
+        (shared, writer)
+    }
+
+    /// Create a client-side WebSocket write adapter from a raw TCP
+    /// write half. Every frame is masked with a fresh key, as RFC 6455
+    /// requires of client-to-server traffic; compliant servers reject
+    /// unmasked client frames.
+    pub fn new_client(inner: W) -> (Arc<Mutex<W>>, Self) {
+        let (shared, mut writer) = Self::new(inner);
+        writer.client = true;
         (shared, writer)
     }
 }
@@ -562,7 +743,15 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for WsWrite<W> {
             match &mut me.state {
                 WsWriteState::Idle => {
                     let mut header = [0u8; MAX_HEADER_LEN];
-                    let header_len = websocket::write_binary_header(&mut header, buf.len());
+                    let header_len = if me.client {
+                        let key = fresh_mask_key();
+                        me.masked_payload.clear();
+                        me.masked_payload
+                            .extend(buf.iter().enumerate().map(|(i, b)| b ^ key[i % 4]));
+                        websocket::write_masked_binary_header(&mut header, buf.len(), key)
+                    } else {
+                        websocket::write_binary_header(&mut header, buf.len())
+                    };
                     me.state = WsWriteState::WritingHeader {
                         header,
                         header_len,
@@ -602,8 +791,9 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for WsWrite<W> {
                     payload_written,
                 } => {
                     let remaining = *payload_total - *payload_written;
-                    let to_write =
-                        &buf[*payload_written..(*payload_written + remaining).min(buf.len())];
+                    let source: &[u8] = if me.client { &me.masked_payload } else { buf };
+                    let to_write = &source
+                        [*payload_written..(*payload_written + remaining).min(source.len())];
                     match Pin::new(&mut *guard).poll_write(cx, to_write) {
                         Poll::Ready(Ok(n)) => {
                             *payload_written += n;
@@ -628,10 +818,127 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for WsWrite<W> {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut guard = self.get_mut().inner.lock().unwrap();
+        let me = self.get_mut();
+        let mut guard = me.inner.lock().unwrap();
         let mut close_buf = [0u8; MAX_HEADER_LEN];
-        let n = websocket::write_close_frame(&mut close_buf);
+        let n = if me.client {
+            websocket::write_masked_close_frame(&mut close_buf, fresh_mask_key())
+        } else {
+            websocket::write_close_frame(&mut close_buf)
+        };
         let _ = Pin::new(&mut *guard).poll_write(cx, &close_buf[..n]);
         Pin::new(&mut *guard).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+
+    /// A client-role writer emits RFC 6455 masked frames, i.e.,
+    /// mask bit set, key present, and the payload is XORed.
+    ///
+    /// Interoperability with compliant servers depends on this,
+    /// so the assertion is byte-level.
+    #[tokio::test]
+    async fn client_frames_are_masked() {
+        let (tx, mut rx) = tokio::io::duplex(1024);
+        let (_shared, mut ws_write) = WsWrite::new_client(tx);
+
+        let payload = b"orderbook";
+        ws_write.write_all(payload).await.unwrap();
+        drop(ws_write);
+
+        let mut wire = vec![0u8; 2 + 4 + payload.len()];
+        tokio::io::AsyncReadExt::read_exact(&mut rx, &mut wire)
+            .await
+            .unwrap();
+
+        assert_eq!(wire[0], 0x82, "FIN + binary opcode");
+        assert_eq!(wire[1] & 0x80, 0x80, "mask bit must be set");
+        assert_eq!(wire[1] & 0x7F, payload.len() as u8);
+        let key = [wire[2], wire[3], wire[4], wire[5]];
+        let unmasked: Vec<u8> = wire[6..]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ key[i % 4])
+            .collect();
+        assert_eq!(&unmasked, payload);
+    }
+
+    /// A server-role writer stays unmasked, per RFC 6455.
+    #[tokio::test]
+    async fn server_frames_are_unmasked() {
+        let (tx, mut rx) = tokio::io::duplex(1024);
+        let (_shared, mut ws_write) = WsWrite::new(tx);
+
+        let payload = b"orderbook";
+        ws_write.write_all(payload).await.unwrap();
+        drop(ws_write);
+
+        let mut wire = vec![0u8; 2 + payload.len()];
+        tokio::io::AsyncReadExt::read_exact(&mut rx, &mut wire)
+            .await
+            .unwrap();
+        assert_eq!(wire[1] & 0x80, 0, "server frames must not be masked");
+        assert_eq!(&wire[2..], payload);
+    }
+
+    /// Masked client frames decode through the server-side reader.
+    #[tokio::test]
+    async fn masked_round_trip() {
+        let (client_end, server_end) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client_end);
+        let (server_read, server_write) = tokio::io::split(server_end);
+
+        let (_c_shared, mut ws_write) = WsWrite::new_client(client_write);
+        let (s_shared, _s_write) = WsWrite::new(server_write);
+        let mut ws_read = WsRead::new(server_read, s_shared);
+        drop(client_read);
+
+        let payload = vec![0xA5u8; 300];
+        let sent = payload.clone();
+        let writer = tokio::spawn(async move {
+            ws_write.write_all(&sent).await.unwrap();
+        });
+
+        let mut received = vec![0u8; payload.len()];
+        tokio::io::AsyncReadExt::read_exact(&mut ws_read, &mut received)
+            .await
+            .unwrap();
+        writer.await.unwrap();
+        assert_eq!(received, payload);
+    }
+
+    #[tokio::test]
+    async fn oversized_ping_is_rejected_before_allocation() {
+        let (mut tx, rx) = tokio::io::duplex(64);
+        let (shared, _writer) = WsWrite::new(tokio::io::sink());
+        let mut reader = WsRead::new(rx, shared);
+        tx.write_all(&[0x89, 126, 0, 126]).await.unwrap();
+
+        let mut byte = [0u8; 1];
+        let error = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut byte)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn pong_payload_is_consumed_before_next_data_frame() {
+        let (mut tx, rx) = tokio::io::duplex(64);
+        let (shared, _writer) = WsWrite::new(tokio::io::sink());
+        let mut reader = WsRead::new(rx, shared);
+        tx.write_all(&[0x8A, 3, b'a', b'b', b'c', 0x82, 2, b'o', b'k'])
+            .await
+            .unwrap();
+
+        let mut payload = [0u8; 2];
+        tokio::io::AsyncReadExt::read_exact(&mut reader, &mut payload)
+            .await
+            .unwrap();
+        assert_eq!(&payload, b"ok");
     }
 }

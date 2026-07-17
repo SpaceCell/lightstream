@@ -19,6 +19,7 @@ use minarrow::{Field, Vec64};
 use tokio_uring::buf::BoundedBuf;
 
 use crate::models::codecs::lightstream::LightstreamCodec;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::lightstream_message::{FRAME_HEADER_SIZE, LightstreamMessage};
 
 use super::buf::UringBuf;
@@ -94,20 +95,23 @@ pub struct IoUringConnection<S: UringStream> {
     /// Reusable header buffer
     header_buf: Vec<u8>,
     eof: bool,
+    limits: DecodeLimits,
 }
 
 impl<S: UringStream> IoUringConnection<S> {
     /// Create a connection from any UringStream transport.
-    pub fn new(stream: S) -> Self {
+    pub fn new(stream: S, limits: Option<DecodeLimits>) -> Self {
+        let limits = limits.unwrap_or_default();
         let mut header_buf = Vec::with_capacity(FRAME_HEADER_SIZE);
         header_buf.resize(FRAME_HEADER_SIZE, 0);
         Self {
             stream,
-            read_codec: LightstreamCodec::new(),
-            write_codec: LightstreamCodec::new(),
+            read_codec: LightstreamCodec::new(Some(limits)),
+            write_codec: LightstreamCodec::new(Some(limits)),
             encode_buf: Vec64::with_capacity(0),
             header_buf,
             eof: false,
+            limits,
         }
     }
 
@@ -187,6 +191,16 @@ impl<S: UringStream> IoUringConnection<S> {
         let tag = self.header_buf[0];
         let payload_len = u32::from_le_bytes(self.header_buf[1..5].try_into().unwrap()) as usize;
 
+        // The declared length is wire data from the peer, so cap it
+        // before any allocation.
+        if let Err(e) = self
+            .limits
+            .check(payload_len, self.limits.max_frame_bytes, "TLV frame bytes")
+        {
+            self.eof = true;
+            return Some(Err(e));
+        }
+
         // Read payload directly into a Vec64 via UringBuf
         let payload_buf = UringBuf(Vec64::with_capacity(payload_len));
 
@@ -238,13 +252,19 @@ impl<S: UringStream> IoUringConnection<S> {
 
 impl IoUringUdsConnection {
     /// Create a connection from a standard library `UnixStream`.
-    pub fn from_unix_stream(stream: std::os::unix::net::UnixStream) -> Self {
-        Self::new(tokio_uring::net::UnixStream::from_std(stream))
+    pub fn from_unix_stream(
+        stream: std::os::unix::net::UnixStream,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        Self::new(tokio_uring::net::UnixStream::from_std(stream), limits)
     }
 
     /// Create a connection from a tokio `UnixStream`.
-    pub fn from_tokio_unix_stream(stream: tokio::net::UnixStream) -> io::Result<Self> {
-        Ok(Self::from_unix_stream(stream.into_std()?))
+    pub fn from_tokio_unix_stream(
+        stream: tokio::net::UnixStream,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        Ok(Self::from_unix_stream(stream.into_std()?, limits))
     }
 
     /// Create a socketpair for inter-process I/O via io_uring.
@@ -259,7 +279,7 @@ impl IoUringUdsConnection {
     /// # Example
     ///
     /// ```ignore
-    /// let (conn, child_fd) = IoUringUdsConnection::socketpair()?;
+    /// let (conn, child_fd) = IoUringUdsConnection::socketpair(None)?;
     /// let child = Command::new("my_worker")
     ///     .stdin(child_fd.try_clone()?)
     ///     .stdout(child_fd)
@@ -267,23 +287,31 @@ impl IoUringUdsConnection {
     /// conn.register_table("Data", schema);
     /// conn.send_table("Data", &table).await?;
     /// ```
-    pub fn socketpair() -> io::Result<(Self, std::os::unix::net::UnixStream)> {
+    pub fn socketpair(
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<(Self, std::os::unix::net::UnixStream)> {
         let (parent, child) = std::os::unix::net::UnixStream::pair()?;
         parent.set_nonblocking(true)?;
-        let conn = Self::new(tokio_uring::net::UnixStream::from_std(parent));
+        let conn = Self::new(tokio_uring::net::UnixStream::from_std(parent), limits);
         Ok((conn, child))
     }
 }
 
 impl IoUringTcpConnection {
     /// Create a connection from a standard library `TcpStream`.
-    pub fn from_tcp_stream(stream: std::net::TcpStream) -> Self {
-        Self::new(tokio_uring::net::TcpStream::from_std(stream))
+    pub fn from_tcp_stream(
+        stream: std::net::TcpStream,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        Self::new(tokio_uring::net::TcpStream::from_std(stream), limits)
     }
 
     /// Create a connection from a tokio `TcpStream`.
-    pub fn from_tokio_tcp_stream(stream: tokio::net::TcpStream) -> io::Result<Self> {
-        Ok(Self::from_tcp_stream(stream.into_std()?))
+    pub fn from_tokio_tcp_stream(
+        stream: tokio::net::TcpStream,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        Ok(Self::from_tcp_stream(stream.into_std()?, limits))
     }
 }
 

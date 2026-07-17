@@ -137,13 +137,7 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
         }
 
         let spare = self.buf.spare_capacity_mut();
-        // SAFETY: `spare` is the uninitialised tail of `self.buf`, owned by
-        // this borrow. Reinterpreting MaybeUninit<u8> as u8 produces a
-        // distinct view of the same allocation, sound to pass to
-        // tokio::io::ReadBuf, which only writes through it.
-        let spare_slice =
-            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, spare.len()) };
-        let mut read_buf = ReadBuf::new(spare_slice);
+        let mut read_buf = ReadBuf::uninit(spare);
 
         match Pin::new(&mut *self.source).poll_read(cx, &mut read_buf) {
             Poll::Ready(Ok(())) => {
@@ -180,9 +174,9 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
         }
 
         let n = {
-            let spare = self.arena.spare_mut();
+            let spare = self.arena.spare_uninit();
             let read_len = spare.len().min(remaining);
-            let mut read_buf = ReadBuf::new(&mut spare[..read_len]);
+            let mut read_buf = ReadBuf::uninit(&mut spare[..read_len]);
             match Pin::new(&mut *self.source).poll_read(cx, &mut read_buf) {
                 Poll::Ready(Ok(())) => read_buf.filled().len(),
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
@@ -197,7 +191,8 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
             )));
         }
 
-        self.arena.advance(n);
+        // SAFETY: ReadBuf reports exactly the bytes initialised by poll_read.
+        unsafe { self.arena.advance(n) };
         *filled += n;
         Poll::Ready(Ok(*filled >= target))
     }
@@ -212,18 +207,21 @@ impl<B: StreamBuffer + Unpin> TableStreamDecoder<B> {
         body_pad: usize,
         custom_metadata: Option<Vec<KeyValue>>,
     ) {
-        // Ensure arena has room for this body
-        if self.arena.remaining() < body_len {
-            self.arena.recycle_or_reset();
-        }
+        // Rewind over previous bodies once their windows have dropped,
+        // so steady-state streaming reuses one committed region.
+        self.arena.recycle_if_free();
+        // Ensure arena has room for this body, growing a generation when
+        // the body exceeds the arena capacity.
+        self.arena.ensure_capacity(body_len);
 
         let body_start = self.arena.write_pos();
 
         // Copy any overread bytes from the metadata buffer into the arena
         let overread = self.buf.len().min(body_len);
         if overread > 0 {
-            self.arena.spare_mut()[..overread].copy_from_slice(&self.buf[..overread]);
-            self.arena.advance(overread);
+            self.arena
+                .extend_from_slice(&self.buf[..overread])
+                .expect("arena capacity checked above");
             self.drain_consumed(overread);
         }
 

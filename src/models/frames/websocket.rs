@@ -112,6 +112,18 @@ pub fn write_binary_header(buf: &mut [u8], payload_len: usize) -> usize {
     }
 }
 
+/// Write a masked WebSocket binary frame header into `buf`.
+///
+/// Returns the number of bytes written. The buffer must be at least
+/// [`MAX_HEADER_LEN`] bytes. RFC 6455 requires every client-to-server
+/// frame to be masked, with the payload XORed against `mask_key`.
+pub fn write_masked_binary_header(buf: &mut [u8], payload_len: usize, mask_key: [u8; 4]) -> usize {
+    let n = write_binary_header(buf, payload_len);
+    buf[1] |= 0x80;
+    buf[n..n + 4].copy_from_slice(&mask_key);
+    n + 4
+}
+
 /// Write a WebSocket close frame into `buf`.
 ///
 /// Returns the number of bytes written. Status code 1000 (normal closure).
@@ -121,6 +133,36 @@ pub fn write_close_frame(buf: &mut [u8]) -> usize {
     buf[1] = 0x02; // payload length = 2
     buf[2..4].copy_from_slice(&1000u16.to_be_bytes()); // normal closure
     4
+}
+
+/// Write a masked WebSocket close frame into `buf`.
+///
+/// Returns the number of bytes written. RFC 6455 requires client-to-server
+/// control frames to be masked. Status code 1000 (normal closure).
+pub fn write_masked_close_frame(buf: &mut [u8], mask_key: [u8; 4]) -> usize {
+    buf[0] = 0x88;
+    buf[1] = 0x80 | 0x02;
+    buf[2..6].copy_from_slice(&mask_key);
+    let status = 1000u16.to_be_bytes();
+    buf[6] = status[0] ^ mask_key[0];
+    buf[7] = status[1] ^ mask_key[1];
+    8
+}
+
+/// Write a masked WebSocket pong frame into `buf` with the given payload.
+///
+/// Returns the number of bytes written. RFC 6455 requires client-to-server
+/// control frames to be masked, and the pong payload must echo the ping.
+pub fn write_masked_pong_frame(buf: &mut [u8], ping_payload: &[u8], mask_key: [u8; 4]) -> usize {
+    let len = ping_payload.len();
+    debug_assert!(len <= 125); // control frames max 125 bytes payload
+    buf[0] = 0x8A; // FIN=1, opcode=pong(0xA)
+    buf[1] = 0x80 | len as u8;
+    buf[2..6].copy_from_slice(&mask_key);
+    for i in 0..len {
+        buf[6 + i] = ping_payload[i] ^ mask_key[i % 4];
+    }
+    6 + len
 }
 
 /// Write a WebSocket pong frame into `buf` with the given payload.

@@ -24,6 +24,8 @@ use minarrow::structs::shared_buffer::SharedBuffer;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io;
+#[cfg(feature = "arena")]
+use std::mem::MaybeUninit;
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
@@ -41,6 +43,56 @@ use std::sync::Arc;
 #[cfg(unix)]
 fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     file.read_exact_at(buf, offset)
+}
+
+/// Read directly into spare capacity without first claiming that its bytes
+/// are initialised. Unix `pread` accepts a raw output pointer, preserving the
+/// arena fast path without a full-buffer zeroing pass.
+#[cfg(all(unix, feature = "arena"))]
+fn read_at_uninit(file: &File, buf: &mut [MaybeUninit<u8>], offset: u64) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let file_offset: libc::off_t = (offset + filled as u64).try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "file offset exceeds off_t")
+        })?;
+        let n = unsafe {
+            libc::pread(
+                file.as_raw_fd(),
+                buf.as_mut_ptr().add(filled).cast(),
+                buf.len() - filled,
+                file_offset,
+            )
+        };
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "file ended before requested offset/length",
+            ));
+        }
+        if n < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        filled += n as usize;
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "arena"))]
+fn read_at_uninit(file: &File, buf: &mut [MaybeUninit<u8>], offset: u64) -> io::Result<()> {
+    // Windows FileExt has no spare-capacity API. Initialise once before
+    // passing the region through its safe `&mut [u8]` interface.
+    for byte in &mut *buf {
+        byte.write(0);
+    }
+    let initialised =
+        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), buf.len()) };
+    read_at(file, initialised, offset)
 }
 
 #[cfg(windows)]
@@ -108,8 +160,10 @@ pub struct FileTableReader {
     /// Single long-lived backing for every block read. Each `read_batch`
     /// reserves a region in the arena and hands the resulting
     /// `SharedBuffer` window to the decoder. While outstanding windows
-    /// exist the arena cannot reset; once they drop, `recycle_or_reset`
-    /// returns the write position to zero without freeing the backing.
+    /// exist the arena cannot reset; once they drop, `recycle_if_free`
+    /// returns the write position to zero without freeing the backing,
+    /// so a sequential scan that drops each batch before reading the
+    /// next reuses one committed region for the whole file.
     /// Mutex serialises arena writes; reads are independent.
     #[cfg(feature = "arena")]
     block_arena: Arc<std::sync::Mutex<StreamArena>>,
@@ -140,7 +194,14 @@ impl FileTableReader {
         }
 
         let footer_len = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
-        let footer_start = file_len - 10 - footer_len;
+        // The declared footer length is untrusted file data, so the
+        // subtraction is checked rather than allowed to wrap.
+        let footer_start = (file_len - 10).checked_sub(footer_len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "footer length exceeds file size",
+            )
+        })?;
         if footer_start < 8 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -158,9 +219,12 @@ impl FileTableReader {
         let fb_schema = footer_msg
             .schema()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "footer missing schema"))?;
-        let mut fields = Vec::with_capacity(fb_schema.fields().unwrap().len());
-        for i in 0..fb_schema.fields().unwrap().len() {
-            let f = convert_fb_field_to_arrow(&fb_schema.fields().unwrap().get(i))?;
+        let fb_fields = fb_schema.fields().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "footer schema missing fields")
+        })?;
+        let mut fields = Vec::with_capacity(fb_fields.len());
+        for i in 0..fb_fields.len() {
+            let f = convert_fb_field_to_arrow(&fb_fields.get(i))?;
             fields.push(Arc::new(f));
         }
 
@@ -177,7 +241,7 @@ impl FileTableReader {
 
         let record_blocks = footer_msg
             .recordBatches()
-            .unwrap()
+            .unwrap_or_else(|| unsafe { Vector::new(&[], 0) })
             .iter()
             .map(|b| IPCFileBlock {
                 offset: b.offset() as usize,
@@ -186,6 +250,37 @@ impl FileTableReader {
             })
             .collect::<Vec<_>>();
 
+        // Footer block entries are untrusted file data. Reject any block
+        // whose range falls outside the file before it can drive an
+        // out-of-range slice or reservation.
+        for blk in dict_blocks.iter().chain(record_blocks.iter()) {
+            let end = blk
+                .offset
+                .checked_add(blk.meta_bytes)
+                .and_then(|v| v.checked_add(blk.body_bytes));
+            match end {
+                Some(end) if blk.offset >= 8 && end <= file_len => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "footer block out of bounds",
+                    ));
+                }
+            }
+        }
+
+        // Size the arena to the largest declared block. The recycling in
+        // `read_block` means one block is resident at a time on the
+        // sequential path, so this bounds the backing to a small
+        // allocator-serviced buffer rather than a large reservation.
+        #[cfg(feature = "arena")]
+        let arena_capacity = dict_blocks
+            .iter()
+            .chain(record_blocks.iter())
+            .map(|b| b.meta_bytes + b.body_bytes)
+            .max()
+            .unwrap_or(0);
+
         let mut rdr = Self {
             file: Arc::new(file),
             schema: fields,
@@ -193,7 +288,9 @@ impl FileTableReader {
             record_blocks,
             dictionaries: std::collections::HashMap::new(),
             #[cfg(feature = "arena")]
-            block_arena: Arc::new(std::sync::Mutex::new(StreamArena::new())),
+            block_arena: Arc::new(std::sync::Mutex::new(StreamArena::with_capacity(
+                arena_capacity,
+            ))),
         };
 
         rdr.load_all_dictionaries()?;
@@ -298,22 +395,16 @@ impl FileTableReader {
     fn read_block(&self, blk: &IPCFileBlock) -> io::Result<SharedBuffer> {
         let total = blk.meta_bytes + blk.body_bytes;
         let mut arena = self.block_arena.lock().unwrap();
-        if arena.remaining() < total {
-            arena.recycle_or_reset();
-        }
+        // Rewind over the previous block once its windows have dropped,
+        // so the read lands on already-committed pages instead of
+        // faulting fresh ones for every block.
+        arena.recycle_if_free();
+        arena.ensure_capacity(total);
         let start = arena.write_pos();
-        // SAFETY: spare_mut returns [write_pos..capacity]; we slice it to
-        // exactly `total` and hand it to read_at, which fills every byte
-        // or returns Err. advance(total) below records the initialised
-        // region.
-        let spare = arena.spare_mut();
-        if spare.len() < total {
-            return Err(io::Error::other(
-                "arena capacity exhausted; recycle could not reclaim space",
-            ));
-        }
-        read_at(&self.file, &mut spare[..total], blk.offset as u64)?;
-        arena.advance(total);
+        let spare = arena.spare_uninit();
+        read_at_uninit(&self.file, &mut spare[..total], blk.offset as u64)?;
+        // SAFETY: read_at_uninit filled the entire requested region.
+        unsafe { arena.advance(total) };
         let shared = arena.window(start, total);
         arena.align();
         Ok(shared)

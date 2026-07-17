@@ -34,7 +34,7 @@
 //! use futures_util::StreamExt;
 //! # async fn run() -> std::io::Result<()> {
 //! # use lightstream::models::readers::websocket::WebSocketTableReader;
-//! let mut reader = WebSocketTableReader::connect("ws://127.0.0.1:9000").await?;
+//! let mut reader = WebSocketTableReader::connect("ws://127.0.0.1:9000", None).await?;
 //! while let Some(result) = reader.next().await {
 //!     let table = result?;
 //!     // process each batch as it arrives
@@ -53,6 +53,7 @@ use tokio_tungstenite::connect_async;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table::TableReader;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::streams::websocket::{WsRead, WsWrite};
 use crate::traits::transport_reader::IPCTransportReader;
 
@@ -75,15 +76,20 @@ impl WebSocketTableReader {
     /// Uses `IPCMessageProtocol::Stream` and a 64 KiB initial decode capacity.
     /// The write half is dropped - use the Lightstream connection for
     /// bidirectional communication.
-    pub async fn connect(url: &str) -> io::Result<Self> {
+    pub async fn connect(url: &str, limits: Option<DecodeLimits>) -> io::Result<Self> {
         let (ws_stream, _response) = connect_async(url)
             .await
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
         let raw = ws_stream.into_inner();
         let (read_half, write_half) = tokio::io::split(raw);
-        let (shared_writer, _ws_write) = WsWrite::new(write_half);
-        let ws_read = WsRead::new(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), IPCMessageProtocol::Stream);
+        let (shared_writer, _ws_write) = WsWrite::new_client(write_half);
+        let ws_read = WsRead::new_client(read_half, shared_writer);
+        let inner = TableReader::<Vec64<u8>>::new(
+            ws_read,
+            BufferChunkSize::WebSocket.chunk_size(),
+            IPCMessageProtocol::Stream,
+            limits,
+        );
         Ok(Self { inner })
     }
 
@@ -102,10 +108,16 @@ impl WebSocketTableReader {
     pub fn from_raw_stream(
         stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
         protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
     ) -> Self {
         let shared_writer = Arc::new(Mutex::new(tokio::io::sink()));
         let ws_read = WsRead::new(stream, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), protocol);
+        let inner = TableReader::<Vec64<u8>>::new(
+            ws_read,
+            BufferChunkSize::WebSocket.chunk_size(),
+            protocol,
+            limits,
+        );
         Self { inner }
     }
 
@@ -121,6 +133,7 @@ impl WebSocketTableReader {
         read_half: R,
         write_half: W,
         protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
     ) -> Self
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -128,7 +141,12 @@ impl WebSocketTableReader {
     {
         let (shared_writer, _ws_write) = WsWrite::new(write_half);
         let ws_read = WsRead::new(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), protocol);
+        let inner = TableReader::<Vec64<u8>>::new(
+            ws_read,
+            BufferChunkSize::WebSocket.chunk_size(),
+            protocol,
+            limits,
+        );
         Self { inner }
     }
 
@@ -142,6 +160,7 @@ impl WebSocketTableReader {
     pub async fn connect_tls(
         url: &str,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         use tokio_tungstenite::{Connector, connect_async_tls_with_config};
         let connector = Connector::Rustls(config);
@@ -155,9 +174,14 @@ impl WebSocketTableReader {
                 .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
         let raw = ws_stream.into_inner();
         let (read_half, write_half) = tokio::io::split(raw);
-        let (shared_writer, _ws_write) = WsWrite::new(write_half);
-        let ws_read = WsRead::new(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(ws_read, BufferChunkSize::WebSocket.chunk_size(), IPCMessageProtocol::Stream);
+        let (shared_writer, _ws_write) = WsWrite::new_client(write_half);
+        let ws_read = WsRead::new_client(read_half, shared_writer);
+        let inner = TableReader::<Vec64<u8>>::new(
+            ws_read,
+            BufferChunkSize::WebSocket.chunk_size(),
+            IPCMessageProtocol::Stream,
+            limits,
+        );
         Ok(Self { inner })
     }
 }

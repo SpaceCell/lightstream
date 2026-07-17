@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Server accepted TCP from {peer}");
         // from_tcp runs the h2 handshake with upload-sized flow-control
         // windows, then accepts STREAMS request streams and merges them.
-        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::Ordered)
+        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::Ordered, None)
             .await
             .expect("accept streams");
         reader.read_all_tables().await.expect("read tables")

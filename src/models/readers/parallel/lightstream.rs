@@ -34,6 +34,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::models::frames::lightstream_message::LightstreamMessage;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::readers::lightstream::LightstreamReader;
 use crate::traits::parallel_transport_reader::SortBehaviour;
 
@@ -71,6 +72,7 @@ impl LightstreamParallelReader {
         messages: &[&str],
         tables: &[(&str, Vec<Field>)],
         sort: SortBehaviour,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         assert!(stream_count >= 1, "stream_count must be at least 1");
         let mut slots: Vec<Option<mpsc::Receiver<StreamItem>>> =
@@ -97,7 +99,7 @@ impl LightstreamParallelReader {
                     format!("duplicate connection index {index}"),
                 ));
             }
-            let mut reader = LightstreamReader::<Vec64<u8>>::new(read_half);
+            let mut reader = LightstreamReader::<Vec64<u8>>::new(read_half, limits);
             for name in messages {
                 reader.register_message(*name);
             }

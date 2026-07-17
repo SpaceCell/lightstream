@@ -121,7 +121,7 @@ fn make_varying_tables() -> Vec<Table> {
 
 async fn open_reader(path: &Path) -> Result<TableReader<Vec64<u8>>, Box<dyn std::error::Error>> {
     let stream = DiskByteStream::open(path, BufferChunkSize::Custom(8192)).await?;
-    Ok(TableReader::new(stream, 8192, IPCMessageProtocol::Stream))
+    Ok(TableReader::new(stream, 8192, IPCMessageProtocol::Stream, None))
 }
 
 async fn write_stream(tables: &[Table], path: &Path) -> Result<(), Box<dyn std::error::Error>> {

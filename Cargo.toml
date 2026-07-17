@@ -43,7 +43,7 @@ flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
 log = "0.4"
-minarrow = { path = "../minarrow", version = "0.15.0", features = ["chunked", "views", "select", "large_string", "size"], default-features = false }
+minarrow = { version = "0.16.0", features = ["chunked", "views", "select", "large_string", "size"], default-features = false }
 vec64 = { version = "0.4.3" }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
@@ -154,7 +154,7 @@ extended_numeric_types = ["minarrow/extended_numeric_types"]
 lbuffer = ["minarrow/lbuffer"]
 # Schema-level Table metadata as key-value pairs
 table_metadata = ["minarrow/table_metadata"]
-mmap = ["libc"]
+mmap = ["dep:libc"]
 
 # Adds parquet IO
 parquet = []
@@ -237,7 +237,7 @@ bench_logging = ["dep:env_logger"]
 vmap64 = ["vec64/mmap", "minarrow/vmap64"]
 
 # Long-lived shared backing for reader/writer block buffers.
-arena = ["minarrow/arena"]
+arena = ["minarrow/arena", "dep:libc"]
 
 default = ["default_categorical_8", "arena", "large_string"]
 
@@ -274,12 +274,12 @@ required-features = ["tcp"]
 [[example]]
 name = "bench_ecs_source"
 path = "benches/ecs/source.rs"
-required-features = ["bench_arrow_flight", "tcp", "mmap"]
+required-features = ["bench_arrow_flight", "protocol", "tcp", "mmap"]
 
 [[example]]
 name = "bench_ecs_sink"
 path = "benches/ecs/sink.rs"
-required-features = ["bench_arrow_flight", "tcp", "mmap"]
+required-features = ["bench_arrow_flight", "protocol", "tcp", "mmap"]
 
 [[example]]
 name = "tcp_arrow_tls"

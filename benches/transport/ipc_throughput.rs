@@ -115,7 +115,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let (socket, _) = listener.accept().await.unwrap();
                 let (read_half, _write_half) = socket.into_split();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -170,7 +170,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let (socket, _) = listener.accept().await.unwrap();
                 let (read_half, _write_half) = socket.into_split();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -230,7 +230,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let ws_read =
                     lightstream::models::streams::websocket::WsRead::new(read_half, shared_writer);
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(ws_read, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -312,7 +312,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let conn = incoming.await.unwrap();
                 let recv = conn.accept_uni().await.unwrap();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(recv, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(recv, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -383,7 +383,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let conn = session_request.accept().await.unwrap();
                 let recv = conn.accept_uni().await.unwrap();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(recv, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(recv, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -440,7 +440,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let (socket, _) = listener.accept().await.unwrap();
                 let (read_half, _write_half) = socket.into_split();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;
@@ -497,7 +497,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let (socket, _) = listener.accept().await.unwrap();
                 let (read_half, _write_half) = socket.into_split();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(read_half, 64 * 1024, IPCMessageProtocol::Stream, None);
 
                 let start = std::time::Instant::now();
                 let mut count = 0u64;

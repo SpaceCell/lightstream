@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // the connection until the peer closes.
         let driver = tokio::spawn(async move { while h2.accept().await.is_some() {} });
 
-        let reader = HttpTableReader::from_recv(req.into_body());
+        let reader = HttpTableReader::from_recv(req.into_body(), None);
         let tables = reader.read_all_tables().await.expect("read tables");
         for t in &tables {
             println!(

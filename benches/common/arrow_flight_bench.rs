@@ -26,7 +26,7 @@ use arrow::datatypes::{DataType, Field as ArrowField, Int32Type, Schema as Arrow
 use arrow::record_batch::RecordBatch;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
     encode::FlightDataEncoderBuilder,
 };
@@ -226,8 +226,9 @@ fn wide_batch(n_rows: usize) -> RecordBatch {
     RecordBatch::try_new(schema, columns).unwrap()
 }
 
-/// Minimal Flight service. `DoGet` returns the pre-built batch repeated the
-/// number of times the ticket requests as a little-endian `u64`.
+/// Minimal Flight service. `GetFlightInfo` describes an ordered dataset split
+/// across the requested number of endpoints. `DoGet` returns the pre-built
+/// batch repeated the number of times its endpoint ticket requests.
 ///
 /// `single_message` raises the flight-data size so each batch ships as one
 /// gRPC message instead of the encoder's default 2 MiB slices. Used for the
@@ -264,9 +265,44 @@ impl FlightService for BenchFlightService {
 
     async fn get_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info not implemented"))
+        let descriptor = request.into_inner();
+        let bytes: [u8; 17] = descriptor
+            .cmd
+            .as_ref()
+            .try_into()
+            .map_err(|_| Status::invalid_argument("flight descriptor must be 17 bytes"))?;
+        let batches_per_endpoint = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let endpoint_count = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+        if endpoint_count == 0 {
+            return Err(Status::invalid_argument(
+                "flight descriptor must request at least one endpoint",
+            ));
+        }
+
+        let endpoints = (0..endpoint_count)
+            .map(|idx| {
+                let mut ticket = Vec::with_capacity(17);
+                ticket.extend_from_slice(&batches_per_endpoint.to_le_bytes());
+                ticket.extend_from_slice(&idx.to_le_bytes());
+                ticket.push(bytes[16]);
+                FlightEndpoint::new().with_ticket(Ticket::new(ticket))
+            })
+            .collect();
+        let total_records = batches_per_endpoint
+            .checked_mul(endpoint_count)
+            .and_then(|n| n.checked_mul(self.batch.num_rows() as u64))
+            .and_then(|n| i64::try_from(n).ok())
+            .ok_or_else(|| Status::invalid_argument("flight record count exceeds i64"))?;
+        let info = FlightInfo::new()
+            .try_with_schema(self.batch.schema().as_ref())
+            .map_err(|e| Status::internal(format!("encode flight schema: {e}")))?
+            .with_descriptor(descriptor)
+            .with_endpoints(endpoints)
+            .with_total_records(total_records)
+            .with_ordered(true);
+        Ok(Response::new(info))
     }
 
     async fn poll_flight_info(
@@ -288,7 +324,13 @@ impl FlightService for BenchFlightService {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
-        let n = u64::from_le_bytes(ticket.ticket.as_ref().try_into().unwrap());
+        let n = match ticket.ticket.len() {
+            // The loopback benchmark calls DoGet directly.
+            8 => u64::from_le_bytes(ticket.ticket.as_ref().try_into().unwrap()),
+            // ECS endpoint tickets additionally identify the logical partition.
+            17 => u64::from_le_bytes(ticket.ticket[0..8].try_into().unwrap()),
+            _ => return Err(Status::invalid_argument("flight ticket must be 8 or 17 bytes")),
+        };
         let batch = Arc::clone(&self.batch);
         let batch_stream = stream::iter((0..n).map(move |_| {
             Ok::<RecordBatch, arrow_flight::error::FlightError>((*batch).clone())

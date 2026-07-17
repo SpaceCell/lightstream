@@ -43,7 +43,7 @@ async fn test_tcp_parallel_roundtrip() {
     let addr = listener.local_addr().unwrap();
 
     let server = tokio::spawn(async move {
-        let reader = TcpParallelTableReader::accept(&listener, STREAMS, SortBehaviour::None)
+        let reader = TcpParallelTableReader::accept(&listener, STREAMS, SortBehaviour::None, None)
             .await
             .unwrap();
         reader.read_all_tables().await.unwrap()
@@ -77,7 +77,7 @@ async fn test_tcp_parallel_ordering_and_round_robin() {
     let addr = listener.local_addr().unwrap();
 
     let server = tokio::spawn(async move {
-        let reader = TcpParallelTableReader::accept(&listener, STREAMS, SortBehaviour::None)
+        let reader = TcpParallelTableReader::accept(&listener, STREAMS, SortBehaviour::None, None)
             .await
             .unwrap();
         reader.read_all_tables().await.unwrap()
@@ -126,7 +126,7 @@ async fn test_tcp_parallel_ordered_uneven_streams() {
     let addr = listener.local_addr().unwrap();
 
     let server = tokio::spawn(async move {
-        let reader = TcpParallelTableReader::accept(&listener, STREAMS, SortBehaviour::Ordered)
+        let reader = TcpParallelTableReader::accept(&listener, STREAMS, SortBehaviour::Ordered, None)
             .await
             .unwrap();
         reader.read_all_tables().await.unwrap()

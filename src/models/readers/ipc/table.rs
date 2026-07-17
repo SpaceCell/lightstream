@@ -42,29 +42,14 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
     /// record batch bodies directly into a Vec64 for SharedBuffer
     /// zero-copy column mapping. Each batch is yielded individually.
     ///
-    /// Decode runs under the default resource caps; see
-    /// [`Self::new_with_limits`] to override them when the upstream source
-    /// is hostile.
     pub fn new(
         stream: impl AsyncRead + Unpin + Send + 'static,
         initial_capacity: usize,
         protocol: IPCMessageProtocol,
+        limits: Option<crate::models::decoders::limits::DecodeLimits>,
     ) -> Self {
         Self {
-            inner: TableStreamDecoder::new(stream, initial_capacity, protocol, None),
-        }
-    }
-
-    /// Same as [`Self::new`], but with explicit resource caps applied to every
-    /// IPC frame consumed from `stream`.
-    pub fn new_with_limits(
-        stream: impl AsyncRead + Unpin + Send + 'static,
-        initial_capacity: usize,
-        protocol: IPCMessageProtocol,
-        limits: crate::models::decoders::limits::DecodeLimits,
-    ) -> Self {
-        Self {
-            inner: TableStreamDecoder::new(stream, initial_capacity, protocol, Some(limits)),
+            inner: TableStreamDecoder::new(stream, initial_capacity, protocol, limits),
         }
     }
 
@@ -302,7 +287,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let out = reader.read_all_tables().await.unwrap();
         assert_eq!(out.len(), 2);
         for batch in out {
@@ -334,7 +319,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let out = reader.read_tables(Some(2)).await.unwrap();
         assert_eq!(out.len(), 2);
     }
@@ -360,7 +345,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let st: SuperTable = reader
             .read_to_super_table(Some("my_window".into()), None)
             .await
@@ -391,7 +376,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let t: Table = reader.combine_to_table(Some("all".into())).await.unwrap();
         assert_eq!(t.n_rows, table.n_rows * 2);
         assert_eq!(t.name, "all");
@@ -433,7 +418,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let result = reader.read_all_tables().await;
         match result {
             Ok(tables) => println!("Success: {} tables", tables.len()),
@@ -463,7 +448,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let out = reader.read_all_tables().await.unwrap();
         // Each batch yields individually - no concatenation
         assert_eq!(out.len(), 2);
@@ -492,7 +477,7 @@ mod tests {
         let combined = Combined { reader: rx };
 
         let mut reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
 
         // schema is only known after seeing the first message
         assert!(reader.schema().is_none());

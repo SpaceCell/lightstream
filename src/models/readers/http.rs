@@ -25,7 +25,7 @@
 //! use futures_util::StreamExt;
 //! use lightstream::models::readers::http::HttpTableReader;
 //!
-//! let mut reader = HttpTableReader::get("http://localhost:8080/feed").await?;
+//! let mut reader = HttpTableReader::get("http://localhost:8080/feed", None).await?;
 //! while let Some(result) = reader.next().await {
 //!     let table = result?;
 //!     // ...
@@ -43,6 +43,7 @@ use tokio::net::TcpStream;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table::TableReader;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::streams::http::{H2RecvRead, HttpByteStream};
 use crate::traits::transport_reader::IPCTransportReader;
 
@@ -56,9 +57,9 @@ impl HttpTableReader {
     /// body as an Arrow IPC stream. Most public REST endpoints don't
     /// speak h2c; this exists for local testing and for deployments
     /// behind a TLS-terminating proxy that exposes h2c internally.
-    pub async fn get(url: &str) -> io::Result<Self> {
+    pub async fn get(url: &str, limits: Option<DecodeLimits>) -> io::Result<Self> {
         let req = parse_get(url)?;
-        Self::from_request(req).await
+        Self::from_request(req, limits).await
     }
 
     /// GET an `https://` URL over h2, performing the TLS handshake
@@ -69,20 +70,24 @@ impl HttpTableReader {
     pub async fn get_tls(
         url: &str,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         let req = parse_get(url)?;
-        Self::from_request_tls(req, config).await
+        Self::from_request_tls(req, config, limits).await
     }
 
     /// Issue a fully-built request (typically GET) and stream the
     /// response body as an Arrow IPC stream. Use when the request needs
     /// custom headers like `Authorization` or `X-API-Key`. Scheme must
     /// be `http`.
-    pub async fn from_request(req: Request<()>) -> io::Result<Self> {
+    pub async fn from_request(
+        req: Request<()>,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
         let (host, port) = host_port(req.uri(), "http", 80)?;
         let tcp = TcpStream::connect((host.as_str(), port)).await?;
         let recv = h2_send_get(tcp, req).await?;
-        Ok(Self::from_recv(recv))
+        Ok(Self::from_recv(recv, limits))
     }
 
     /// As [`Self::from_request`], over HTTPS h2. Scheme must be `https`.
@@ -90,6 +95,7 @@ impl HttpTableReader {
     pub async fn from_request_tls(
         req: Request<()>,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         let (host, port) = host_port(req.uri(), "https", 443)?;
         let server_name = rustls_pki_types::ServerName::try_from(host.clone())
@@ -105,17 +111,22 @@ impl HttpTableReader {
             ));
         }
         let recv = h2_send_get(tls, req).await?;
-        Ok(Self::from_recv(recv))
+        Ok(Self::from_recv(recv, limits))
     }
 
     /// Wrap a server-supplied [`h2::RecvStream`] (typically from
     /// `h2::server::handshake` → `accept` → `Request<RecvStream>`) as a
     /// table reader. Symmetric to
     /// [`QuicTableReader::from_recv`](crate::models::readers::quic::QuicTableReader::from_recv).
-    pub fn from_recv(recv: h2::RecvStream) -> Self {
+    pub fn from_recv(recv: h2::RecvStream, limits: Option<DecodeLimits>) -> Self {
         let stream =
             HttpByteStream::new(H2RecvRead::new(recv), crate::enums::BufferChunkSize::Http);
-        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(
+            stream,
+            BufferChunkSize::Http.chunk_size(),
+            IPCMessageProtocol::Stream,
+            limits,
+        );
         Self { inner }
     }
 }

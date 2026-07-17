@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let connection = incoming.await.unwrap();
         println!("Server accepted QUIC connection.");
 
-        let reader = QuicParallelTableReader::accept(&connection, STREAMS, SortBehaviour::Ordered)
+        let reader = QuicParallelTableReader::accept(&connection, STREAMS, SortBehaviour::Ordered, None)
             .await
             .unwrap();
         let tables = reader.read_all_tables().await.unwrap();

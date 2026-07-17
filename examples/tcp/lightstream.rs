@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (stream, peer) = listener.accept().await.unwrap();
         println!("Server accepted connection from {}", peer);
 
-        let mut conn = TcpLightstreamConnection::from_tcp(stream);
+        let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
         register_demo_types(&mut conn);
         recv_and_print_all(&mut conn).await;
         println!("Server connection closed.");
@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_stream = tokio::net::TcpStream::connect(addr).await?;
     println!("Client connected to {}", addr);
 
-    let mut client = TcpLightstreamConnection::from_tcp(client_stream);
+    let mut client = TcpLightstreamConnection::from_tcp(client_stream, None);
     register_demo_types(&mut client);
     send_demo_messages(&mut client, "tcp").await?;
 

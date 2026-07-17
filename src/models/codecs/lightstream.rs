@@ -35,6 +35,7 @@ use minarrow::structs::shared_buffer::SharedBuffer;
 use minarrow::{Field, Vec64};
 
 use super::ipc::ArrowIpcCodec;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::lightstream_message::{
     FRAME_HEADER_SIZE, FrameType, LightstreamMessage,
 };
@@ -63,14 +64,16 @@ struct TypeEntry<B: StreamBuffer> {
 pub struct LightstreamCodec<B: StreamBuffer = Vec<u8>> {
     types: Vec<TypeEntry<B>>,
     name_index: HashMap<String, u8>,
+    limits: DecodeLimits,
 }
 
 impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
-    /// Create a new empty codec.
-    pub fn new() -> Self {
+    /// Create a new empty codec with the resource limits used for decoding.
+    pub fn new(limits: Option<DecodeLimits>) -> Self {
         Self {
             types: Vec::new(),
             name_index: HashMap::new(),
+            limits: limits.unwrap_or_default(),
         }
     }
 
@@ -104,7 +107,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
                 schema,
                 crate::enums::IPCMessageProtocol::Stream,
                 None,
-                None,
+                Some(self.limits),
             )),
         });
         tag
@@ -223,7 +226,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
 
 impl<B: StreamBuffer + Unpin> Default for LightstreamCodec<B> {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -299,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_register_message() {
-        let mut codec = LightstreamCodec::<Vec<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec<u8>>::new(None);
         let tag = codec.register_message("Ping");
         assert_eq!(tag, 0);
         assert_eq!(codec.tag_by_name("Ping"), Some(0));
@@ -309,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_register_table() {
-        let mut codec = LightstreamCodec::<Vec<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec<u8>>::new(None);
         let tag = codec.register_table("Events", make_schema());
         assert_eq!(tag, 0);
         assert_eq!(codec.tag_by_name("Events"), Some(0));
@@ -318,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_register_multiple_types() {
-        let mut codec = LightstreamCodec::<Vec<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec<u8>>::new(None);
         let msg_tag = codec.register_message("Ping");
         let tbl_tag = codec.register_table("Events", make_schema());
         assert_eq!(msg_tag, 0);
@@ -335,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_message_roundtrip() {
-        let mut codec = LightstreamCodec::<Vec64<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec64<u8>>::new(None);
         let tag = codec.register_message("Ack");
 
         let payload = b"hello world";
@@ -355,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_table_roundtrip() {
-        let mut codec = LightstreamCodec::<Vec64<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec64<u8>>::new(None);
         let tag = codec.register_table("Events", make_schema());
 
         let table = make_table();
@@ -371,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_table_multi_batch_roundtrip() {
-        let mut codec = LightstreamCodec::<Vec64<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec64<u8>>::new(None);
         let tag = codec.register_table("Events", make_schema());
 
         let table = make_table();
@@ -403,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_unknown_tag_error() {
-        let mut codec = LightstreamCodec::<Vec64<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec64<u8>>::new(None);
         assert!(
             codec
                 .decode_frame(99, Vec64::<u8>::with_capacity(0))
@@ -413,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_type_mismatch_error() {
-        let mut codec = LightstreamCodec::<Vec<u8>>::new();
+        let mut codec = LightstreamCodec::<Vec<u8>>::new(None);
         codec.register_message("Msg");
         codec.register_table("Tbl", make_schema());
 

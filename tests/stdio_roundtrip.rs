@@ -239,7 +239,7 @@ async fn test_stdio_encode_decode_roundtrip() {
 
     // Decode from bytes
     let stream = ByteVecStream::new(bytes);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     assert_eq!(tables.len(), 1);
@@ -325,7 +325,7 @@ async fn test_stdio_cat_roundtrip() {
 
     // Decode and verify
     let stream = ByteVecStream::new(output);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     assert_eq!(tables.len(), 1);
@@ -364,7 +364,7 @@ async fn test_stdio_multi_table_cat_roundtrip() {
 
     // Decode
     let stream = ByteVecStream::new(output);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     assert_eq!(tables.len(), 3);
@@ -393,7 +393,8 @@ async fn test_stdio_types_exist() {
     }
 
     fn _check_stdin_reader() {
-        let _: fn() -> StdinTableReader = StdinTableReader::new;
+        let _: fn(Option<lightstream::models::decoders::limits::DecodeLimits>) -> StdinTableReader =
+            StdinTableReader::new;
     }
 
     fn _check_stdout_writer() {

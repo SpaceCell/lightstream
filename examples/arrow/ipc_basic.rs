@@ -148,7 +148,7 @@ async fn arrow_stream_example(
     let start = std::time::Instant::now();
     let disk_stream = DiskByteStream::open(stream_path, BufferChunkSize::Custom(64 * 1024)).await?;
     let mut reader =
-        TableReader::<Vec64<u8>>::new(disk_stream, 64 * 1024, IPCMessageProtocol::Stream);
+        TableReader::<Vec64<u8>>::new(disk_stream, 64 * 1024, IPCMessageProtocol::Stream, None);
 
     if let Some(_) = reader.next().await {
         let read_time = start.elapsed();

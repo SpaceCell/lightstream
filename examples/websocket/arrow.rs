@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             read_half,
             write_half,
             IPCMessageProtocol::Stream,
+            None,
         );
         let tables = reader.read_all_tables().await.unwrap();
 

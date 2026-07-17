@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (read_half, _write_half) = stream.into_split();
         let byte_stream =
             UdsByteStream::from_read_half(read_half, lightstream::enums::BufferChunkSize::Http);
-        let reader = UdsTableReader::from_stream(byte_stream, IPCMessageProtocol::Stream);
+        let reader = UdsTableReader::from_stream(byte_stream, IPCMessageProtocol::Stream, None);
         let tables = reader.read_all_tables().await.unwrap();
 
         for table in &tables {

@@ -21,10 +21,12 @@ use tokio_uring::buf::BoundedBuf;
 use tokio_uring::net::TcpStream;
 
 use crate::models::codecs::lightstream::LightstreamCodec;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::frames::lightstream_message::{FRAME_HEADER_SIZE, LightstreamMessage};
 use crate::models::frames::websocket::{
-    self, MAX_HEADER_LEN, OPCODE_BINARY, OPCODE_CLOSE, OPCODE_PING,
+    self, MAX_HEADER_LEN, OPCODE_BINARY, OPCODE_CLOSE, OPCODE_PING, OPCODE_PONG,
 };
+use crate::models::streams::websocket::fresh_mask_key;
 
 use super::buf::UringBuf;
 
@@ -87,11 +89,14 @@ pub struct IoUringWsConnection {
     read_codec: LightstreamCodec<Vec64<u8>>,
     write_codec: LightstreamCodec<Vec64<u8>>,
     encode_buf: Vec64<u8>,
-    /// Fixed buffer for reading WS + TLV headers. Never reallocated.
+    /// Fixed buffer for WS/TLV headers and control payloads. Never reallocated.
     header_buf: Vec<u8>,
-    /// Small buffer for writing WS frame headers to the wire.
+    /// Fixed buffer for outbound frame headers and control frames.
     ws_header_out: Vec<u8>,
     eof: bool,
+    /// Client role: every outbound frame is masked.
+    client: bool,
+    limits: DecodeLimits,
 }
 
 impl IoUringWsConnection {
@@ -99,27 +104,51 @@ impl IoUringWsConnection {
     ///
     /// The WebSocket handshake must already be complete. Use
     /// `from_tungstenite` for the typical flow.
-    pub fn new(stream: TcpStream) -> Self {
-        let mut header_buf = Vec::with_capacity(MAX_HEADER_LEN + FRAME_HEADER_SIZE);
-        header_buf.resize(MAX_HEADER_LEN + FRAME_HEADER_SIZE, 0);
-        let mut ws_header_out = Vec::with_capacity(MAX_HEADER_LEN);
-        ws_header_out.resize(MAX_HEADER_LEN, 0);
+    pub fn new(stream: TcpStream, limits: Option<DecodeLimits>) -> Self {
+        let limits = limits.unwrap_or_default();
+        let control_capacity = (MAX_HEADER_LEN + FRAME_HEADER_SIZE).max(6 + 125);
+        let mut header_buf = Vec::with_capacity(control_capacity);
+        header_buf.resize(control_capacity, 0);
+        let mut ws_header_out = Vec::with_capacity(control_capacity);
+        ws_header_out.resize(control_capacity, 0);
         Self {
             stream,
-            read_codec: LightstreamCodec::new(),
-            write_codec: LightstreamCodec::new(),
+            read_codec: LightstreamCodec::new(Some(limits)),
+            write_codec: LightstreamCodec::new(Some(limits)),
             encode_buf: Vec64::with_capacity(0),
             header_buf,
             ws_header_out,
             eof: false,
+            client: false,
+            limits,
+        }
+    }
+
+    /// Create a client-side connection from a raw post-handshake stream.
+    pub fn new_client(stream: TcpStream, limits: Option<DecodeLimits>) -> Self {
+        Self {
+            client: true,
+            ..Self::new(stream, limits)
         }
     }
 
     /// Create from a standard library `TcpStream`.
     ///
     /// The WebSocket handshake must already be complete.
-    pub fn from_tcp_stream(stream: std::net::TcpStream) -> Self {
-        Self::new(TcpStream::from_std(stream))
+    pub fn from_tcp_stream(
+        stream: std::net::TcpStream,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        Self::new(TcpStream::from_std(stream), limits)
+    }
+
+    /// Create a client-side connection from a standard TCP stream after
+    /// completing the WebSocket handshake.
+    pub fn from_tcp_stream_client(
+        stream: std::net::TcpStream,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        Self::new_client(TcpStream::from_std(stream), limits)
     }
 
     /// Register a message type on both halves.
@@ -143,12 +172,18 @@ impl IoUringWsConnection {
     /// Write a WS binary frame header then the payload to the wire.
     ///
     /// Two writes: tiny header first, then payload. No extra allocation.
-    async fn ws_write_binary(&mut self, payload: UringBuf) -> io::Result<UringBuf> {
+    async fn ws_write_binary(&mut self, mut payload: UringBuf) -> io::Result<UringBuf> {
         let payload_len = payload.0.len();
 
         // Write WS header into the fixed output buffer
         let mut ws_header_buf = std::mem::take(&mut self.ws_header_out);
-        let header_len = websocket::write_binary_header(&mut ws_header_buf, payload_len);
+        let header_len = if self.client {
+            let key = fresh_mask_key();
+            websocket::unmask(&mut payload.0, key);
+            websocket::write_masked_binary_header(&mut ws_header_buf, payload_len, key)
+        } else {
+            websocket::write_binary_header(&mut ws_header_buf, payload_len)
+        };
 
         // Write the WS header bytes
         let header_slice = ws_header_buf.slice(0..header_len);
@@ -258,7 +293,34 @@ impl IoUringWsConnection {
             };
 
             self.header_buf = header_buf;
-            let payload_len = ws_header.payload_len as usize;
+            let payload_len = match usize::try_from(ws_header.payload_len) {
+                Ok(len) => len,
+                Err(_) => {
+                    self.eof = true;
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "WebSocket payload length exceeds usize",
+                    )));
+                }
+            };
+            let max_ws_payload = self
+                .limits
+                .max_frame_bytes
+                .saturating_add(FRAME_HEADER_SIZE);
+            if let Err(error) =
+                self.limits
+                    .check(payload_len, max_ws_payload, "WebSocket frame bytes")
+            {
+                self.eof = true;
+                return Some(Err(error));
+            }
+            if ws_header.opcode & 0x08 != 0 && (!ws_header.fin || payload_len > 125) {
+                self.eof = true;
+                return Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fragmented or oversized WebSocket control frame",
+                )));
+            }
 
             match ws_header.opcode {
                 OPCODE_BINARY => {
@@ -291,6 +353,25 @@ impl IoUringWsConnection {
                         u32::from_le_bytes(tlv_hdr[1..5].try_into().unwrap()) as usize;
                     self.header_buf = tlv_hdr;
 
+                    if let Err(error) = self.limits.check(
+                        tlv_payload_len,
+                        self.limits.max_frame_bytes,
+                        "TLV frame bytes",
+                    ) {
+                        self.eof = true;
+                        return Some(Err(error));
+                    }
+                    match FRAME_HEADER_SIZE.checked_add(tlv_payload_len) {
+                        Some(consumed) if consumed == payload_len => {}
+                        _ => {
+                            self.eof = true;
+                            return Some(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "TLV length does not match its WebSocket payload",
+                            )));
+                        }
+                    }
+
                     // Read the TLV data directly into a Vec64 without copying
                     let mut payload_buf = UringBuf(Vec64::with_capacity(tlv_payload_len));
                     if tlv_payload_len > 0 {
@@ -319,21 +400,17 @@ impl IoUringWsConnection {
                         }
                     }
 
-                    // Skip any remaining WS payload bytes beyond the TLV frame
-                    let consumed = FRAME_HEADER_SIZE + tlv_payload_len;
-                    if consumed < payload_len {
-                        let skip_len = payload_len - consumed;
-                        let discard = vec![0u8; skip_len];
-                        let _ = read_exact_vec(&self.stream, discard, 0, skip_len).await;
-                    }
-
                     return Some(self.read_codec.decode_frame(tag, payload_buf.0));
                 }
 
                 OPCODE_CLOSE => {
                     // Send close response and mark EOF
                     let mut close_buf = std::mem::take(&mut self.ws_header_out);
-                    let n = websocket::write_close_frame(&mut close_buf);
+                    let n = if self.client {
+                        websocket::write_masked_close_frame(&mut close_buf, fresh_mask_key())
+                    } else {
+                        websocket::write_close_frame(&mut close_buf)
+                    };
                     let slice = close_buf.slice(0..n);
                     let (_, slice) = self.stream.write_all(slice).await;
                     self.ws_header_out = slice.into_inner();
@@ -342,39 +419,78 @@ impl IoUringWsConnection {
                 }
 
                 OPCODE_PING => {
-                    // Read ping payload (control frames are max 125 bytes)
-                    // and send pong. Small enough to use the header buf.
-                    if payload_len > 0 && payload_len <= 125 {
-                        let mut ping_data = vec![0u8; payload_len];
-                        ping_data =
-                            match read_exact_vec(&self.stream, ping_data, 0, payload_len).await {
-                                Ok(buf) => buf,
-                                Err(e) => {
-                                    self.eof = true;
-                                    return Some(Err(e));
-                                }
-                            };
-                        if ws_header.masked {
-                            websocket::unmask(&mut ping_data, ws_header.mask_key);
-                        }
+                    // Both control buffers are allocated once per connection
+                    // and sized for the largest legal masked pong.
+                    let mut ping_data = std::mem::take(&mut self.header_buf);
+                    if payload_len > 0 {
+                        ping_data = match read_exact_vec(
+                            &self.stream,
+                            ping_data,
+                            0,
+                            payload_len,
+                        )
+                        .await
+                        {
+                            Ok(buf) => buf,
+                            Err(e) => {
+                                self.eof = true;
+                                return Some(Err(e));
+                            }
+                        };
+                    }
+                    if ws_header.masked {
+                        websocket::unmask(&mut ping_data[..payload_len], ws_header.mask_key);
+                    }
 
-                        let mut pong_buf = std::mem::take(&mut self.ws_header_out);
-                        let n = websocket::write_pong_frame(&mut pong_buf, &ping_data);
-                        let slice = pong_buf.slice(0..n);
-                        let (_, slice) = self.stream.write_all(slice).await;
-                        self.ws_header_out = slice.into_inner();
+                    let mut pong_buf = std::mem::take(&mut self.ws_header_out);
+                    let n = if self.client {
+                        websocket::write_masked_pong_frame(
+                            &mut pong_buf,
+                            &ping_data[..payload_len],
+                            fresh_mask_key(),
+                        )
+                    } else {
+                        websocket::write_pong_frame(&mut pong_buf, &ping_data[..payload_len])
+                    };
+                    let slice = pong_buf.slice(0..n);
+                    let (result, slice) = self.stream.write_all(slice).await;
+                    self.ws_header_out = slice.into_inner();
+                    self.header_buf = ping_data;
+                    if let Err(error) = result {
+                        self.eof = true;
+                        return Some(Err(error));
                     }
                     // Loop to read the next frame
                     continue;
                 }
 
-                _ => {
-                    // Skip unknown/text/pong frames by reading and discarding payload
+                OPCODE_PONG => {
                     if payload_len > 0 {
-                        let discard = vec![0u8; payload_len];
-                        let _ = read_exact_vec(&self.stream, discard, 0, payload_len).await;
+                        let buf = std::mem::take(&mut self.header_buf);
+                        self.header_buf = match read_exact_vec(
+                            &self.stream,
+                            buf,
+                            0,
+                            payload_len,
+                        )
+                        .await
+                        {
+                            Ok(buf) => buf,
+                            Err(error) => {
+                                self.eof = true;
+                                return Some(Err(error));
+                            }
+                        };
                     }
                     continue;
+                }
+
+                _ => {
+                    self.eof = true;
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unsupported WebSocket opcode",
+                    )));
                 }
             }
         }
@@ -388,7 +504,11 @@ impl IoUringWsConnection {
     /// Shut down by sending a WebSocket close frame.
     pub async fn shutdown(&mut self) -> io::Result<()> {
         let mut close_buf = std::mem::take(&mut self.ws_header_out);
-        let n = websocket::write_close_frame(&mut close_buf);
+        let n = if self.client {
+            websocket::write_masked_close_frame(&mut close_buf, fresh_mask_key())
+        } else {
+            websocket::write_close_frame(&mut close_buf)
+        };
         let slice = close_buf.slice(0..n);
         let (result, slice) = self.stream.write_all(slice).await;
         self.ws_header_out = slice.into_inner();

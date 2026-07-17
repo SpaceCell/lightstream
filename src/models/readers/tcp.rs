@@ -21,7 +21,7 @@
 //! use futures_util::StreamExt;
 //! # async fn run() -> std::io::Result<()> {
 //! # use lightstream::models::readers::tcp::TcpTableReader;
-//! let mut reader = TcpTableReader::connect("127.0.0.1:9000").await?;
+//! let mut reader = TcpTableReader::connect("127.0.0.1:9000", None).await?;
 //! while let Some(result) = reader.next().await {
 //!     let table = result?;
 //!     // process each batch as it arrives
@@ -38,6 +38,7 @@ use minarrow::{Field, SuperTable, Table, Vec64};
 use tokio::net::ToSocketAddrs;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::tcp::TcpByteStream;
 use crate::traits::transport_reader::IPCTransportReader;
@@ -56,9 +57,17 @@ impl TcpTableReader {
     /// Connect to a TCP server streaming Arrow IPC and return a table reader.
     ///
     /// Uses 8-byte alignment for compatibility with all Arrow producers.
-    pub async fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
+    pub async fn connect(
+        addr: impl ToSocketAddrs,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
         let stream = TcpByteStream::connect(addr).await?;
-        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(
+            stream,
+            BufferChunkSize::Http.chunk_size(),
+            IPCMessageProtocol::Stream,
+            limits,
+        );
         Ok(Self { inner })
     }
 
@@ -67,15 +76,26 @@ impl TcpTableReader {
         addr: impl ToSocketAddrs,
         chunk_size: BufferChunkSize,
         protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         let stream = TcpByteStream::connect(addr).await?;
-        let inner = TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol);
+        let inner =
+            TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol, limits);
         Ok(Self { inner })
     }
 
     /// Wrap an existing `TcpByteStream` as a table reader.
-    pub fn from_stream(stream: TcpByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::Http.chunk_size(), protocol);
+    pub fn from_stream(
+        stream: TcpByteStream,
+        protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        let inner = TableReader::<Vec64<u8>>::new(
+            stream,
+            BufferChunkSize::Http.chunk_size(),
+            protocol,
+            limits,
+        );
         Self { inner }
     }
 
@@ -93,6 +113,7 @@ impl TcpTableReader {
         addr: impl tokio::net::ToSocketAddrs,
         server_name: rustls_pki_types::ServerName<'static>,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
+        limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
         let stream =
             crate::models::streams::tcp::TcpByteStream::connect_tls(addr, server_name, config)
@@ -101,6 +122,7 @@ impl TcpTableReader {
             stream,
             BufferChunkSize::Http.chunk_size(),
             IPCMessageProtocol::Stream,
+            limits,
         );
         Ok(Self { inner })
     }

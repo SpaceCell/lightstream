@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let disk_stream =
         DiskByteStream::open(&stream_path, BufferChunkSize::Custom(64 * 1024)).await?;
     let mut reader =
-        TableReader::<Vec64<u8>>::new(disk_stream, 64 * 1024, IPCMessageProtocol::Stream);
+        TableReader::<Vec64<u8>>::new(disk_stream, 64 * 1024, IPCMessageProtocol::Stream, None);
 
     let mut read_count = 0;
     while let Some(result) = reader.next().await {

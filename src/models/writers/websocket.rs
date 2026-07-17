@@ -84,7 +84,7 @@ impl WebSocketTableWriter {
         let raw = ws_stream.into_inner();
         let (_read_half, write_half) = tokio::io::split(raw);
         let boxed: WsAsyncWrite = Box::new(write_half);
-        let (_shared, ws_write) = WsWrite::new(boxed);
+        let (_shared, ws_write) = WsWrite::new_client(boxed);
         Ok(ws_write)
     }
 
@@ -126,7 +126,7 @@ impl WebSocketTableWriter {
         let raw = ws_stream.into_inner();
         let (_read_half, write_half) = tokio::io::split(raw);
         let boxed: WsAsyncWrite = Box::new(write_half);
-        let (_shared, ws_write) = WsWrite::new(boxed);
+        let (_shared, ws_write) = WsWrite::new_client(boxed);
         Ok(ws_write)
     }
 

@@ -98,7 +98,7 @@ async fn test_mmap_creates_shared_buffers() {
     // Now read it back using mmap
     #[cfg(feature = "mmap")]
     {
-        let mmap_reader = MmapTableReader::open(file_path).unwrap();
+        let mmap_reader = MmapTableReader::open(file_path, false).unwrap();
         let mmap_table = mmap_reader.read_batch(0).unwrap();
 
         assert_eq!(mmap_table.n_rows, n_rows);
@@ -196,7 +196,7 @@ async fn test_mmap_alignment_with_shared_buffers() {
     }
 
     // Read it back with mmap and check alignment
-    let mmap_reader = MmapTableReader::open(file_path).unwrap();
+    let mmap_reader = MmapTableReader::open(file_path, false).unwrap();
     let mmap_table = mmap_reader.read_batch(0).unwrap();
 
     if let Array::NumericArray(NumericArray::Int64(arr)) = &mmap_table.cols[0].array {

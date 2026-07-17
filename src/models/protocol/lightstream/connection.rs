@@ -25,6 +25,7 @@ use minarrow::{Field, Vec64};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::models::frames::lightstream_message::LightstreamMessage;
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::readers::lightstream::LightstreamReader;
 use crate::models::writers::lightstream::LightstreamWriter;
 use crate::traits::stream_buffer::StreamBuffer;
@@ -54,10 +55,14 @@ where
     B: StreamBuffer + Unpin,
 {
     /// Create a connection from an AsyncRead source and AsyncWrite destination.
-    pub fn new(source: impl AsyncRead + Unpin + Send + 'static, writer_dest: W) -> Self {
+    pub fn new(
+        source: impl AsyncRead + Unpin + Send + 'static,
+        writer_dest: W,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
         Self {
             writer: LightstreamWriter::new(writer_dest),
-            reader: LightstreamReader::new(source),
+            reader: LightstreamReader::new(source, limits),
         }
     }
 
@@ -142,14 +147,18 @@ mod tcp_impl {
 
     impl TcpLightstreamConnection {
         /// Create a connection from an established TCP stream.
-        pub fn from_tcp(stream: TcpStream) -> Self {
+        pub fn from_tcp(stream: TcpStream, limits: Option<DecodeLimits>) -> Self {
             let (read_half, write_half) = stream.into_split();
-            Self::new(read_half, write_half)
+            Self::new(read_half, write_half, limits)
         }
 
         /// Create a connection from pre-split TCP halves.
-        pub fn from_tcp_halves(read_half: OwnedReadHalf, write_half: OwnedWriteHalf) -> Self {
-            Self::new(read_half, write_half)
+        pub fn from_tcp_halves(
+            read_half: OwnedReadHalf,
+            write_half: OwnedWriteHalf,
+            limits: Option<DecodeLimits>,
+        ) -> Self {
+            Self::new(read_half, write_half, limits)
         }
     }
 }
@@ -168,14 +177,18 @@ mod uds_impl {
 
     impl UdsLightstreamConnection {
         /// Create a connection from an established Unix stream.
-        pub fn from_uds(stream: UnixStream) -> Self {
+        pub fn from_uds(stream: UnixStream, limits: Option<DecodeLimits>) -> Self {
             let (read_half, write_half) = stream.into_split();
-            Self::new(read_half, write_half)
+            Self::new(read_half, write_half, limits)
         }
 
         /// Create a connection from pre-split UDS halves.
-        pub fn from_uds_halves(read_half: OwnedReadHalf, write_half: OwnedWriteHalf) -> Self {
-            Self::new(read_half, write_half)
+        pub fn from_uds_halves(
+            read_half: OwnedReadHalf,
+            write_half: OwnedWriteHalf,
+            limits: Option<DecodeLimits>,
+        ) -> Self {
+            Self::new(read_half, write_half, limits)
         }
     }
 }
@@ -200,15 +213,36 @@ mod websocket_impl {
     where
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        /// Create a connection from a WebSocket stream.
+        /// Create a server-side connection from a WebSocket stream.
         ///
         /// Extracts the raw TCP stream after the tungstenite handshake.
-        pub fn from_websocket(ws: WebSocketStream<T>) -> Self {
+        /// Frames are written unmasked per RFC 6455's server role; the
+        /// dialling side of the socket uses [`Self::from_websocket_client`].
+        pub fn from_websocket(
+            ws: WebSocketStream<T>,
+            limits: Option<DecodeLimits>,
+        ) -> Self {
             let raw = ws.into_inner();
             let (read_half, write_half) = tokio::io::split(raw);
             let (shared_writer, ws_write) = WsWrite::new(write_half);
             let ws_read = WsRead::new(read_half, shared_writer);
-            Self::new(ws_read, ws_write)
+            Self::new(ws_read, ws_write, limits)
+        }
+
+        /// Create a client-side connection from a WebSocket stream.
+        ///
+        /// Extracts the raw TCP stream after the tungstenite handshake.
+        /// Every outbound frame is masked with a fresh key per RFC 6455,
+        /// which compliant servers require of clients.
+        pub fn from_websocket_client(
+            ws: WebSocketStream<T>,
+            limits: Option<DecodeLimits>,
+        ) -> Self {
+            let raw = ws.into_inner();
+            let (read_half, write_half) = tokio::io::split(raw);
+            let (shared_writer, ws_write) = WsWrite::new_client(write_half);
+            let ws_read = WsRead::new_client(read_half, shared_writer);
+            Self::new(ws_read, ws_write, limits)
         }
     }
 }
@@ -225,8 +259,12 @@ mod quic_impl {
 
     impl QuicLightstreamConnection {
         /// Create a connection from QUIC send and receive streams.
-        pub fn from_quic(recv: quinn::RecvStream, send: quinn::SendStream) -> Self {
-            Self::new(recv, send)
+        pub fn from_quic(
+            recv: quinn::RecvStream,
+            send: quinn::SendStream,
+            limits: Option<DecodeLimits>,
+        ) -> Self {
+            Self::new(recv, send, limits)
         }
     }
 }
@@ -246,8 +284,9 @@ mod webtransport_impl {
         pub fn from_webtransport(
             recv: wtransport::RecvStream,
             send: wtransport::SendStream,
+            limits: Option<DecodeLimits>,
         ) -> Self {
-            Self::new(recv, send)
+            Self::new(recv, send, limits)
         }
     }
 }
@@ -264,8 +303,8 @@ mod stdio_impl {
 
     impl StdioLightstreamConnection {
         /// Create a connection from stdin and stdout.
-        pub fn from_stdio() -> Self {
-            Self::new(tokio::io::stdin(), tokio::io::stdout())
+        pub fn from_stdio(limits: Option<DecodeLimits>) -> Self {
+            Self::new(tokio::io::stdin(), tokio::io::stdout(), limits)
         }
     }
 }

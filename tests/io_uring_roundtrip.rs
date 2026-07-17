@@ -161,7 +161,7 @@ fn test_io_uring_connection_roundtrip() {
         let write_table = table.clone();
         let write_schema = schema.clone();
         let writer_handle = tokio_uring::spawn(async move {
-            let mut conn = IoUringUdsConnection::new(stream_a);
+            let mut conn = IoUringUdsConnection::new(stream_a, None);
             conn.register_message("Ack");
             conn.register_table("Data", write_schema);
 
@@ -172,7 +172,7 @@ fn test_io_uring_connection_roundtrip() {
             conn.shutdown().await.unwrap();
         });
 
-        let mut conn = IoUringUdsConnection::new(stream_b);
+        let mut conn = IoUringUdsConnection::new(stream_b, None);
         conn.register_message("Ack");
         conn.register_table("Data", schema);
 
@@ -201,7 +201,7 @@ fn test_io_uring_messages_only() {
         let (stream_a, stream_b) = make_uring_socketpair();
 
         let writer_handle = tokio_uring::spawn(async move {
-            let mut conn = IoUringUdsConnection::new(stream_a);
+            let mut conn = IoUringUdsConnection::new(stream_a, None);
             conn.register_message("Cmd");
 
             conn.send("Cmd", b"start").await.unwrap();
@@ -210,7 +210,7 @@ fn test_io_uring_messages_only() {
             conn.shutdown().await.unwrap();
         });
 
-        let mut conn = IoUringUdsConnection::new(stream_b);
+        let mut conn = IoUringUdsConnection::new(stream_b, None);
         conn.register_message("Cmd");
 
         let msg = conn.recv().await.unwrap().unwrap();
@@ -239,7 +239,7 @@ fn test_io_uring_multi_batch() {
         let n_batches = 10;
 
         let writer_handle = tokio_uring::spawn(async move {
-            let mut conn = IoUringUdsConnection::new(stream_a);
+            let mut conn = IoUringUdsConnection::new(stream_a, None);
             conn.register_table("Data", write_schema);
 
             for _ in 0..n_batches {
@@ -249,7 +249,7 @@ fn test_io_uring_multi_batch() {
             conn.shutdown().await.unwrap();
         });
 
-        let mut conn = IoUringUdsConnection::new(stream_b);
+        let mut conn = IoUringUdsConnection::new(stream_b, None);
         conn.register_table("Data", schema);
 
         for _ in 0..n_batches {

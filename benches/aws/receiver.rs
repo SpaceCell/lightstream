@@ -137,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         read_half,
         BufferChunkSize::Http.chunk_size(),
         IPCMessageProtocol::Stream,
+        None,
     );
 
     let start = Instant::now();

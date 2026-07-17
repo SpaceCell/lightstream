@@ -8,11 +8,12 @@
 //!
 //! Drives the comparison over the host-to-host network. For each stream count
 //! it receives the same workload per transport and times each transfer
-//! independently. One transfer arrives over Arrow Flight (N concurrent
-//! `DoGet` streams), the other over Lightstream TCP - one connection for the
-//! single-stream cell, otherwise N connections. Before each Lightstream pass
-//! the sink pulses one control byte to the source (`C` for cold, `W` for
-//! warm or memory), keeping the two sides' phase order in lockstep.
+//! independently. Arrow Flight obtains its endpoints from `GetFlightInfo`
+//! and fetches their `DoGet` streams concurrently. Lightstream runs its
+//! protocol parallel reader with one connection per stream, merged in global
+//! write order. Before each Lightstream pass the sink pulses one control
+//! byte to the source (`C` for cold, `W` for warm or memory), keeping the
+//! two sides' phase order in lockstep.
 //!
 //! Under `memory` each cell interleaves the transports run by run. Under
 //! `nvme` each transport runs as a block per cell: one cold pass with the
@@ -20,31 +21,44 @@
 //! over the cached files. Cold passes report `cache=cold`, warm passes
 //! `cache=warm`, and the cell medians cover the warm passes only.
 //!
-//! The merge contract follows the data source. Under `memory` the parallel
-//! connections merge in global write order under `Ordered`, which follows
-//! the writer's round-robin rotation. Under `nvme` each connection is an
-//! independent file replay with per-stream ordering, matching the Flight
-//! side's independent `DoGet` streams, so arrivals merge in arrival order.
+//! Each transport delivers the strongest contract it defines:
+//!
+//! * Lightstream returns one globally ordered result. Each protocol
+//!   connection announces its index at open, so the `Ordered` merge holds
+//!   regardless of the order the connections were accepted.
+//! * Flight endpoints are consumed concurrently and independently, since
+//!   Flight defines no cross-endpoint order for a partitioned dataset -
+//!   each endpoint carries a contiguous range, so a globally ordered read
+//!   would serialise the endpoints. Each endpoint verifies its own range
+//!   in order.
 //!
 //! Delivery is verified from the data. Under `nvme` every batch's first
-//! column carries its global sequence, and the sink asserts each stream
-//! arrives ordered and complete with the expected row counts. Under `memory`
+//! column carries its global sequence: Lightstream must deliver files,
+//! record batches and row windows in dataset order, and each Flight
+//! endpoint must deliver its range in order and complete. Under `memory`
 //! every send carries the one shared bench table, so the sink asserts the
 //! received row totals.
 //!
-//! Each transfer prints a `RESULT` line giving the transport, shape, data
-//! source, stream count, run index and throughput in GiB/s, followed by a
-//! `RESULT metric=gaps` line summarising the inter-batch arrival gaps and
-//! chunked `RAW` lines carrying every arrival offset in microseconds for
-//! offline analysis. Arrival instants are recorded during the transfer and
-//! everything else is computed after the timed window closes. Each cell
-//! closes with a median `RESULT` line per transport carrying the min and max
-//! alongside, which the wrapper script greps to build the comparison. The
-//! sink also measures the round-trip latency to the source and reports it on
-//! a `RESULT` line of its own.
+//! Each transfer records:
 //!
-//! Received tables are verified and dropped as they arrive rather than
-//! collected, so sink memory stays flat at cross-host workload sizes.
+//! * A `RESULT` line with the transport, workload, run and throughput.
+//! * A `RESULT metric=gaps` line summarising adjacent arrival gaps.
+//! * `RAW` lines containing every receiver-visible arrival offset.
+//!
+//! The timing contract is:
+//!
+//! * Start immediately before the existing client requests the dataset.
+//! * Record an arrival offset as each item becomes available.
+//! * Stop after the final item has been verified.
+//! * Compute statistics and print results after the timed window closes.
+//!
+//! Each cell closes with a median `RESULT` line carrying the min and max,
+//! which the wrapper script uses to build the comparison. The sink reports
+//! host-to-host round-trip latency on a separate `RESULT` line.
+//!
+//! Each table is released after the ordered reader yields it and verification
+//! completes. Tables are not collected, so sink memory stays flat at
+//! cross-host workload sizes.
 //!
 //! Both transports run plaintext over the trusted-VPC host-to-host network.
 //! TLS is assumed terminated at the ingress boundary and is excluded, so
@@ -55,18 +69,16 @@
 use std::time::{Duration, Instant};
 
 use arrow::array::{Array as ArrowArray, Int32Array};
-use arrow_flight::Ticket;
+use arrow_flight::{FlightClient, FlightDescriptor, FlightEndpoint};
 use arrow_flight::flight_service_client::FlightServiceClient;
-use futures::stream::{StreamExt, TryStreamExt};
-use minarrow::{Array, NumericArray, Table, Vec64};
+use futures::future::try_join_all;
+use futures::stream::StreamExt;
+use minarrow::{Array, Field, NumericArray, Table};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tonic::Request;
 use tonic::transport::Channel;
 
-use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
-use lightstream::models::readers::ipc::table::TableReader;
-use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
+use lightstream::models::readers::parallel::lightstream::LightstreamParallelReader;
 use lightstream::traits::parallel_transport_reader::SortBehaviour;
 
 #[path = "../common/bench_helpers.rs"]
@@ -75,7 +87,14 @@ mod bench_helpers;
 mod arrow_flight_bench;
 
 use arrow_flight_bench::{FLIGHT_HTTP2_WINDOW, FLIGHT_MAX_MESSAGE_BYTES};
-use bench_helpers::{BenchShape, batches_per_stream_for_budget, logical_payload_bytes_shape};
+use bench_helpers::{
+    BenchShape, batches_per_stream_for_budget, bench_schema, logical_payload_bytes_shape,
+    make_bench_table_shape,
+};
+
+/// Table type name registered on every Lightstream protocol connection,
+/// matching the source's registration so the wire tags agree.
+const TYPE_NAME: &str = "bench";
 
 /// Round trips used to measure host-to-host latency.
 const RTT_ROUNDS: usize = 50;
@@ -110,7 +129,7 @@ struct Args {
     streams: Vec<usize>,
     runs: u32,
     data_source: DataSource,
-    max_chunk_size: usize,
+    max_batch_size: usize,
     source_flight_addr: String,
     source_echo_addr: String,
     source_ctrl_addr: String,
@@ -148,7 +167,7 @@ fn parse_args() -> Result<Args, String> {
     let mut streams = vec![1usize, 4, 8, 16];
     let mut runs: u32 = 5;
     let mut data_source = DataSource::Memory;
-    let mut max_chunk_size: usize = 0;
+    let mut max_batch_size: usize = 0;
     let mut source_flight_addr = "127.0.0.1:9101".to_string();
     let mut source_echo_addr = "127.0.0.1:9102".to_string();
     let mut source_ctrl_addr = "127.0.0.1:9104".to_string();
@@ -166,8 +185,8 @@ fn parse_args() -> Result<Args, String> {
             "--streams" => streams = parse_streams(&next()?)?,
             "--runs" => runs = next()?.parse().map_err(|e| format!("--runs: {e}"))?,
             "--data-source" => data_source = parse_data_source(&next()?)?,
-            "--max-chunk-size" => {
-                max_chunk_size = next()?.parse().map_err(|e| format!("--max-chunk-size: {e}"))?
+            "--max-batch-size" => {
+                max_batch_size = next()?.parse().map_err(|e| format!("--max-batch-size: {e}"))?
             }
             "--source-flight-addr" => source_flight_addr = next()?,
             "--source-echo-addr" => source_echo_addr = next()?,
@@ -182,7 +201,7 @@ fn parse_args() -> Result<Args, String> {
                 println!("  --streams LIST            comma-separated stream counts (default 1,4,8,16)");
                 println!("  --runs N                  warm runs per cell (default 5)");
                 println!("  --data-source SRC         memory | nvme (default memory)");
-                println!("  --max-chunk-size N           nvme replay chunk size in bytes, 0 replays");
+                println!("  --max-batch-size N        nvme replay batch size limit in bytes, 0 replays");
                 println!("                            whole batches (default 0)");
                 println!("  --source-flight-addr ADDR source Flight address (host:port)");
                 println!("  --source-echo-addr ADDR  source latency echo address (host:port)");
@@ -205,7 +224,7 @@ fn parse_args() -> Result<Args, String> {
         streams,
         runs,
         data_source,
-        max_chunk_size,
+        max_batch_size,
         source_flight_addr,
         source_echo_addr,
         source_ctrl_addr,
@@ -220,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches_per_stream =
         batches_per_stream_for_budget(args.shape, args.rows, max_streams, args.dataset_gb);
     eprintln!(
-        "[sink] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_chunk_size={} source_flight={}",
+        "[sink] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_batch_size={} source_flight={}",
         args.shape.label(),
         args.rows,
         args.dataset_gb,
@@ -228,21 +247,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.streams,
         args.runs,
         args.data_source.label(),
-        args.max_chunk_size,
+        args.max_batch_size,
         args.source_flight_addr
     );
 
     let shape = args.shape.label();
     let data = args.data_source.label();
-    // Tags Lightstream nvme RESULT lines so chunked and whole-batch replays
-    // are distinguishable in the summary. Flight replays are unaffected by
-    // the chunk size, so their lines stay untagged.
-    let ls_chunk = if args.max_chunk_size > 0 && args.data_source == DataSource::Nvme {
-        format!(" max_chunk_size={}", args.max_chunk_size)
+    // Tags Lightstream nvme RESULT lines so size-limited and whole-batch
+    // replays are distinguishable in the summary. Flight replays are
+    // unaffected by the batch size limit, so their lines stay untagged.
+    let ls_batch = if args.max_batch_size > 0 && args.data_source == DataSource::Nvme {
+        format!(" max_batch_size={}", args.max_batch_size)
     } else {
         String::new()
     };
     let per_table_bytes = logical_payload_bytes_shape(args.shape, args.rows, 1);
+    // The protocol reader registers the bench table type up front, mirroring
+    // the source's registration, so both sides agree on the wire tag.
+    let ls_schema: Vec<Field> = bench_schema(&make_bench_table_shape(args.shape, args.rows));
 
     let rtt_ms = measure_rtt(&args.source_echo_addr).await?;
     println!("RESULT metric=latency shape={shape} data={data} rtt_ms={rtt_ms:.4}");
@@ -284,16 +306,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     flight_runs.push(flight_gib);
 
-                    // Lightstream TCP: the source pushes the same workload on
-                    // the control pulse, timed from the moment the
-                    // connections are accepted.
-                    ctrl.write_all(b"W").await?;
+                    // Lightstream protocol: accept the transport connections
+                    // before the existing control connection requests the
+                    // dataset.
                     let (ls_gib, series) = lightstream_phase(
                         &ls_listener,
+                        &mut ctrl,
+                        b'W',
                         args.data_source,
                         streams,
                         batches_per_stream,
                         args.rows,
+                        &ls_schema,
                         logical_gib,
                     )
                     .await?;
@@ -355,18 +379,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Lightstream block: the cold pulse has the source evict the
                 // cell's files before replaying, then the warm runs.
-                ctrl.write_all(b"C").await?;
                 let (cold_gib, series) = lightstream_phase(
                     &ls_listener,
+                    &mut ctrl,
+                    b'C',
                     args.data_source,
                     streams,
                     batches_per_stream,
                     args.rows,
+                    &ls_schema,
                     logical_gib,
                 )
                 .await?;
                 println!(
-                    "RESULT protocol=lightstream shape={shape} data={data}{ls_chunk} cache=cold rows={} streams={streams} batches={total} gib_per_s={cold_gib:.3}",
+                    "RESULT protocol=lightstream shape={shape} data={data}{ls_batch} cache=cold rows={} streams={streams} batches={total} gib_per_s={cold_gib:.3}",
                     args.rows
                 );
                 report_series(
@@ -374,18 +400,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &series,
                 );
                 for run in 1..=args.runs {
-                    ctrl.write_all(b"W").await?;
                     let (ls_gib, series) = lightstream_phase(
                         &ls_listener,
+                        &mut ctrl,
+                        b'W',
                         args.data_source,
                         streams,
                         batches_per_stream,
                         args.rows,
+                        &ls_schema,
                         logical_gib,
                     )
                     .await?;
                     println!(
-                        "RESULT protocol=lightstream shape={shape} data={data}{ls_chunk} cache=warm rows={} streams={streams} batches={total} run={run} gib_per_s={ls_gib:.3}",
+                        "RESULT protocol=lightstream shape={shape} data={data}{ls_batch} cache=warm rows={} streams={streams} batches={total} run={run} gib_per_s={ls_gib:.3}",
                         args.rows
                     );
                     report_series(
@@ -404,7 +432,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let (min, median, max) = spread(&mut ls_runs);
         println!(
-            "RESULT protocol=lightstream shape={shape} data={data}{ls_chunk}{summary_cache} rows={} streams={streams} batches={total} stat=median runs={} gib_per_s={median:.3} min_gib_per_s={min:.3} max_gib_per_s={max:.3}",
+            "RESULT protocol=lightstream shape={shape} data={data}{ls_batch}{summary_cache} rows={} streams={streams} batches={total} stat=median runs={} gib_per_s={median:.3} min_gib_per_s={min:.3} max_gib_per_s={max:.3}",
             args.rows, args.runs
         );
     }
@@ -413,15 +441,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Pull `batches_per_stream` batches over each of `streams` concurrent DoGet
-/// streams, verify delivery and return the aggregate throughput in GiB/s
-/// with the sorted per-message arrival offsets in microseconds. Under
-/// `memory` the ticket is the batch count and verification sums row counts,
-/// since the flight-data encoder slices large batches into multiple
-/// messages. Under `nvme` the ticket also carries the stream index and the
-/// evict flag, and every decoded message is checked against the global
-/// sequence its batch carries in its first column, proving each stream
-/// arrives ordered and complete.
+/// Request one Flight dataset, fetch its endpoints concurrently over
+/// separate Tonic gRPC connections, and consume every stream as it arrives.
+/// Endpoints are read independently with no cross-endpoint ordering, which is
+/// the delivery contract Flight defines for partitioned datasets. Timing
+/// starts immediately before `GetFlightInfo` and ends after the final batch
+/// is decoded and verified, so discovery, endpoint connections, `DoGet` and
+/// decoding are all included. Each decoded record batch contributes one
+/// arrival timestamp.
 async fn flight_phase(
     source_flight_addr: &str,
     data_source: DataSource,
@@ -431,37 +458,52 @@ async fn flight_phase(
     logical_gib: f64,
     evict: bool,
 ) -> Result<(f64, Vec<u64>), Box<dyn std::error::Error>> {
-    let channel = flight_connect_retry(source_flight_addr, data_source).await?;
+    let metadata_channel = flight_connect_retry(source_flight_addr, data_source).await?;
+    let mut metadata_client = flight_client(metadata_channel);
 
     let start = Instant::now();
+    let mut command = Vec::with_capacity(17);
+    command.extend_from_slice(&batches_per_stream.to_le_bytes());
+    command.extend_from_slice(&(streams as u64).to_le_bytes());
+    command.push(evict as u8);
+    let info = metadata_client
+        .get_flight_info(FlightDescriptor::new_cmd(command))
+        .await?;
+    assert_eq!(
+        info.endpoint.len(),
+        streams,
+        "Flight endpoint count does not match the request"
+    );
+
+    // Connection attempts run concurrently, while try_join_all preserves the
+    // endpoint order returned by FlightInfo.
+    let endpoints = try_join_all(info.endpoint.into_iter().map(|endpoint| async move {
+        let ticket = endpoint
+            .ticket
+            .clone()
+            .ok_or("Flight endpoint has no ticket")?;
+        let channel =
+            flight_connect_endpoint_retry(source_flight_addr, data_source, &endpoint).await?;
+        Ok::<_, Box<dyn std::error::Error>>((ticket, channel))
+    }))
+    .await?;
+
+    // Each endpoint is decoded and verified on its own task so all streams
+    // draw down the wire concurrently. Draining endpoints in `FlightInfo`
+    // order would serialise the transfer instead: an endpoint carries a
+    // contiguous range of the dataset, so globally ordered consumption
+    // cannot release an endpoint's batches until every earlier endpoint has
+    // fully arrived. Every endpoint still verifies its own range in order.
     let mut handles = Vec::with_capacity(streams);
-    for stream_idx in 0..streams {
-        let mut client = FlightServiceClient::new(channel.clone())
-            .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
-        let ticket = match data_source {
-            DataSource::Memory => Ticket::new(batches_per_stream.to_le_bytes().to_vec()),
-            DataSource::Nvme => {
-                let mut bytes = Vec::with_capacity(17);
-                bytes.extend_from_slice(&batches_per_stream.to_le_bytes());
-                bytes.extend_from_slice(&(stream_idx as u64).to_le_bytes());
-                bytes.push(evict as u8);
-                Ticket::new(bytes)
-            }
-        };
+    for (endpoint_idx, (ticket, channel)) in endpoints.into_iter().enumerate() {
         handles.push(tokio::spawn(async move {
-            let stream = client.do_get(Request::new(ticket)).await.unwrap().into_inner();
-            let decoder = arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
-                stream.map_err(|err| {
-                    arrow_flight::error::FlightError::from_external_error(Box::new(err))
-                }),
-            );
-            let mut decoder = std::pin::pin!(decoder);
+            let mut client = flight_client(channel);
+            let mut stream = client.do_get(ticket).await.unwrap();
             let mut stamps: Vec<Instant> = Vec::with_capacity(batches_per_stream as usize);
             let mut batch_rows = 0usize;
             let mut batches_done = 0u64;
             let mut total_rows = 0u64;
-            while let Some(item) = decoder.next().await {
+            while let Some(item) = stream.next().await {
                 let rb = item.unwrap();
                 stamps.push(Instant::now());
                 if data_source == DataSource::Nvme {
@@ -470,15 +512,15 @@ async fn flight_phase(
                         .as_any()
                         .downcast_ref::<Int32Array>()
                         .expect("replay batch missing leading i32 column");
-                    let seq = stream_idx as u64 * batches_per_stream + batches_done;
+                    let seq = endpoint_idx as u64 * batches_per_stream + batches_done;
                     let expected = (seq as i32).wrapping_add(batch_rows as i32);
                     assert_eq!(
                         col.value(0),
                         expected,
-                        "replay verification failed for stream {stream_idx}"
+                        "replay verification failed for endpoint {endpoint_idx}"
                     );
                     batch_rows += rb.num_rows();
-                    assert!(batch_rows <= rows, "flight message crosses a batch boundary");
+                    assert!(batch_rows <= rows, "flight record batch crosses a source batch");
                     if batch_rows == rows {
                         batches_done += 1;
                         batch_rows = 0;
@@ -491,14 +533,17 @@ async fn flight_phase(
                 DataSource::Memory => assert_eq!(
                     total_rows,
                     batches_per_stream * rows as u64,
-                    "flight row count mismatch for stream {stream_idx}"
+                    "flight row count mismatch for endpoint {endpoint_idx}"
                 ),
                 DataSource::Nvme => {
                     assert_eq!(
                         batches_done, batches_per_stream,
-                        "flight batch count mismatch for stream {stream_idx}"
+                        "flight batch count mismatch for endpoint {endpoint_idx}"
                     );
-                    assert_eq!(batch_rows, 0, "flight stream {stream_idx} ended mid-batch");
+                    assert_eq!(
+                        batch_rows, 0,
+                        "flight endpoint {endpoint_idx} ended mid-batch"
+                    );
                 }
             }
             stamps
@@ -517,6 +562,54 @@ async fn flight_phase(
     Ok((logical_gib / elapsed.as_secs_f64(), offsets))
 }
 
+fn flight_client(channel: Channel) -> FlightClient {
+    let inner = FlightServiceClient::new(channel)
+        .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
+    FlightClient::new_from_inner(inner)
+}
+
+/// Open a fresh Tonic channel for one Flight endpoint.
+///
+/// Location handling:
+///
+/// * Empty and reuse locations reconnect to the server that returned the
+///   `FlightInfo`.
+/// * Explicit gRPC locations are converted to the URI scheme Tonic expects.
+async fn flight_connect_endpoint_retry(
+    source_flight_addr: &str,
+    data_source: DataSource,
+    endpoint: &FlightEndpoint,
+) -> Result<Channel, Box<dyn std::error::Error>> {
+    let uri = if endpoint.location.is_empty()
+        || endpoint
+            .location
+            .iter()
+            .any(|location| location.uri == "arrow-flight-reuse-connection://?")
+    {
+        format!("http://{source_flight_addr}")
+    } else {
+        endpoint
+            .location
+            .iter()
+            .find_map(|location| {
+                location
+                    .uri
+                    .strip_prefix("grpc+tcp://")
+                    .or_else(|| location.uri.strip_prefix("grpc://"))
+                    .map(|addr| format!("http://{addr}"))
+                    .or_else(|| {
+                        location
+                            .uri
+                            .strip_prefix("grpc+tls://")
+                            .map(|addr| format!("https://{addr}"))
+                    })
+            })
+            .ok_or("Flight endpoint has no supported gRPC location")?
+    };
+    flight_connect_uri_retry(&uri, data_source).await
+}
+
 /// Connect the Flight channel, retrying until the source's server is up. The
 /// nvme deadline is long because the source binds its Flight server only
 /// after the dataset is generated.
@@ -524,11 +617,18 @@ async fn flight_connect_retry(
     source_flight_addr: &str,
     data_source: DataSource,
 ) -> Result<Channel, Box<dyn std::error::Error>> {
+    flight_connect_uri_retry(&format!("http://{source_flight_addr}"), data_source).await
+}
+
+async fn flight_connect_uri_retry(
+    uri: &str,
+    data_source: DataSource,
+) -> Result<Channel, Box<dyn std::error::Error>> {
     let deadline = match data_source {
         DataSource::Memory => CONNECT_DEADLINE,
         DataSource::Nvme => NVME_FLIGHT_DEADLINE,
     };
-    let endpoint = tonic::transport::Endpoint::try_from(format!("http://{source_flight_addr}"))?
+    let endpoint = tonic::transport::Endpoint::try_from(uri.to_string())?
         .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
         .initial_connection_window_size(FLIGHT_HTTP2_WINDOW);
     let mut waited = Duration::ZERO;
@@ -546,99 +646,76 @@ async fn flight_connect_retry(
     }
 }
 
-/// Receive the cell's tables over Lightstream TCP, verify delivery and
-/// return the throughput in GiB/s with the per-table arrival offsets in
-/// microseconds. Accepts one connection when `streams` is 1, otherwise
-/// `streams` connections merged per the data source's ordering contract.
-/// Timing starts once the connections are accepted. Under `nvme` each
-/// table's first column carries its global sequence and every stream must
-/// arrive ordered and complete. Tables are verified and dropped as they
-/// arrive so memory stays flat.
+/// Receive the cell's tables over the Lightstream protocol, verify delivery
+/// and return the throughput in GiB/s with the per-table arrival offsets in
+/// microseconds. Accepts one Lightstream protocol connection per stream and
+/// merges them in global write order under `Ordered`. Each connection
+/// announces its index at open, so the merge holds regardless of the order
+/// the connections were accepted.
+///
+/// Timing begins after the transport connections exist and immediately before
+/// the request pulse. It includes source preparation, decoding, ordered
+/// delivery and verification. Each table is released after verification.
 async fn lightstream_phase(
     listener: &TcpListener,
+    ctrl: &mut TcpStream,
+    pulse: u8,
     data_source: DataSource,
     streams: usize,
     batches_per_stream: u64,
     rows: usize,
+    schema: &[Field],
     logical_gib: f64,
 ) -> Result<(f64, Vec<u64>), Box<dyn std::error::Error>> {
     let total = batches_per_stream * streams as u64;
-    // Per-stream replay cursors: the global sequence of the batch being
-    // received and the rows delivered into it so far. Whole batches and row
-    // chunks both continue a cursor, so one verification covers chunked and
-    // unchunked replays.
-    let mut cursor_global: Vec<u64> = (0..streams as u64)
-        .map(|s| s * batches_per_stream)
-        .collect();
-    let mut cursor_rows: Vec<usize> = vec![0; streams];
-    let mut cursor_batches: Vec<u64> = vec![0; streams];
+    let mut file_idx = 0usize;
+    let mut batch_idx = 0u64;
+    let mut row_offset = 0usize;
     let mut stamps: Vec<Instant> = Vec::with_capacity(total as usize);
 
-    let (start, elapsed) = if streams == 1 {
-        let (socket, _peer) = listener.accept().await?;
-        let (read_half, _write_half) = socket.into_split();
-        let mut reader = TableReader::<Vec64<u8>>::new(
-            read_half,
-            BufferChunkSize::Http.chunk_size(),
-            IPCMessageProtocol::Stream,
-        );
-        let start = Instant::now();
-        let mut received = 0u64;
-        while let Some(table) = reader.read_next().await? {
-            stamps.push(Instant::now());
-            match data_source {
-                DataSource::Memory => assert_eq!(table.n_rows, rows, "row count mismatch"),
-                DataSource::Nvme => verify_replay_table(
-                    &table,
-                    rows,
-                    &mut cursor_global,
-                    &mut cursor_rows,
-                    &mut cursor_batches,
-                ),
-            }
-            std::hint::black_box(&table.cols);
-            received += 1;
-        }
-        if data_source == DataSource::Memory {
-            assert_eq!(received, total, "lightstream batch count mismatch");
-        }
-        (start, start.elapsed())
-    } else {
-        let sort = match data_source {
-            DataSource::Memory => SortBehaviour::Ordered,
-            DataSource::Nvme => SortBehaviour::None,
+    let table_types = [(TYPE_NAME, schema.to_vec())];
+    let mut reader = LightstreamParallelReader::accept(
+        listener,
+        streams,
+        &[],
+        &table_types,
+        SortBehaviour::Ordered,
+        None,
+    )
+    .await?;
+    let start = Instant::now();
+    ctrl.write_all(&[pulse]).await?;
+    let mut received = 0u64;
+    while let Some(item) = reader.next().await {
+        let msg = item?;
+        let Some(table) = msg.into_table() else {
+            return Err("lightstream frame is not a table".into());
         };
-        let mut reader = TcpParallelTableReader::accept(listener, streams, sort).await?;
-        let start = Instant::now();
-        let mut received = 0u64;
-        while let Some(item) = reader.next().await {
-            let (table, _seq) = item?;
-            stamps.push(Instant::now());
-            match data_source {
-                DataSource::Memory => assert_eq!(table.n_rows, rows, "row count mismatch"),
-                DataSource::Nvme => verify_replay_table(
-                    &table,
-                    rows,
-                    &mut cursor_global,
-                    &mut cursor_rows,
-                    &mut cursor_batches,
-                ),
-            }
-            std::hint::black_box(&table.cols);
-            received += 1;
+        stamps.push(Instant::now());
+        match data_source {
+            DataSource::Memory => assert_eq!(table.n_rows, rows, "row count mismatch"),
+            DataSource::Nvme => verify_replay_table(
+                &table,
+                rows,
+                batches_per_stream,
+                &mut file_idx,
+                &mut batch_idx,
+                &mut row_offset,
+            ),
         }
-        if data_source == DataSource::Memory {
-            assert_eq!(received, total, "lightstream batch count mismatch");
-        }
-        (start, start.elapsed())
-    };
+        std::hint::black_box(&table.cols);
+        received += 1;
+    }
+    if data_source == DataSource::Memory {
+        assert_eq!(received, total, "lightstream batch count mismatch");
+    }
 
     if data_source == DataSource::Nvme {
-        for (stream, count) in cursor_batches.iter().enumerate() {
-            assert_eq!(*count, batches_per_stream, "stream {stream} arrived incomplete");
-            assert_eq!(cursor_rows[stream], 0, "stream {stream} ended mid-batch");
-        }
+        assert_eq!(file_idx, streams, "not every replay file arrived");
+        assert_eq!(batch_idx, 0, "replay ended between files");
+        assert_eq!(row_offset, 0, "replay ended within a record batch");
     }
+    let elapsed = start.elapsed();
     let offsets = stamps
         .iter()
         .map(|t| t.duration_since(start).as_micros() as u64)
@@ -646,37 +723,35 @@ async fn lightstream_phase(
     Ok((logical_gib / elapsed.as_secs_f64(), offsets))
 }
 
-/// Check one received replay table against the dataset. The first value of
-/// the leading `i32` column must continue one stream's cursor, since batch
-/// `b` of stream `s` holds `s * batches_per_stream + b + i` at row `i`, and
-/// whole batches or row chunks of them both satisfy that. Streams whose
-/// cursors expect the same value carry identical content there, so advancing
-/// either cursor verifies the same delivery.
+/// Verify that a replay table starts at the next expected dataset row.
+/// Advances the file, record-batch and row offsets after a successful check.
 fn verify_replay_table(
     table: &Table,
     rows: usize,
-    cursor_global: &mut [u64],
-    cursor_rows: &mut [usize],
-    cursor_batches: &mut [u64],
+    batches_per_file: u64,
+    file_idx: &mut usize,
+    batch_idx: &mut u64,
+    row_offset: &mut usize,
 ) {
     let first = match &table.cols[0].array {
         Array::NumericArray(NumericArray::Int32(a)) => a.data[0] as i64,
         _ => panic!("replay batch missing leading i32 column"),
     };
-    let stream = cursor_global
-        .iter()
-        .zip(cursor_rows.iter())
-        .position(|(g, r)| *g as i64 + *r as i64 == first)
-        .unwrap_or_else(|| panic!("first value {first} continues no stream cursor"));
+    let global_batch = *file_idx as u64 * batches_per_file + *batch_idx;
+    let expected = (global_batch as i32).wrapping_add(*row_offset as i32);
+    assert_eq!(first as i32, expected, "replay table arrived out of order");
     assert!(
-        table.n_rows <= rows - cursor_rows[stream],
-        "chunk overruns its batch"
+        table.n_rows <= rows - *row_offset,
+        "table overruns its batch"
     );
-    cursor_rows[stream] += table.n_rows;
-    if cursor_rows[stream] == rows {
-        cursor_rows[stream] = 0;
-        cursor_global[stream] += 1;
-        cursor_batches[stream] += 1;
+    *row_offset += table.n_rows;
+    if *row_offset == rows {
+        *row_offset = 0;
+        *batch_idx += 1;
+        if *batch_idx == batches_per_file {
+            *batch_idx = 0;
+            *file_idx += 1;
+        }
     }
 }
 
@@ -684,10 +759,11 @@ fn verify_replay_table(
 /// CloudWatch's event limit.
 const RAW_CHUNK: usize = 1000;
 
-/// Report a pass's arrival series: a `RESULT metric=gaps` line summarising
-/// the inter-arrival gaps and the raw offsets as chunked `RAW` lines for
-/// offline analysis. Runs after the timed window closes. Percentiles appear
-/// only at sample counts that support them.
+/// Report a pass's arrival series after the timed window closes.
+///
+/// * `RESULT metric=gaps` summarises the inter-arrival gaps.
+/// * `RAW` lines contain every arrival offset for offline analysis.
+/// * Percentiles appear only at sample counts that support them.
 fn report_series(tags: &str, offsets_us: &[u64]) {
     if offsets_us.len() >= 2 {
         let mut gaps: Vec<u64> = offsets_us.windows(2).map(|w| w[1] - w[0]).collect();

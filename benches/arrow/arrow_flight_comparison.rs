@@ -256,7 +256,7 @@ const FLIGHT_HTTP2_WINDOW: u32 = 8 * 1024 * 1024;
 const FLIGHT_MAX_MESSAGE_BYTES: usize = i32::MAX as usize;
 
 // Stream counts for the matched parallel comparison. Each side fans the same
-// table sequence across N concurrent streams on one connection.
+// table sequence across N concurrent streams, one connection per stream.
 const PARALLEL_STREAM_COUNTS: &[usize] = &[2, 4, 8, 16];
 
 // The DoGet ticket carries the batch count the client wants, so each concurrent
@@ -533,6 +533,7 @@ fn bench_lightstream_tcp(
                     read_half,
                     BufferChunkSize::Http.chunk_size(),
                     IPCMessageProtocol::Stream,
+                    None,
                 );
 
                 let start = std::time::Instant::now();
@@ -552,9 +553,11 @@ fn bench_lightstream_tcp(
     });
 }
 
-// Arrow Flight across N concurrent DoGet streams on one channel. Each stream
-// requests `iters` batches through a cloned ticket, so the channel carries the
-// same per-stream workload as lightstream's N parallel streams. `Bytes` clones
+// Arrow Flight across N concurrent DoGet streams, each on its own channel and
+// therefore its own TCP connection, matching lightstream's connection-per-stream
+// parallel layout. Cloned tonic channels would multiplex every stream onto one
+// connection and throttle the aggregate on the shared connection window. Each
+// stream requests `iters` batches through a cloned ticket, and `Bytes` clones
 // share the one ticket buffer, so only the initial ticket allocates.
 fn bench_flight_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
@@ -591,20 +594,23 @@ fn bench_flight_parallel(
                         .unwrap();
                 });
 
-                let channel = tonic::transport::Endpoint::try_from(format!("http://{addr}"))
+                // Connect every channel before the timer starts so connection
+                // setup is not billed against the transfer.
+                let endpoint = tonic::transport::Endpoint::try_from(format!("http://{addr}"))
                     .unwrap()
                     .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
-                    .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
-                    .connect()
-                    .await
-                    .unwrap();
+                    .initial_connection_window_size(FLIGHT_HTTP2_WINDOW);
+                let mut channels = Vec::with_capacity(streams);
+                for _ in 0..streams {
+                    channels.push(endpoint.connect().await.unwrap());
+                }
 
                 let ticket = Ticket::new(iters.to_le_bytes().to_vec());
 
                 let start = std::time::Instant::now();
                 let mut handles = Vec::with_capacity(streams);
-                for _ in 0..streams {
-                    let mut client = FlightServiceClient::new(channel.clone())
+                for channel in channels {
+                    let mut client = FlightServiceClient::new(channel)
                         .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
                         .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
                     let ticket = ticket.clone();
@@ -648,8 +654,10 @@ fn bench_flight_parallel(
 }
 
 // lightstream TCP across N concurrent connections to one endpoint. TCP has no
-// in-band multiplexing, so each connection carries its own stream. The reader
-// merges the connections in global write order under `Ordered`.
+// in-band multiplexing, so each connection carries its own stream. Tables are
+// decoded and dropped as they arrive under `None`, matching Flight's
+// per-stream ordering and its drop-on-arrival materialisation, so the two
+// parallel comparisons share the same ordering and retention contract.
 fn bench_lightstream_tcp_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
@@ -660,7 +668,7 @@ fn bench_lightstream_tcp_parallel(
 ) {
     use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
     use lightstream::models::writers::parallel::tcp::TcpParallelTableWriter;
-    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
+    use lightstream::traits::parallel_transport_reader::SortBehaviour;
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
     group.bench_function(format!("lightstream_tcp_parallel_{streams}"), |b| {
@@ -675,13 +683,19 @@ fn bench_lightstream_tcp_parallel(
                 let total_tables = iters * streams as u64;
 
                 let server = tokio::spawn(async move {
-                    let reader =
-                        TcpParallelTableReader::accept(&listener, streams, SortBehaviour::Ordered)
+                    let mut reader =
+                        TcpParallelTableReader::accept(&listener, streams, SortBehaviour::None, None)
                             .await
                             .unwrap();
-                    let tables = reader.read_all_tables().await.unwrap();
-                    std::hint::black_box(&tables);
-                    tables.len() as u64
+                    // Drop each table as it arrives so retention matches
+                    // Flight's decode-and-drop loop.
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let (table, _seq) = item.unwrap();
+                        std::hint::black_box(table.n_rows);
+                        received += 1;
+                    }
+                    received
                 });
 
                 let mut writer =
@@ -703,8 +717,9 @@ fn bench_lightstream_tcp_parallel(
     });
 }
 
-// Lightstream protocol across N concurrent connections to one endpoint. The
-// reader merges the connections in global write order under `Ordered`.
+// Lightstream protocol across N concurrent connections to one endpoint. Frames
+// are decoded and dropped as they arrive under `None`, matching Flight's
+// per-stream ordering and drop-on-arrival materialisation.
 #[cfg(feature = "protocol")]
 fn bench_lightstream_protocol_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
@@ -731,19 +746,28 @@ fn bench_lightstream_protocol_parallel(
 
                 let server_schema = schema.clone();
                 let server = tokio::spawn(async move {
+                    use futures::StreamExt;
                     let table_types = [(TYPE_NAME, server_schema)];
-                    let reader = LightstreamParallelReader::accept(
+                    let mut reader = LightstreamParallelReader::accept(
                         &listener,
                         streams,
                         &[],
                         &table_types,
-                        SortBehaviour::Ordered,
+                        SortBehaviour::None,
+                        None,
                     )
                     .await
                     .unwrap();
-                    let frames = reader.read_all().await.unwrap();
-                    let received = frames.iter().filter(|m| m.is_table()).count() as u64;
-                    std::hint::black_box(&frames);
+                    // Drop each frame as it arrives so retention matches
+                    // Flight's decode-and-drop loop.
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let msg = item.unwrap();
+                        if msg.is_table() {
+                            received += 1;
+                        }
+                        std::hint::black_box(&msg);
+                    }
                     received
                 });
 
@@ -779,7 +803,7 @@ fn bench_lightstream_http2_parallel(
 ) {
     use lightstream::models::readers::parallel::http::HttpParallelTableReader;
     use lightstream::models::writers::parallel::http::HttpParallelTableWriter;
-    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
+    use lightstream::traits::parallel_transport_reader::SortBehaviour;
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
     group.bench_function(format!("lightstream_http2_parallel_{streams}"), |b| {
@@ -795,14 +819,21 @@ fn bench_lightstream_http2_parallel(
                 let total_tables = iters * streams as u64;
 
                 let server = tokio::spawn(async move {
+                    use futures::StreamExt;
                     let (tcp, _peer) = listener.accept().await.unwrap();
-                    let reader =
-                        HttpParallelTableReader::from_tcp(tcp, streams, SortBehaviour::Ordered)
+                    let mut reader =
+                        HttpParallelTableReader::from_tcp(tcp, streams, SortBehaviour::None, None)
                             .await
                             .unwrap();
-                    let tables = reader.read_all_tables().await.unwrap();
-                    std::hint::black_box(&tables);
-                    tables.len() as u64
+                    // Drop each table as it arrives so retention matches
+                    // Flight's decode-and-drop loop.
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let (table, _seq) = item.unwrap();
+                        std::hint::black_box(table.n_rows);
+                        received += 1;
+                    }
+                    received
                 });
 
                 let mut writer =
@@ -840,7 +871,7 @@ fn bench_lightstream_quic_parallel(
 
     use lightstream::models::readers::parallel::quic::QuicParallelTableReader;
     use lightstream::models::writers::parallel::quic::QuicParallelTableWriter;
-    use lightstream::traits::parallel_transport_reader::{ParallelTransportReader, SortBehaviour};
+    use lightstream::traits::parallel_transport_reader::SortBehaviour;
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
     group.bench_function(format!("lightstream_quic_parallel_{streams}"), |b| {
@@ -886,19 +917,24 @@ fn bench_lightstream_quic_parallel(
                 let total_tables = iters * streams as u64;
 
                 let server = tokio::spawn(async move {
+                    use futures::StreamExt;
                     let incoming = endpoint.accept().await.unwrap();
                     let conn = incoming.await.unwrap();
-                    let reader =
-                        QuicParallelTableReader::accept(&conn, streams, SortBehaviour::Ordered)
+                    let mut reader =
+                        QuicParallelTableReader::accept(&conn, streams, SortBehaviour::None, None)
                             .await
                             .unwrap();
-                    // read_all_tables collects every stream and reassembles the
-                    // global write order from the sequence keys. The connection
-                    // and endpoint close on drop at the end of this task,
-                    // keeping the QUIC idle-drain out of the timed region.
-                    let tables = reader.read_all_tables().await.unwrap();
-                    std::hint::black_box(&tables);
-                    tables.len() as u64
+                    // Drop each table as it arrives so retention matches
+                    // Flight's decode-and-drop loop. The connection and
+                    // endpoint close on drop at the end of this task, keeping
+                    // the QUIC idle-drain out of the timed region.
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let (table, _seq) = item.unwrap();
+                        std::hint::black_box(table.n_rows);
+                        received += 1;
+                    }
+                    received
                 });
 
                 let mut client_ep =

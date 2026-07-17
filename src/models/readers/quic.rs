@@ -21,7 +21,7 @@
 //! use futures_util::StreamExt;
 //! use lightstream::models::readers::quic::QuicTableReader;
 //!
-//! let mut reader = QuicTableReader::from_recv(recv_stream);
+//! let mut reader = QuicTableReader::from_recv(recv_stream, None);
 //! while let Some(result) = reader.next().await {
 //!     let table = result?;
 //!     // process each batch as it arrives
@@ -36,6 +36,7 @@ use futures_core::Stream;
 use minarrow::{Field, SuperTable, Table, Vec64};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
+use crate::models::decoders::limits::DecodeLimits;
 use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::quic::QuicByteStream;
 use crate::traits::transport_reader::IPCTransportReader;
@@ -55,9 +56,14 @@ impl QuicTableReader {
     ///
     /// Uses `IPCMessageProtocol::Stream` and a 64 KiB initial decode capacity.
     /// The default chunk size is `BufferChunkSize::WebTransport` (64 KiB).
-    pub fn from_recv(recv: quinn::RecvStream) -> Self {
+    pub fn from_recv(recv: quinn::RecvStream, limits: Option<DecodeLimits>) -> Self {
         let stream = QuicByteStream::new(recv, BufferChunkSize::WebTransport);
-        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::WebTransport.chunk_size(), IPCMessageProtocol::Stream);
+        let inner = TableReader::<Vec64<u8>>::new(
+            stream,
+            BufferChunkSize::WebTransport.chunk_size(),
+            IPCMessageProtocol::Stream,
+            limits,
+        );
         Self { inner }
     }
 
@@ -66,15 +72,26 @@ impl QuicTableReader {
         recv: quinn::RecvStream,
         chunk_size: BufferChunkSize,
         protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
     ) -> Self {
         let stream = QuicByteStream::new(recv, chunk_size);
-        let inner = TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol);
+        let inner =
+            TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol, limits);
         Self { inner }
     }
 
     /// Wrap an existing `QuicByteStream` as a table reader.
-    pub fn from_stream(stream: QuicByteStream, protocol: IPCMessageProtocol) -> Self {
-        let inner = TableReader::<Vec64<u8>>::new(stream, BufferChunkSize::WebTransport.chunk_size(), protocol);
+    pub fn from_stream(
+        stream: QuicByteStream,
+        protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
+    ) -> Self {
+        let inner = TableReader::<Vec64<u8>>::new(
+            stream,
+            BufferChunkSize::WebTransport.chunk_size(),
+            protocol,
+            limits,
+        );
         Self { inner }
     }
 }

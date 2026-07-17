@@ -82,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let reader = TcpTableReader::from_stream(
             byte_stream,
             lightstream::enums::IPCMessageProtocol::Stream,
+            None,
         );
         let tables = reader.read_all_tables().await.expect("read all tables");
         for t in &tables {

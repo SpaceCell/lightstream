@@ -151,7 +151,7 @@ async fn test_uds_single_table_roundtrip() {
     let (socket, _) = listener.accept().await.unwrap();
     let (read_half, _write_half) = socket.into_split();
     let stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -235,7 +235,7 @@ async fn test_uds_multi_table_roundtrip() {
     let (socket, _) = listener.accept().await.unwrap();
     let (read_half, _write_half) = socket.into_split();
     let stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
 
     writer_handle.await.unwrap();
@@ -277,7 +277,7 @@ async fn test_uds_stream_trait() {
     let (socket, _) = listener.accept().await.unwrap();
     let (read_half, _write_half) = socket.into_split();
     let stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
-    let mut reader = UdsTableReader::from_stream(stream, IPCMessageProtocol::Stream);
+    let mut reader = UdsTableReader::from_stream(stream, IPCMessageProtocol::Stream, None);
 
     // Each record batch is yielded as an individual table
     let mut count = 0;
@@ -321,7 +321,7 @@ async fn test_uds_read_to_super_table() {
     let (socket, _) = listener.accept().await.unwrap();
     let (read_half, _write_half) = socket.into_split();
     let stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
-    let reader = UdsTableReader::from_stream(stream, IPCMessageProtocol::Stream);
+    let reader = UdsTableReader::from_stream(stream, IPCMessageProtocol::Stream, None);
     let super_table = reader
         .read_to_super_table(Some("merged".into()), None)
         .await

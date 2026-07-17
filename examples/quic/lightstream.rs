@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let (send_stream, recv_stream) = connection.accept_bi().await.unwrap();
 
-        let mut conn = QuicLightstreamConnection::from_quic(recv_stream, send_stream);
+        let mut conn = QuicLightstreamConnection::from_quic(recv_stream, send_stream, None);
         register_demo_types(&mut conn);
         recv_and_print_all(&mut conn).await;
 
@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (send_stream, recv_stream) = connection.open_bi().await?;
 
-    let mut client = QuicLightstreamConnection::from_quic(recv_stream, send_stream);
+    let mut client = QuicLightstreamConnection::from_quic(recv_stream, send_stream, None);
     register_demo_types(&mut client);
     send_demo_messages(&mut client, "quic").await?;
 

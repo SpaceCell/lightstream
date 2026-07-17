@@ -254,13 +254,13 @@ fn bench_mmap_streaming(c: &mut Criterion) {
         });
     }
 
-    // ---- Decode-only sub-cells (no sum) to localise the warm decode gap ------
-    // These cells iterate every batch and `black_box` the column slice
+    // ---- Decode-only benchmarks (no sum) to localise the warm decode gap -----
+    // These benchmarks iterate every batch and `black_box` the column slice
     // without summing it. Subtracting from the corresponding `_warm`
-    // sum cell isolates the per-batch decode + buffer-setup cost from
+    // sum benchmark isolates the per-batch decode + buffer-setup cost from
     // the f64 add loop. Cold variants are intentionally not included;
     // page-fault cost is already isolated by the cold-warm diff on
-    // the sum cells.
+    // the sum benchmarks.
     group.bench_function("lightstream_mmap_decode_only_warm", |b| {
         std::hint::black_box(decode_only_lightstream_mmap(&path, n_batches));
         b.iter(|| {
@@ -314,11 +314,11 @@ fn cleanup_on_exit() -> bool {
 // ---------------------------------------------------------------------------
 // Per-reader sum kernels. Each iterates every batch in the file and
 // returns the sum of the `values` f64 column. Reading every byte of
-// that column forces page-faults under the `_cold` cells.
+// that column forces page faults in the `_cold` benchmarks.
 // ---------------------------------------------------------------------------
 
 fn sum_lightstream_mmap(path: &PathBuf, n_batches: usize) -> f64 {
-    let reader = MmapTableReader::open(path).unwrap();
+    let reader = MmapTableReader::open(path, false).unwrap();
     let mut sum = 0.0f64;
     for i in 0..n_batches {
         let batch = reader.read_batch(i).unwrap();
@@ -341,7 +341,7 @@ fn sum_lightstream_file(path: &PathBuf, n_batches: usize) -> f64 {
 // of the projected batch.
 
 fn sum_lightstream_mmap_projected(path: &PathBuf, n_batches: usize) -> f64 {
-    let reader = MmapTableReader::open(path).unwrap();
+    let reader = MmapTableReader::open(path, false).unwrap();
     let mut sum = 0.0f64;
     for i in 0..n_batches {
         let batch = reader.read_batch_cols(i, &[VALUES_COL_NAME]).unwrap();
@@ -402,10 +402,10 @@ fn sum_arrow_rs_file(path: &PathBuf, projection: Option<Vec<usize>>) -> f64 {
 
 // Decode-only kernels: iterate every batch, touch the column slice
 // via black_box, do not sum. Used to localise the per-batch decode
-// cost from the f64 add loop in the corresponding `_warm` sum cells.
+// cost from the f64 add loop in the corresponding `_warm` sum benchmarks.
 
 fn decode_only_lightstream_mmap(path: &PathBuf, n_batches: usize) -> u64 {
-    let reader = MmapTableReader::open(path).unwrap();
+    let reader = MmapTableReader::open(path, false).unwrap();
     let mut touched = 0u64;
     for i in 0..n_batches {
         let batch = reader.read_batch(i).unwrap();

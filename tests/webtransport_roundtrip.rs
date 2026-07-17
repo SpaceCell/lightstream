@@ -187,7 +187,7 @@ async fn test_webtransport_single_table_roundtrip() {
     let recv = conn.accept_uni().await.unwrap();
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
     drop(conn);
 
@@ -238,7 +238,7 @@ async fn test_webtransport_multi_table_roundtrip() {
     let recv = conn.accept_uni().await.unwrap();
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream);
+    let reader = TableReader::<Vec64<u8>>::new(stream, 64 * 1024, IPCMessageProtocol::Stream, None);
     let tables = reader.read_all_tables().await.unwrap();
     drop(conn);
 
@@ -290,7 +290,7 @@ async fn test_webtransport_stream_trait() {
     let recv = conn.accept_uni().await.unwrap();
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-    let mut reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream);
+    let mut reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream, None);
 
     let mut count = 0;
     while let Some(result) = reader.next().await {
@@ -343,7 +343,7 @@ async fn test_webtransport_read_to_super_table() {
     let recv = conn.accept_uni().await.unwrap();
 
     let stream = WebTransportByteStream::new(recv, BufferChunkSize::WebTransport);
-    let reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream);
+    let reader = WebTransportTableReader::from_stream(stream, IPCMessageProtocol::Stream, None);
     let super_table = reader
         .read_to_super_table(Some("merged".into()), None)
         .await

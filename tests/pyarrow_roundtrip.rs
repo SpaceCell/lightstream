@@ -335,7 +335,7 @@ mod pyarrow_roundtrip_tests {
             return;
         }
 
-        let reader = MmapTableReader::open(file_path).expect("Failed to mmap file");
+        let reader = MmapTableReader::open(file_path, false).expect("Failed to mmap file");
         assert!(reader.num_batches() > 0, "No record batches found");
 
         let expected = create_expected_table(2048);
@@ -346,7 +346,7 @@ mod pyarrow_roundtrip_tests {
 
         // Chunked read
         let chunked = reader
-            .read_batch_chunked(0, 16 * 1024)
+            .read_batch_portion(0, 16 * 1024)
             .expect("Failed to read batch chunks");
         assert!(
             chunked.batches.len() > 1,
@@ -412,7 +412,7 @@ mod pyarrow_roundtrip_tests {
             .await
             .expect("Failed to create stream");
         let stream = ByteStream(disk);
-        let mut reader = TableReader::<Vec<u8>>::new(stream, 1024, IPCMessageProtocol::Stream);
+        let mut reader = TableReader::<Vec<u8>>::new(stream, 1024, IPCMessageProtocol::Stream, None);
 
         let mut tables = vec![];
         while let Some(table) = reader.next().await {

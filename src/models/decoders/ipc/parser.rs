@@ -619,11 +619,11 @@ impl RecordBatchParser {
         });
     }
 
-    /// Consume a validity‑bitmap buffer when present and build the proper
+    /// Consume a null-mask‑bitmap buffer when present and build the proper
     /// `Bitmask`.  
     /// * For nullable fields we always return `Some(Bitmask)`  
     ///   - all‑true when the bitmap length is 0.  
-    /// * For non‑nullable fields we skip an unexpected validity buffer
+    /// * For non‑nullable fields we skip an unexpected null mask
     ///   (length 0 or `ceil(n_rows/8)`) but return `None`.
     #[inline]
     pub fn extract_null_mask<'a>(
@@ -643,10 +643,10 @@ impl RecordBatchParser {
             } else {
                 fbuf_meta.get(*buffer_idx).length() as usize
             };
-            let expected_validity_len = field_len.div_ceil(8); // ceil(n/8)
+            let expected_null_mask_len = field_len.div_ceil(8); // ceil(n/8)
 
-            if len_bytes == 0 || len_bytes == expected_validity_len {
-                // It is a validity buffer - consume it, but ignore contents.
+            if len_bytes == 0 || len_bytes == expected_null_mask_len {
+                // It is a null mask - consume it, but ignore contents.
                 *buffer_idx += 1;
             }
             return Ok(None);
@@ -738,7 +738,7 @@ impl RecordBatchParser {
 /// Handles dictionary batches for categorical columns as per the Arrow IPC specification.
 /// Validates offsets and buffer lengths. Returns error if out of bounds or malformed.
 #[inline(always)]
-pub(crate) fn handle_dictionary_batch(
+pub fn handle_dictionary_batch(
     db: &fb::DictionaryBatch,
     body: &[u8],
     dicts: &mut HashMap<i64, Vec<String>>,
@@ -1272,7 +1272,7 @@ fn extract_null_mask(
     corrections: Option<&[(usize, usize)]>,
 ) -> io::Result<Option<Bitmask>> {
     if !field.nullable {
-        // Peek the validity-slot length without bounds-asserting Vector::get
+        // Peek the null-mask slot length without bounds-asserting Vector::get
         // when the slot is absent. A peer that omits the slot for a
         // non-nullable column simply does not advance the buffer index.
         let len_bytes = if let Some(c) = corrections {
@@ -1285,15 +1285,15 @@ fn extract_null_mask(
             if l_i < 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("validity buffer length is negative for {}", field.name),
+                    format!("null mask length is negative for {}", field.name),
                 ));
             }
             l_i as usize
         } else {
             return Ok(None);
         };
-        let expected_validity_len = field_len.div_ceil(8);
-        if len_bytes == 0 || len_bytes == expected_validity_len {
+        let expected_null_mask_len = field_len.div_ceil(8);
+        if len_bytes == 0 || len_bytes == expected_null_mask_len {
             *buffer_idx += 1;
         }
         return Ok(None);
@@ -1314,7 +1314,7 @@ fn extract_null_mask(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "validity buffer index {} out of range for {} (have {})",
+                    "null mask index {} out of range for {} (have {})",
                     idx,
                     field.name,
                     fbuf_meta.len()
@@ -1327,7 +1327,7 @@ fn extract_null_mask(
         if off_i < 0 || len_i < 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("validity buffer descriptor negative for {}", field.name),
+                format!("null mask descriptor negative for {}", field.name),
             ));
         }
         (off_i as usize, len_i as usize)
@@ -1340,7 +1340,7 @@ fn extract_null_mask(
     let end = offset.checked_add(len_bytes).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "validity offset+length overflow",
+            "null mask offset+length overflow",
         )
     })?;
     if end > body_len {

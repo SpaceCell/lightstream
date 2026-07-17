@@ -55,7 +55,7 @@ async fn test_http_parallel_roundtrip() {
 
     let server = tokio::spawn(async move {
         let (tcp, _peer) = listener.accept().await.unwrap();
-        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::None)
+        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::None, None)
             .await
             .unwrap();
         reader.read_all_tables().await.unwrap()
@@ -91,7 +91,7 @@ async fn test_http_parallel_ordering_and_round_robin() {
 
     let server = tokio::spawn(async move {
         let (tcp, _peer) = listener.accept().await.unwrap();
-        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::None)
+        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::None, None)
             .await
             .unwrap();
         reader.read_all_tables().await.unwrap()
@@ -142,7 +142,7 @@ async fn test_http_parallel_ordered_uneven_streams() {
 
     let server = tokio::spawn(async move {
         let (tcp, _peer) = listener.accept().await.unwrap();
-        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::Ordered)
+        let reader = HttpParallelTableReader::from_tcp(tcp, STREAMS, SortBehaviour::Ordered, None)
             .await
             .unwrap();
         reader.read_all_tables().await.unwrap()

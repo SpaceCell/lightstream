@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_stream(&tables, &stream_path, IPCMessageProtocol::Stream).await?;
 
     let stream = DiskByteStream::open(&stream_path, BufferChunkSize::Custom(8192)).await?;
-    let mut reader = TableReader::<Vec64<u8>>::new(stream, 8192, IPCMessageProtocol::Stream);
+    let mut reader = TableReader::<Vec64<u8>>::new(stream, 8192, IPCMessageProtocol::Stream, None);
     let mut count = 0;
     while let Some(batch) = reader.next().await {
         let t = batch?;
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_stream(&large, &large_path, IPCMessageProtocol::Stream).await?;
 
     let stream = DiskByteStream::open(&large_path, BufferChunkSize::Custom(4096)).await?;
-    let mut reader = TableReader::<Vec64<u8>>::new(stream, 4096, IPCMessageProtocol::Stream);
+    let mut reader = TableReader::<Vec64<u8>>::new(stream, 4096, IPCMessageProtocol::Stream, None);
     let start = std::time::Instant::now();
     let mut total_rows = 0;
     while let Some(batch) = reader.next().await {

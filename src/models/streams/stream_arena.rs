@@ -16,15 +16,13 @@
 
 use std::cell::UnsafeCell;
 use std::io;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use minarrow::Vec64;
 use minarrow::structs::shared_buffer::SharedBuffer;
 
-/// Default arena capacity: 2 GiB. With Vec64/MAllocPg64 this is virtual
-/// address space reservation rather than physical memory until used.
-/// Large enough that recycling is rare even for sustained streaming.
-const DEFAULT_ARENA_CAPACITY: usize = 2 * 1024 * 1024 * 1024;
+use crate::constants::arena_capacity;
 
 /// Backing allocation shared between the arena writer and all windows.
 ///
@@ -37,9 +35,9 @@ struct ArenaBacking {
     data: UnsafeCell<Vec64<u8>>,
 }
 
-// Safety: access is non-overlapping. The writer touches [write_pos..capacity],
-// windows reference [offset..offset+len] where offset+len <= write_pos.
-// The stream is polled on a single task so there's no concurrent access.
+// Safety: mutable access is limited to regions assigned for writing. Published
+// windows reference completed, disjoint regions and are never written again.
+// The allocation remains stable for the lifetime of the backing.
 unsafe impl Send for ArenaBacking {}
 unsafe impl Sync for ArenaBacking {}
 
@@ -113,7 +111,8 @@ unsafe impl tokio_uring::buf::IoBufMut for ArenaRegion {
 
 /// Stream arena for zero-allocation I/O.
 ///
-/// Write network data into the arena via `spare_mut()` + `advance()`.
+/// Write network data into the arena via `spare_uninit()` + `advance()`,
+/// or `extend_from_slice()` for bytes already in hand.
 /// Package completed regions as SharedBuffer windows via `window()`.
 /// Recycle the backing when all windows have been dropped.
 pub struct StreamArena {
@@ -129,19 +128,20 @@ impl Default for StreamArena {
 }
 
 impl StreamArena {
-    /// Create an arena with the default capacity (1 MiB).
+    /// Create an arena with the configured capacity: 2 GiB of virtual
+    /// address space by default, overridable at runtime with
+    /// `LIGHTSTREAM_ARENA_CAPACITY`. Physical memory is committed only
+    /// as bytes are written.
     pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_ARENA_CAPACITY)
+        Self::with_capacity(arena_capacity())
     }
 
     /// Create an arena with the given capacity.
+    ///
+    /// The backing allocation is reserved but not initialised. Bytes
+    /// become initialised as writes commit them through `advance`.
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut v = Vec64::with_capacity(capacity);
-        // Set len to capacity so the full allocation is addressable.
-        // Content beyond write_pos is uninitialised but never read.
-        unsafe {
-            v.set_len(capacity);
-        }
+        let v = Vec64::with_capacity(capacity);
         Self {
             backing: Arc::new(ArenaBacking {
                 data: UnsafeCell::new(v),
@@ -151,23 +151,48 @@ impl StreamArena {
         }
     }
 
-    /// Get a mutable slice of the spare capacity for writing.
+    /// Get the spare capacity for writing.
     ///
-    /// Returns `[write_pos..capacity]`. The caller writes into this
-    /// region, then calls `advance(n)` to commit `n` bytes.
+    /// Returns `[write_pos..capacity]` as uninitialised memory. The
+    /// caller writes into this region, then calls `advance(n)` to commit
+    /// the `n` bytes it initialised. Asynchronous read paths wrap the
+    /// slice with `ReadBuf::uninit`.
     ///
     /// The returned slice is only valid until the next method call
     /// on this arena.
     #[inline]
-    pub fn spare_mut(&mut self) -> &mut [u8] {
+    pub fn spare_uninit(&mut self) -> &mut [MaybeUninit<u8>] {
         // Safety: we access the spare region [write_pos..capacity] via raw
         // pointer arithmetic, never creating &mut Vec64. Existing windows
-        // reference [0..write_pos] which doesn't overlap.
+        // reference [0..write_pos] which doesn't overlap, and the region is
+        // exposed as MaybeUninit so no initialisation claim is made.
         let ptr = self.backing.data.get();
         let data_ptr = unsafe { (*ptr).as_mut_ptr() };
-        let spare_ptr = unsafe { data_ptr.add(self.write_pos) };
+        let spare_ptr = unsafe { data_ptr.add(self.write_pos) as *mut MaybeUninit<u8> };
         let spare_len = self.capacity - self.write_pos;
         unsafe { std::slice::from_raw_parts_mut(spare_ptr, spare_len) }
+    }
+
+    /// Copy `src` into the spare capacity and advance over it.
+    ///
+    /// Errors when `src` does not fit in the remaining capacity.
+    pub fn extend_from_slice(&mut self, src: &[u8]) -> io::Result<()> {
+        if src.len() > self.capacity - self.write_pos {
+            return Err(io::Error::other(
+                "StreamArena::extend_from_slice: source exceeds remaining capacity",
+            ));
+        }
+        // Safety: the destination range [write_pos..write_pos+src.len()]
+        // lies inside the backing allocation, does not overlap `src`, and
+        // no window references it because windows end at or before
+        // write_pos.
+        let ptr = self.backing.data.get();
+        unsafe {
+            let dst = (*ptr).as_mut_ptr().add(self.write_pos);
+            std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+        }
+        self.write_pos += src.len();
+        Ok(())
     }
 
     /// Advance the write position without alignment padding.
@@ -175,10 +200,21 @@ impl StreamArena {
     /// Use this when accumulating data for a single frame across
     /// multiple reads. Call `align()` after the frame is complete
     /// to pad to the next 64-byte boundary before the next frame.
+    ///
+    /// The caller must have initialised the `n` bytes it advances over,
+    /// and `n` must not exceed `remaining()`.
+    ///
+    /// # Safety
+    ///
+    /// Every byte in the first `n` elements returned by the preceding
+    /// [`Self::spare_uninit`] call must have been initialised.
     #[inline]
-    pub fn advance(&mut self, n: usize) {
+    pub unsafe fn advance(&mut self, n: usize) {
+        assert!(
+            n <= self.capacity - self.write_pos,
+            "StreamArena::advance past capacity"
+        );
         self.write_pos += n;
-        debug_assert!(self.write_pos <= self.capacity);
     }
 
     /// Pad the write position to the next 64-byte boundary.
@@ -190,11 +226,14 @@ impl StreamArena {
     pub fn align(&mut self) {
         let remainder = self.write_pos % 64;
         if remainder != 0 {
-            self.write_pos += 64 - remainder;
-        }
-        // Clamp to capacity
-        if self.write_pos > self.capacity {
-            self.write_pos = self.capacity;
+            let padding = (64 - remainder).min(self.capacity - self.write_pos);
+            // Keep [0..write_pos) fully initialised so windows may safely
+            // reference any committed region.
+            let ptr = self.backing.data.get();
+            unsafe {
+                (*ptr).as_mut_ptr().add(self.write_pos).write_bytes(0, padding);
+            }
+            self.write_pos += padding;
         }
     }
 
@@ -204,10 +243,10 @@ impl StreamArena {
     /// The returned SharedBuffer is an independent, reference-counted view.
     #[inline]
     pub fn window(&self, offset: usize, len: usize) -> SharedBuffer {
-        debug_assert!(
-            offset + len <= self.write_pos,
-            "window extends past write_pos"
-        );
+        let end = offset
+            .checked_add(len)
+            .expect("StreamArena::window range overflows");
+        assert!(end <= self.write_pos, "window extends past write_pos");
         SharedBuffer::from_owner(BufferWindow {
             backing: self.backing.clone(),
             offset,
@@ -223,7 +262,10 @@ impl StreamArena {
     /// filled, then `window()` to create the SharedBuffer view.
     #[cfg(feature = "io_uring")]
     pub fn uring_region(&self, offset: usize, len: usize) -> ArenaRegion {
-        debug_assert!(offset + len <= self.capacity);
+        let end = offset
+            .checked_add(len)
+            .expect("StreamArena::uring_region range overflows");
+        assert!(end <= self.capacity, "uring region extends past capacity");
         ArenaRegion {
             backing: self.backing.clone(),
             offset,
@@ -238,100 +280,46 @@ impl StreamArena {
         self.capacity - self.write_pos
     }
 
-    /// Run an Arrow IPC encode (or any growable-buffer producer)
-    /// directly into the arena's backing, advancing `write_pos` to the
-    /// length the encoder grew the Vec64 to. The caller skips the
-    /// encode-buf → arena memcpy entirely; the arena's window over the
-    /// freshly-written region is wrapped zero-copy as `Bytes` by the
-    /// transport.
+    /// Ensure at least `needed` bytes of writable capacity.
     ///
-    /// The closure MUST NOT cause the Vec64 to reallocate. Outstanding
-    /// `SharedBuffer` windows hold raw pointers into the current
-    /// allocation; a realloc moves it and the windows dangle. Callers
-    /// guard this by checking `remaining()` against an upper bound on
-    /// the encode size and calling `recycle_or_reset` first when short.
-    /// A realloc inside the closure is surfaced as an `io::Error` and
-    /// the arena is left with a sane `write_pos`.
-    ///
-    /// ## Status: retained but unused
-    ///
-    /// `stream_throughput` benchmarks show this path is slower than the
-    /// conventional `TableSink64 + AsyncWrite` writer shape used by
-    /// every transport in the tree (TCP, UDS, WS, QUIC, HTTP). The
-    /// `Bytes::copy_from_slice` per flow-control grant in the
-    /// AsyncWrite adapters runs at L1/L2 cache bandwidth and overlaps
-    /// with async I/O wait; meanwhile this path pays for `Arc`
-    /// bookkeeping per frame and risks fresh multi-GiB backing
-    /// allocations when the transport holds outstanding `SharedBuffer`
-    /// windows that block in-place recycle. Both QUIC and HTTP write
-    /// paths were prototyped against this and reverted after the bench
-    /// numbers came back regressed by tens of percent.
-    ///
-    /// Kept here in case a future transport with different lifetime
-    /// properties (one where the consumer drops `Bytes` synchronously
-    /// before the next encode) makes the no-memcpy shape pay off.
-    #[allow(dead_code)]
-    pub fn encode_in_place<F>(&mut self, f: F) -> io::Result<()>
-    where
-        F: FnOnce(&mut Vec64<u8>) -> io::Result<()>,
-    {
-        // SAFETY: we hold &mut self, so no other access path to the
-        // backing is live concurrently. Outstanding SharedBuffer windows
-        // hold the Arc and read [..write_pos] via raw pointer; the
-        // encoder writes from `write_pos` onward, so the two ranges do
-        // not overlap. The closure must respect the no-realloc invariant
-        // documented above; we re-check capacity afterwards.
-        let backing_ptr = self.backing.data.get();
-        let vec64: &mut Vec64<u8> = unsafe { &mut *backing_ptr };
-
-        let original_capacity = vec64.capacity();
-        // Sync Vec64's len with write_pos so the encoder's Extend-style
-        // appends start at the right offset within the backing. Bytes in
-        // [0..write_pos) were initialised by prior writes.
-        // SAFETY: re-asserts the existing initialisation invariant.
-        unsafe {
-            vec64.set_len(self.write_pos);
+    /// Recycles the backing when the space exists but sits behind
+    /// `write_pos`, and grows a fresh generation when `needed` exceeds
+    /// the capacity itself. Outstanding windows keep the old backing
+    /// alive through their own Arc.
+    pub fn ensure_capacity(&mut self, needed: usize) {
+        if self.capacity - self.write_pos >= needed {
+            return;
         }
-
-        let result = f(vec64);
-
-        let new_capacity = vec64.capacity();
-        let new_len = vec64.len();
-
-        // Restore len = capacity so spare_mut and friends keep their
-        // raw-pointer addressing semantics consistent with construction.
-        // SAFETY: bytes in [0..new_len) are initialised by the encoder;
-        // bytes in [new_len..capacity) are uninitialised but only
-        // accessed via spare_mut's raw pointer (never read).
-        unsafe {
-            vec64.set_len(original_capacity);
+        if needed > self.capacity {
+            self.capacity = needed.div_ceil(64) * 64;
+            self.backing = Arc::new(ArenaBacking {
+                data: UnsafeCell::new(Vec64::with_capacity(self.capacity)),
+            });
+            self.write_pos = 0;
+        } else {
+            self.recycle_or_reset();
         }
-
-        if new_capacity != original_capacity {
-            // Realloc happened. Any outstanding SharedBuffer windows
-            // referencing the old allocation now hold dangling pointers.
-            // Surface the breach to the caller; leave write_pos sane.
-            self.write_pos = new_len.min(new_capacity);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "StreamArena::encode_in_place: backing reallocated \
-                     (cap {} -> {}); call recycle_or_reset before encoding \
-                     when remaining() is below the max encode size",
-                    original_capacity, new_capacity,
-                ),
-            ));
-        }
-
-        result?;
-        self.write_pos = new_len;
-        Ok(())
     }
 
     /// Current write position.
     #[inline]
     pub fn write_pos(&self) -> usize {
         self.write_pos
+    }
+
+    /// Recycle the arena when every window has been dropped.
+    ///
+    /// Resets the write position so subsequent writes reuse the pages
+    /// already committed by earlier frames. When windows still reference
+    /// the backing, the arena is left unchanged and writes continue to
+    /// append. Callers on a sequential read path invoke this before each
+    /// reservation to keep one hot region in play instead of committing
+    /// fresh pages per frame.
+    #[inline]
+    pub fn recycle_if_free(&mut self) {
+        if Arc::strong_count(&self.backing) == 1 {
+            self.write_pos = 0;
+        }
     }
 
     /// Try to recycle the arena. If all windows have been dropped
@@ -343,12 +331,8 @@ impl StreamArena {
             self.write_pos = 0;
         } else {
             // Windows still outstanding. Start a fresh generation.
-            let mut v = Vec64::with_capacity(self.capacity);
-            unsafe {
-                v.set_len(self.capacity);
-            }
             self.backing = Arc::new(ArenaBacking {
-                data: UnsafeCell::new(v),
+                data: UnsafeCell::new(Vec64::with_capacity(self.capacity)),
             });
             self.write_pos = 0;
         }
@@ -365,10 +349,8 @@ mod tests {
         assert_eq!(arena.remaining(), 1024);
 
         // Write some data
-        let spare = arena.spare_mut();
-        spare[..5].copy_from_slice(b"hello");
         let start = arena.write_pos();
-        arena.advance(5);
+        arena.extend_from_slice(b"hello").unwrap();
 
         // Create a window for the data portion
         let shared = arena.window(start, 5);
@@ -386,16 +368,14 @@ mod tests {
 
         // Write chunk 1
         let start1 = arena.write_pos();
-        arena.spare_mut()[..3].copy_from_slice(b"abc");
-        arena.advance(3);
+        arena.extend_from_slice(b"abc").unwrap();
         let w1 = arena.window(start1, 3);
         arena.align();
 
         // Write chunk 2 - starts at 64-byte aligned offset
         let start2 = arena.write_pos();
         assert_eq!(start2 % 64, 0);
-        arena.spare_mut()[..3].copy_from_slice(b"def");
-        arena.advance(3);
+        arena.extend_from_slice(b"def").unwrap();
         let w2 = arena.window(start2, 3);
         arena.align();
 
@@ -405,11 +385,18 @@ mod tests {
     }
 
     #[test]
+    fn alignment_padding_is_initialised() {
+        let mut arena = StreamArena::with_capacity(64);
+        arena.extend_from_slice(b"x").unwrap();
+        arena.align();
+        assert_eq!(arena.window(1, 63).as_slice(), &[0; 63]);
+    }
+
+    #[test]
     fn recycle_when_all_dropped() {
         let mut arena = StreamArena::with_capacity(256);
 
-        arena.spare_mut()[..10].copy_from_slice(&[1u8; 10]);
-        arena.advance(10);
+        arena.extend_from_slice(&[1u8; 10]).unwrap();
         let w = arena.window(0, 10);
         arena.align();
         assert_eq!(arena.write_pos(), 64);
@@ -428,8 +415,7 @@ mod tests {
     fn recycle_reuses_allocation() {
         let mut arena = StreamArena::with_capacity(256);
 
-        arena.spare_mut()[..10].copy_from_slice(&[1u8; 10]);
-        arena.advance(10);
+        arena.extend_from_slice(&[1u8; 10]).unwrap();
 
         {
             let w = arena.window(0, 10);
@@ -453,14 +439,12 @@ mod tests {
         // Use 128 bytes so we can fit at least one 64-byte-aligned window
         let mut arena = StreamArena::with_capacity(128);
 
-        arena.spare_mut()[..64].copy_from_slice(&[42u8; 64]);
-        arena.advance(64);
+        arena.extend_from_slice(&[42u8; 64]).unwrap();
         let w = arena.window(0, 64);
         arena.align();
 
         // Write another 64 bytes to fill the arena
-        arena.spare_mut()[..64].copy_from_slice(&[43u8; 64]);
-        arena.advance(64);
+        arena.extend_from_slice(&[43u8; 64]).unwrap();
         assert_eq!(arena.remaining(), 0);
 
         // Arena full, roll over to new generation
@@ -472,8 +456,7 @@ mod tests {
 
         // Write into new generation
         let start = arena.write_pos();
-        arena.spare_mut()[..4].copy_from_slice(b"new!");
-        arena.advance(4);
+        arena.extend_from_slice(b"new!").unwrap();
         let w2 = arena.window(start, 4);
         assert_eq!(w2.as_slice(), b"new!");
     }
@@ -487,8 +470,7 @@ mod tests {
             let start = arena.write_pos();
             assert_eq!(start % 64, 0, "window {i} start not 64-byte aligned");
             let data = vec![(i + 1) as u8; 100];
-            arena.spare_mut()[..100].copy_from_slice(&data);
-            arena.advance(100);
+            arena.extend_from_slice(&data).unwrap();
             let w = arena.window(start, 100);
             assert_eq!(w.as_slice(), &data);
             arena.align();
@@ -501,12 +483,9 @@ mod tests {
 
         // Simulate reading a payload in three partial reads
         let start = arena.write_pos();
-        arena.spare_mut()[..10].copy_from_slice(&[1u8; 10]);
-        arena.advance(10);
-        arena.spare_mut()[..10].copy_from_slice(&[2u8; 10]);
-        arena.advance(10);
-        arena.spare_mut()[..10].copy_from_slice(&[3u8; 10]);
-        arena.advance(10);
+        arena.extend_from_slice(&[1u8; 10]).unwrap();
+        arena.extend_from_slice(&[2u8; 10]).unwrap();
+        arena.extend_from_slice(&[3u8; 10]).unwrap();
 
         // The window covers all 30 bytes contiguously
         let w = arena.window(start, 30);
@@ -519,4 +498,27 @@ mod tests {
         arena.align();
         assert_eq!(arena.write_pos() % 64, 0);
     }
+
+    #[test]
+    #[should_panic(expected = "advance past capacity")]
+    fn advance_past_capacity_panics() {
+        let mut arena = StreamArena::with_capacity(64);
+        unsafe { arena.advance(65) };
+    }
+
+    #[test]
+    #[should_panic(expected = "window extends past write_pos")]
+    fn window_past_write_pos_panics() {
+        let mut arena = StreamArena::with_capacity(64);
+        arena.extend_from_slice(&[1u8; 8]).unwrap();
+        let _ = arena.window(0, 9);
+    }
+
+    #[test]
+    fn extend_past_capacity_errors() {
+        let mut arena = StreamArena::with_capacity(8);
+        assert!(arena.extend_from_slice(&[0u8; 9]).is_err());
+        assert_eq!(arena.write_pos(), 0);
+    }
+
 }

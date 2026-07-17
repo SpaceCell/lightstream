@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Accept a bidirectional stream opened by the client
         let (_send_stream, recv_stream) = connection.accept_bi().await.unwrap();
 
-        let reader = QuicTableReader::from_recv(recv_stream);
+        let reader = QuicTableReader::from_recv(recv_stream, None);
         let tables = reader.read_all_tables().await.unwrap();
 
         for table in &tables {

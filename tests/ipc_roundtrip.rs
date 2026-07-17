@@ -410,7 +410,7 @@ mod integration {
                     .await
                     .unwrap();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(stream, 128 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(stream, 128 * 1024, IPCMessageProtocol::Stream, None);
 
                 match reader.next().await {
                     Some(Ok(table)) => table,
@@ -510,7 +510,7 @@ mod integration {
 
         let combined = Combined { reader: rx };
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let tables = reader.read_all_tables().await.unwrap();
 
         assert_eq!(tables.len(), 1);
@@ -593,7 +593,7 @@ mod integration {
 
         let combined = Combined { reader: rx };
         let reader: TableReader<Vec64<u8>> =
-            TableReader::new(combined, 1024, IPCMessageProtocol::Stream);
+            TableReader::new(combined, 1024, IPCMessageProtocol::Stream, None);
         let tables = reader.read_all_tables().await.unwrap();
 
         assert_eq!(tables.len(), 1);
@@ -764,7 +764,7 @@ mod integration {
                     .await
                     .unwrap();
                 let mut reader =
-                    TableReader::<Vec64<u8>>::new(stream, 128 * 1024, IPCMessageProtocol::Stream);
+                    TableReader::<Vec64<u8>>::new(stream, 128 * 1024, IPCMessageProtocol::Stream, None);
                 reader.next().await.unwrap().unwrap()
             }
         };

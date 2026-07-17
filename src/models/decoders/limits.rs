@@ -34,8 +34,7 @@ use crate::error::IoError;
 /// The defaults are intentionally generous - they protect against the obvious
 /// allocate-from-untrusted-length attack without throttling real workloads.
 /// Tighten them for a specific deployment by constructing a [`DecodeLimits`]
-/// literal and passing it to the relevant decoder's `with_limits` constructor
-/// or `limits` field.
+/// literal and passing it to the relevant decoder constructor.
 #[derive(Debug, Clone, Copy)]
 pub struct DecodeLimits {
     /// Maximum bytes a single framed message value may declare. Applied to TLV

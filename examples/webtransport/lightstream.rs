@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let send_stream = connection.open_uni().await.unwrap().await.unwrap();
 
         let mut conn =
-            WebTransportLightstreamConnection::from_webtransport(recv_stream, send_stream);
+            WebTransportLightstreamConnection::from_webtransport(recv_stream, send_stream, None);
         register_demo_types(&mut conn);
         recv_and_print_all(&mut conn).await;
         println!("Server connection closed.");
@@ -70,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let send_stream = connection.open_uni().await?.await?;
     let recv_stream = connection.accept_uni().await?;
 
-    let mut client = WebTransportLightstreamConnection::from_webtransport(recv_stream, send_stream);
+    let mut client =
+        WebTransportLightstreamConnection::from_webtransport(recv_stream, send_stream, None);
     register_demo_types(&mut client);
     send_demo_messages(&mut client, "webtransport").await?;
 

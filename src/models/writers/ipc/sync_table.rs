@@ -278,6 +278,7 @@ mod tests {
             std::io::Cursor::new(buf),
             8 * 1024,
             IPCMessageProtocol::Stream,
+            None,
         );
         let batches: Vec<Table> = rt.block_on(async move {
             let mut out = Vec::new();

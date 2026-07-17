@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Accept a unidirectional stream from the client
         let recv_stream = connection.accept_uni().await.unwrap();
 
-        let reader = WebTransportTableReader::from_recv(recv_stream);
+        let reader = WebTransportTableReader::from_recv(recv_stream, None);
         let tables = reader.read_all_tables().await.unwrap();
 
         for table in &tables {

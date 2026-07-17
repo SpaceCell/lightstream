@@ -13,8 +13,9 @@
 # and the phase-control channel. The volume is not the NVMe device, so nvme
 # figures here only confirm the code path runs.
 #
-# Override SHAPE, DATA_SOURCES, ROWS, DATASET_GB, STREAMS and RUNS via the
-# environment.
+# Override SHAPE, DATA_SOURCES, ROWS, DATASET_GB, STREAMS, RUNS and
+# OUT_OF_CORE via the environment. OUT_OF_CORE=1 streams the nvme replay
+# mappings with a bounded resident footprint, for datasets larger than RAM.
 
 set -euo pipefail
 
@@ -34,6 +35,7 @@ ROWS="${ROWS:-100000}"
 DATASET_GB="${DATASET_GB:-1}"
 STREAMS="${STREAMS:-1,4}"
 RUNS="${RUNS:-1}"
+OUT_OF_CORE="${OUT_OF_CORE:-0}"
 
 FLIGHT_PORT="${FLIGHT_PORT:-9101}"
 ECHO_PORT="${ECHO_PORT:-9102}"
@@ -57,14 +59,18 @@ trap cleanup EXIT
 # The minarrow path dependency lives outside the repo, so the build context is
 # the parent directory holding both checkouts. Docker only reads .dockerignore
 # from the context root, so stage this rig's ignore file there for the build.
+# The repo directory is not always named `lightstream` (a git worktree carries
+# its own name), so the allowlist entry is rewritten to the directory this
+# script runs from and the name is passed to the build as `LIGHTSTREAM_DIR`.
+REPO_DIR="$(basename "$ROOT")"
 if [ -e "$STAGED_IGNORE" ]; then
   STAGED_IGNORE_BAK="$STAGED_IGNORE.bench-ecs.bak"
   mv "$STAGED_IGNORE" "$STAGED_IGNORE_BAK"
 fi
-cp "$HERE/.dockerignore" "$STAGED_IGNORE"
+sed "s|^!lightstream$|!$REPO_DIR|" "$HERE/.dockerignore" > "$STAGED_IGNORE"
 
 echo "[local] building image $IMAGE"
-docker build -f "$HERE/Dockerfile" -t "$IMAGE" "$CONTEXT"
+docker build -f "$HERE/Dockerfile" --build-arg LIGHTSTREAM_DIR="$REPO_DIR" -t "$IMAGE" "$CONTEXT"
 
 # Remove the staged ignore now the build is done; cleanup restores any original.
 rm -f "$STAGED_IGNORE"
@@ -82,11 +88,19 @@ for DS in $DATA_SOURCES; do
   echo "[local] shape=$SHAPE data=$DS"
   docker rm -f bench-ecs-source bench-ecs-sink >/dev/null 2>&1 || true
 
+  # --out-of-core is a bare flag on the source, so it is appended only
+  # when OUT_OF_CORE is set.
+  OOC_ARGS=()
+  if [ "$OUT_OF_CORE" = "1" ]; then
+    OOC_ARGS=(--out-of-core)
+  fi
+
   echo "[local] starting source"
   docker run -d --name bench-ecs-source --network "$NET" -v "$VOLUME:/data" "$IMAGE" \
     bench_ecs_source --shape "$SHAPE" --rows "$ROWS" \
     --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
     --data-source "$DS" --dataset-dir /data \
+    "${OOC_ARGS[@]}" \
     --flight-bind "0.0.0.0:${FLIGHT_PORT}" --echo-bind "0.0.0.0:${ECHO_PORT}" \
     --ctrl-bind "0.0.0.0:${CTRL_PORT}" \
     --sink-ls-addr "bench-ecs-sink:${LS_PORT}" >/dev/null

@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ws_stream = tokio_tungstenite::accept_async(tcp_stream).await.unwrap();
         println!("WebSocket handshake complete.");
 
-        let mut conn = WebSocketLightstreamConnection::from_websocket(ws_stream);
+        let mut conn = WebSocketLightstreamConnection::from_websocket(ws_stream, None);
         register_demo_types(&mut conn);
         recv_and_print_all(&mut conn).await;
         println!("Server connection closed.");
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ws_stream, _response) = tokio_tungstenite::connect_async(&url).await?;
     println!("Client WebSocket connected to {}", url);
 
-    let mut client = WebSocketLightstreamConnection::from_websocket(ws_stream);
+    let mut client = WebSocketLightstreamConnection::from_websocket(ws_stream, None);
     register_demo_types(&mut client);
     send_demo_messages(&mut client, "websocket").await?;
 
