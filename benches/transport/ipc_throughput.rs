@@ -306,6 +306,9 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                         writer.write_table((*write_table).clone()).await.unwrap();
                     }
                     writer.finish().await.unwrap();
+                    // Hold the connection until the reader closes it, since
+                    // dropping the endpoint discards unacknowledged stream data.
+                    conn.closed().await;
                 });
 
                 let incoming = endpoint.accept().await.unwrap();
@@ -324,6 +327,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let elapsed = start.elapsed();
                 assert_eq!(count, n);
 
+                conn.close(0u32.into(), b"");
                 writer.await.unwrap();
                 elapsed
             }
@@ -376,6 +380,9 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                         writer.write_table((*write_table).clone()).await.unwrap();
                     }
                     writer.finish().await.unwrap();
+                    // Hold the session until the reader closes it, since
+                    // dropping the endpoint discards unacknowledged stream data.
+                    conn.closed().await;
                 });
 
                 let incoming = server.accept().await;
@@ -395,6 +402,7 @@ fn bench_ipc_throughput(c: &mut Criterion) {
                 let elapsed = start.elapsed();
                 assert_eq!(count, n);
 
+                conn.close(wtransport::VarInt::from_u32(0), b"");
                 writer.await.unwrap();
                 elapsed
             }

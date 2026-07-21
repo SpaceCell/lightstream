@@ -21,9 +21,11 @@ description = "Composable, zero-copy Arrow IPC and native data streaming for Rus
 repository = "https://github.com/SpaceCell/lightstream"
 homepage = "https://github.com/SpaceCell/lightstream"
 documentation = "https://docs.rs/lightstream"
-# Deployment infrastructure for the cross-host benchmarks. 
+# Deployment infrastructure for the cross-host benchmarks, and the
+# lightstream-py crate, which publishes separately to PyPI.
 exclude = [
     ".github/",
+    "lightstream-py/",
     "benches/aws/Dockerfile",
     "benches/aws/run.sh",
     "benches/aws/terraform/",

@@ -25,11 +25,11 @@ use std::task::{Context, Poll};
 use futures_core::Stream;
 use minarrow::structs::shared_buffer::SharedBuffer;
 use tokio::io::{AsyncRead, ReadBuf};
-use tokio::net::UnixStream;
 use tokio::net::unix::OwnedReadHalf;
 
 use crate::enums::BufferChunkSize;
 use crate::models::streams::stream_arena::StreamArena;
+use crate::models::transports::uds::UdsTransport;
 
 /// A byte stream over a Unix domain socket connection.
 ///
@@ -48,8 +48,7 @@ impl UdsByteStream {
     /// Splits the connection and reads from the read half.
     /// Uses `BufferChunkSize::Http` (64 KiB) as the default chunk size.
     pub async fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
-        let stream = UnixStream::connect(path).await?;
-        let (read_half, _write_half) = stream.into_split();
+        let (read_half, _write_half) = UdsTransport::connect(path).await?;
         Ok(Self::from_read_half(read_half, BufferChunkSize::Http))
     }
 

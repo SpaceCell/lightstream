@@ -20,12 +20,15 @@ use std::pin::Pin;
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table};
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::{TcpStream, ToSocketAddrs};
+#[cfg(feature = "tls")]
+use tokio::net::TcpStream;
+use tokio::net::{TcpListener, ToSocketAddrs};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::TableSink64;
 use crate::models::streams::tcp::TcpWriteHalf;
+use crate::models::transports::tcp::TcpTransport;
 use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Async Arrow IPC writer over a TCP connection.
@@ -52,8 +55,7 @@ impl TcpTableWriter {
         schema: Vec<Field>,
         compression: Option<Compression>,
     ) -> io::Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        let (_read, write) = stream.into_split();
+        let (_read, write) = TcpTransport::connect(addr).await?;
         let sink = TableSink64::new(
             TcpWriteHalf::Plain(write),
             schema,
@@ -61,6 +63,21 @@ impl TcpTableWriter {
             compression,
         )?;
         Ok(Self { sink })
+    }
+
+    /// Accept the next inbound connection and prepare to write Arrow IPC
+    /// tables to it.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `TcpTransport::bind`, and holds it across connections.
+    /// Pass `None` for `compression` to write uncompressed batches.
+    pub async fn accept(
+        listener: &TcpListener,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let (_read, write) = TcpTransport::accept(listener).await?;
+        Self::from_write_half(write, schema, compression)
     }
 
     /// Wrap an existing TCP write half as a table writer.

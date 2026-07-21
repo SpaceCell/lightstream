@@ -36,11 +36,13 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use minarrow::{Field, SuperTable, Table, Vec64};
+use tokio::net::UnixListener;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::decoders::limits::DecodeLimits;
 use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::uds::UdsByteStream;
+use crate::models::transports::uds::UdsTransport;
 use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over a Unix domain socket connection.
@@ -82,6 +84,21 @@ impl UdsTableReader {
         let inner =
             TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol, limits);
         Ok(Self { inner })
+    }
+
+    /// Accept the next inbound connection and return a table reader over it.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `UdsTransport::bind`, and holds it across connections.
+    /// Uses `BufferChunkSize::Http` (64 KiB) and protocol
+    /// `IPCMessageProtocol::Stream`.
+    pub async fn accept(
+        listener: &UnixListener,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        let (read_half, _write_half) = UdsTransport::accept(listener).await?;
+        let stream = UdsByteStream::from_read_half(read_half, BufferChunkSize::Http);
+        Ok(Self::from_stream(stream, IPCMessageProtocol::Stream, limits))
     }
 
     /// Wrap an existing `UdsByteStream` as a table reader.

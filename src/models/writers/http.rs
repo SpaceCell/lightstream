@@ -28,12 +28,13 @@ use bytes::Bytes;
 use futures_util::sink::SinkExt;
 use http::{Method, Request, Uri};
 use minarrow::{Field, Table};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::TableSink64;
-use crate::models::streams::http::H2SendWrite;
+use crate::models::streams::http::{H2RecvRead, H2SendWrite};
+use crate::models::transports::http::HttpTransport;
 use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Async Arrow IPC writer over an HTTP/2 POST request body.
@@ -106,6 +107,41 @@ impl HttpTableWriter {
         }
         let (send_stream, response_fut) = h2_send_post(tls, req).await?;
         Self::from_send_stream(send_stream, response_fut, schema, compression)
+    }
+
+    /// Accept the next inbound exchange and prepare to write Arrow IPC
+    /// tables into its response body.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `HttpTransport::bind`, and holds it across connections.
+    /// The request direction carries no data in this role, so a task
+    /// drains it to its clean end while the response streams out. Pass
+    /// `None` for `compression` to write uncompressed batches.
+    pub async fn accept(
+        listener: &TcpListener,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let (recv_read, send_write) = HttpTransport::accept(listener).await?;
+        Self::from_exchange(recv_read, send_write, schema, compression)
+    }
+
+    /// Build a writer over an accepted exchange's byte halves, streaming
+    /// Arrow IPC batches into the response body. The request direction
+    /// carries no data in this role, so a task drains it to its clean
+    /// end while the response streams out. Pass `None` for `compression`
+    /// to write uncompressed batches.
+    pub fn from_exchange(
+        mut recv_read: H2RecvRead,
+        send_write: H2SendWrite,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        tokio::spawn(async move {
+            let _ = tokio::io::copy(&mut recv_read, &mut tokio::io::sink()).await;
+        });
+        let sink = TableSink64::new(send_write, schema, IPCMessageProtocol::Stream, compression)?;
+        Ok(Self { sink })
     }
 
     /// Build a writer over an already-open h2 request stream and its

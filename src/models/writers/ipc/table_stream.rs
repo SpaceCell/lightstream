@@ -21,7 +21,7 @@
 //!
 //! ## Usage
 //! ```ignore
-//! let mut writer = TableStreamWriter::<Vec<u8>>::new(schema, IPCMessageProtocol::Stream);
+//! let mut writer: TableStreamWriter = TableStreamWriter::new(schema, IPCMessageProtocol::Stream, None);
 //! writer.register_dictionary(0, vec!["A".into(), "B".into()]);
 //! writer.write(&table)?;
 //! writer.finish()?;
@@ -37,7 +37,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, Vec64};
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
@@ -58,7 +58,7 @@ use crate::utils::dict_values;
 ///
 /// ## Example
 /// ```ignore
-/// let mut writer = TableStreamWriter::<Vec<u8>>::new(schema, IPCMessageProtocol::Stream);
+/// let mut writer: TableStreamWriter = TableStreamWriter::new(schema, IPCMessageProtocol::Stream, None);
 /// writer.register_dictionary(0, vec!["A".into(), "B".into()]);
 /// writer.write(&table)?;
 /// writer.finish()?;
@@ -67,7 +67,7 @@ use crate::utils::dict_values;
 ///     sink.write_all(buf.as_ref()).await?;
 /// }
 /// ```
-pub struct TableStreamWriter<B>
+pub struct TableStreamWriter<B = Vec64<u8>>
 where
     B: StreamBuffer + Unpin + 'static,
 {

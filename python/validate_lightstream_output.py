@@ -3,7 +3,7 @@
 
 Reads the files written by the tests/pyarrow_roundtrip.rs write tests and
 checks every value against the expected data, proving the files parse
-correctly in an independent Arrow implementation.
+correctly in the independent Arrow implementation.
 
 Run the Rust write tests first, then this script from the repository root:
 

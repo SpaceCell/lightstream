@@ -268,8 +268,9 @@ mod tests {
     }
 
     fn make_table() -> Table {
-        Table {
-            cols: vec![
+        Table::new(
+            "test".to_string(),
+            Some(vec![
                 FieldArray::new(
                     Field {
                         name: "ids".into(),
@@ -294,10 +295,8 @@ mod tests {
                         null_mask: None,
                     }))),
                 ),
-            ],
-            n_rows: 3,
-            name: "test".to_string(),
-        }
+            ]),
+        )
     }
 
     #[test]

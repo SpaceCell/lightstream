@@ -32,12 +32,13 @@ use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table};
-use tokio_tungstenite::connect_async;
+use tokio::net::TcpListener;
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::TableSink64;
 use crate::models::streams::websocket::WsWrite;
+use crate::models::transports::websocket::WebSocketTransport;
 use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Concrete write-half type carried by [`WebSocketTableWriter`]. Boxing
@@ -78,23 +79,33 @@ impl WebSocketTableWriter {
     }
 
     async fn plain_ws_write(url: &str) -> io::Result<WsWrite<WsAsyncWrite>> {
-        let (ws_stream, _response) = connect_async(url)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let raw = ws_stream.into_inner();
-        let (_read_half, write_half) = tokio::io::split(raw);
+        let (_read_half, write_half) = WebSocketTransport::connect(url).await?;
         let boxed: WsAsyncWrite = Box::new(write_half);
         let (_shared, ws_write) = WsWrite::new_client(boxed);
         Ok(ws_write)
     }
 
-    /// Connect to a `wss://` endpoint, performing the TLS handshake using
-    /// the supplied `rustls::ClientConfig`. Pass `None` for `compression`
-    /// to write uncompressed batches.
+    /// Accept the next inbound connection, run the server upgrade
+    /// handshake, and prepare to write Arrow IPC tables to it.
     ///
-    /// `connect` already handles `wss://` via tokio-tungstenite's bundled
-    /// webpki-roots verifier; this entry point is for callers that need a
-    /// custom verifier, pinned roots, or client-auth keys.
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `WebSocketTransport::bind`, and holds it across
+    /// connections. Pass `None` for `compression` to write
+    /// uncompressed batches.
+    pub async fn accept(
+        listener: &TcpListener,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let (read_half, write_half) = WebSocketTransport::accept(listener).await?;
+        Self::from_halves(read_half, write_half, schema, compression)
+    }
+
+    /// Connect to a `wss://` endpoint, performing the TLS handshake
+    /// using the supplied `rustls::ClientConfig`, then the upgrade
+    /// handshake, and prepare to write Arrow IPC tables. The caller
+    /// controls verifier and root store through their config. Pass
+    /// `None` for `compression` to write uncompressed batches.
     #[cfg(feature = "tls")]
     pub async fn connect_tls(
         url: &str,
@@ -112,19 +123,7 @@ impl WebSocketTableWriter {
         url: &str,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
     ) -> io::Result<WsWrite<WsAsyncWrite>> {
-        use tokio_tungstenite::{Connector, connect_async_tls_with_config};
-        let connector = Connector::Rustls(config);
-        // tokio-tungstenite's positional args: tungstenite WebSocketConfig
-        // override (None = library defaults) and a Nagle disable flag (false
-        // = leave the socket's default).
-        let ws_config: Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig> = None;
-        let disable_nagle = false;
-        let (ws_stream, _response) =
-            connect_async_tls_with_config(url, ws_config, disable_nagle, Some(connector))
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let raw = ws_stream.into_inner();
-        let (_read_half, write_half) = tokio::io::split(raw);
+        let (_read_half, write_half) = WebSocketTransport::connect_tls(url, config).await?;
         let boxed: WsAsyncWrite = Box::new(write_half);
         let (_shared, ws_write) = WsWrite::new_client(boxed);
         Ok(ws_write)

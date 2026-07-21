@@ -219,8 +219,8 @@ fn bench_throughput(c: &mut Criterion) {
                     let mut client_ep =
                         quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
                     client_ep.set_default_client_config(client_config);
-                    let conn = client_ep.connect(addr, "localhost").unwrap().await.unwrap();
-                    let (send, recv) = conn.open_bi().await.unwrap();
+                    let qconn = client_ep.connect(addr, "localhost").unwrap().await.unwrap();
+                    let (send, recv) = qconn.open_bi().await.unwrap();
                     let mut conn = QuicLightstreamConnection::from_quic(recv, send, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
@@ -228,6 +228,9 @@ fn bench_throughput(c: &mut Criterion) {
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
+                    // Hold the connection until the reader closes it, since
+                    // dropping the endpoint discards unacknowledged stream data.
+                    qconn.closed().await;
                 });
 
                 let incoming = endpoint.accept().await.unwrap();
@@ -244,6 +247,7 @@ fn bench_throughput(c: &mut Criterion) {
                 }
                 let elapsed = start.elapsed();
 
+                qconn.close(0u32.into(), b"");
                 writer.await.unwrap();
                 elapsed
             }
@@ -278,11 +282,11 @@ fn bench_throughput(c: &mut Criterion) {
                         .with_server_certificate_hashes([cert_hash])
                         .build();
                     let client = wtransport::Endpoint::client(client_config).unwrap();
-                    let conn = client
+                    let session = client
                         .connect(format!("https://127.0.0.1:{}", addr.port()))
                         .await
                         .unwrap();
-                    let opening = conn.open_bi().await.unwrap();
+                    let opening = session.open_bi().await.unwrap();
                     let (send, recv) = opening.await.unwrap();
                     let mut conn =
                         WebTransportLightstreamConnection::from_webtransport(recv, send, None);
@@ -292,6 +296,9 @@ fn bench_throughput(c: &mut Criterion) {
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
+                    // Hold the session until the reader closes it, since
+                    // dropping the endpoint discards unacknowledged stream data.
+                    session.closed().await;
                 });
 
                 let incoming = server.accept().await;
@@ -310,6 +317,7 @@ fn bench_throughput(c: &mut Criterion) {
                 }
                 let elapsed = start.elapsed();
 
+                sconn.close(wtransport::VarInt::from_u32(0), b"");
                 writer.await.unwrap();
                 elapsed
             }

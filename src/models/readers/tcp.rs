@@ -35,12 +35,13 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use minarrow::{Field, SuperTable, Table, Vec64};
-use tokio::net::ToSocketAddrs;
+use tokio::net::{TcpListener, ToSocketAddrs};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::decoders::limits::DecodeLimits;
 use crate::models::readers::ipc::table::TableReader;
 use crate::models::streams::tcp::TcpByteStream;
+use crate::models::transports::tcp::TcpTransport;
 use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over a TCP connection.
@@ -82,6 +83,21 @@ impl TcpTableReader {
         let inner =
             TableReader::<Vec64<u8>>::new(stream, chunk_size.chunk_size(), protocol, limits);
         Ok(Self { inner })
+    }
+
+    /// Accept the next inbound connection and return a table reader over it.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `TcpTransport::bind`, and holds it across connections.
+    /// Uses `BufferChunkSize::Http` (64 KiB) and protocol
+    /// `IPCMessageProtocol::Stream`.
+    pub async fn accept(
+        listener: &TcpListener,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        let (read_half, _write_half) = TcpTransport::accept(listener).await?;
+        let stream = TcpByteStream::from_read_half(read_half, BufferChunkSize::Http);
+        Ok(Self::from_stream(stream, IPCMessageProtocol::Stream, limits))
     }
 
     /// Wrap an existing `TcpByteStream` as a table reader.

@@ -173,23 +173,45 @@ mod tests {
         use std::sync::Arc;
 
         let n_rows = 256usize;
-        let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
+        let unique_values = Vec64::from(vec![
+            "red".to_string(),
+            "green".to_string(),
+            "blue".to_string(),
+        ]);
+        // The u8 categorical form exists only under `default_categorical_8`,
+        // so the index width follows the active feature set.
+        #[cfg(feature = "default_categorical_8")]
+        let (dtype, array) = {
+            let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
+            (
+                ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
+                    data: Buffer::from(indices),
+                    unique_values,
+                    null_mask: Some(Bitmask::new_set_all(n_rows, true)),
+                }))),
+            )
+        };
+        #[cfg(not(feature = "default_categorical_8"))]
+        let (dtype, array) = {
+            let indices: Vec64<u32> = (0..n_rows).map(|i| (i % 3) as u32).collect();
+            (
+                ArrowType::Dictionary(CategoricalIndexType::UInt32),
+                Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
+                    data: Buffer::from(indices),
+                    unique_values,
+                    null_mask: Some(Bitmask::new_set_all(n_rows, true)),
+                }))),
+            )
+        };
         let dict_col = FieldArray::new(
             Field {
                 name: "category".into(),
-                dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                dtype,
                 nullable: true,
                 metadata: Default::default(),
             },
-            Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-                data: Buffer::from(indices),
-                unique_values: Vec64::from(vec![
-                    "red".to_string(),
-                    "green".to_string(),
-                    "blue".to_string(),
-                ]),
-                null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-            }))),
+            array,
         );
         let table = Table::new("t", Some(vec![dict_col]));
 

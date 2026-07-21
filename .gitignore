@@ -32,6 +32,10 @@ python/*.arrow
 python/*.stream
 python/__pycache__/
 python/.venv/
+# lightstream-py pytest suite
+lightstream-py/tests/__pycache__/
+lightstream-py/examples/**/__pycache__/
+lightstream-py/.pytest_cache/
 .vscode/
 
 # Cross-host benchmark rigs - result captures, terraform provider downloads

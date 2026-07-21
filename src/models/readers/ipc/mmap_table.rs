@@ -734,7 +734,6 @@ fn window_array(array: &Array, offset: usize, len: usize) -> io::Result<Array> {
             TextArray::String32(arr) => {
                 TextArray::String32(Arc::new(window_string(arr, offset, len)))
             }
-            #[cfg(feature = "large_string")]
             TextArray::String64(arr) => {
                 TextArray::String64(Arc::new(window_string(arr, offset, len)))
             }

@@ -154,11 +154,7 @@ mod tests {
             }))),
             null_count: 0,
         };
-        Table {
-            name: "t".into(),
-            cols: vec![col],
-            n_rows: 3,
-        }
+        Table::new("t".to_string(), Some(vec![col]))
     }
 
     fn parse(bytes: Vec<u8>) -> simd_json::OwnedValue {

@@ -124,6 +124,10 @@ pub mod traits {
     /// Output buffer abstraction (`Vec<u8>`, `Vec64<u8>`, etc.).
     pub mod stream_buffer;
 
+    /// Transport trait - connection establishment for the
+    /// socket-backed transports, covering both peer roles.
+    pub mod transport;
+
     /// Transport-level table reader trait
     pub mod transport_reader;
 
@@ -445,6 +449,34 @@ pub mod models {
         /// Lightstream protocol writer
         #[cfg(feature = "protocol")]
         pub mod lightstream;
+    }
+
+    /// Transports - connection establishment for the socket-backed
+    /// transports, covering both peer roles.
+    pub mod transports {
+        /// TCP Transport.
+        #[cfg(feature = "tcp")]
+        pub mod tcp;
+
+        /// UDS Transport.
+        #[cfg(feature = "uds")]
+        pub mod uds;
+
+        /// WebSocket Transport.
+        #[cfg(feature = "websocket")]
+        pub mod websocket;
+
+        /// HTTP/2 Transport.
+        #[cfg(feature = "http")]
+        pub mod http;
+
+        /// QUIC Transport.
+        #[cfg(feature = "quic")]
+        pub mod quic;
+
+        /// WebTransport Transport.
+        #[cfg(feature = "webtransport")]
+        pub mod webtransport;
     }
 
     /// Stream adapters and sources.

@@ -591,17 +591,12 @@ pub(crate) fn make_builders(
 
 /// Wrap finished builders in a [`Table`] tagged with the schema's fields.
 pub(crate) fn finish_table(schema: &[Field], builders: Vec<ColumnBuilder>) -> Table {
-    let n_rows = builders.first().map(|b| b.len()).unwrap_or(0);
     let cols = schema
         .iter()
         .zip(builders)
         .map(|(field, builder)| builder.finish(Arc::new(field.clone())))
         .collect();
-    Table {
-        cols,
-        n_rows,
-        name: "json".to_string(),
-    }
+    Table::new("json".to_string(), Some(cols))
 }
 
 /// Row-count estimate for a JSON array-of-objects, used to reserve

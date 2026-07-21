@@ -21,12 +21,13 @@ use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table};
-use tokio::net::UnixStream;
+use tokio::net::UnixListener;
 use tokio::net::unix::OwnedWriteHalf;
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::TableSink64;
+use crate::models::transports::uds::UdsTransport;
 use crate::traits::transport_writer::IPCTransportWriter;
 
 /// Async Arrow IPC writer over a Unix domain socket connection.
@@ -52,10 +53,24 @@ impl UdsTableWriter {
         schema: Vec<Field>,
         compression: Option<Compression>,
     ) -> io::Result<Self> {
-        let stream = UnixStream::connect(path).await?;
-        let (_read, write) = stream.into_split();
+        let (_read, write) = UdsTransport::connect(path).await?;
         let sink = TableSink64::new(write, schema, IPCMessageProtocol::Stream, compression)?;
         Ok(Self { sink })
+    }
+
+    /// Accept the next inbound connection and prepare to write Arrow IPC
+    /// tables to it.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `UdsTransport::bind`, and holds it across connections.
+    /// Pass `None` for `compression` to write uncompressed batches.
+    pub async fn accept(
+        listener: &UnixListener,
+        schema: Vec<Field>,
+        compression: Option<Compression>,
+    ) -> io::Result<Self> {
+        let (_read, write) = UdsTransport::accept(listener).await?;
+        Self::from_write_half(write, schema, compression)
     }
 
     /// Wrap an existing UDS write half as a table writer.

@@ -39,12 +39,14 @@ use std::task::{Context, Poll};
 use futures_core::Stream;
 use http::{Request, Uri};
 use minarrow::{Field, SuperTable, Table, Vec64};
-use tokio::net::TcpStream;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table::TableReader;
 use crate::models::decoders::limits::DecodeLimits;
-use crate::models::streams::http::{H2RecvRead, HttpByteStream};
+use crate::models::streams::http::{H2RecvRead, H2SendWrite, HttpByteStream};
+use crate::models::transports::http::HttpTransport;
 use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over an HTTP/2 GET response body.
@@ -129,6 +131,42 @@ impl HttpTableReader {
         );
         Self { inner }
     }
+
+    /// Accept the next inbound exchange and return a table reader over
+    /// its request body.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `HttpTransport::bind`, and holds it across connections.
+    /// The response direction carries no data in this role, so it is
+    /// ended with a clean h2 half-close and the exchange continues on
+    /// the request body alone.
+    pub async fn accept(
+        listener: &TcpListener,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        let (recv_read, send_write) = HttpTransport::accept(listener).await?;
+        Self::from_exchange(recv_read, send_write, limits).await
+    }
+
+    /// Build a table reader over an accepted exchange's byte halves.
+    /// The response direction carries no data in this role, so it is
+    /// ended with a clean h2 half-close and the exchange continues on
+    /// the request body alone.
+    pub async fn from_exchange(
+        recv_read: H2RecvRead,
+        mut send_write: H2SendWrite,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        send_write.shutdown().await?;
+        let stream = HttpByteStream::new(recv_read, BufferChunkSize::Http);
+        let inner = TableReader::<Vec64<u8>>::new(
+            stream,
+            BufferChunkSize::Http.chunk_size(),
+            IPCMessageProtocol::Stream,
+            limits,
+        );
+        Ok(Self { inner })
+    }
 }
 
 impl IPCTransportReader for HttpTableReader {
@@ -183,7 +221,11 @@ fn parse_get(url: &str) -> io::Result<Request<()>> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
 }
 
-fn host_port(uri: &Uri, expected_scheme: &str, default_port: u16) -> io::Result<(String, u16)> {
+pub(crate) fn host_port(
+    uri: &Uri,
+    expected_scheme: &str,
+    default_port: u16,
+) -> io::Result<(String, u16)> {
     let scheme = uri
         .scheme_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "uri missing scheme"))?;

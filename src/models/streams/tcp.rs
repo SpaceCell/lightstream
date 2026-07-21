@@ -28,10 +28,13 @@ use futures_core::Stream;
 use minarrow::structs::shared_buffer::SharedBuffer;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpStream, ToSocketAddrs};
+#[cfg(feature = "tls")]
+use tokio::net::TcpStream;
+use tokio::net::ToSocketAddrs;
 
 use crate::enums::BufferChunkSize;
 use crate::models::streams::stream_arena::StreamArena;
+use crate::models::transports::tcp::TcpTransport;
 
 /// Read half of a TCP byte stream.
 ///
@@ -117,8 +120,7 @@ impl TcpByteStream {
     /// Splits the connection and reads from the read half.
     /// Uses `BufferChunkSize::Http` (64 KiB) as the default chunk size.
     pub async fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        let (read_half, _write_half) = stream.into_split();
+        let (read_half, _write_half) = TcpTransport::connect(addr).await?;
         Ok(Self::from_read_half(read_half, BufferChunkSize::Http))
     }
 

@@ -49,12 +49,13 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use minarrow::{Field, SuperTable, Table, Vec64};
-use tokio_tungstenite::connect_async;
+use tokio::net::TcpListener;
 
 use crate::enums::{BufferChunkSize, IPCMessageProtocol};
 use crate::models::readers::ipc::table::TableReader;
 use crate::models::decoders::limits::DecodeLimits;
 use crate::models::streams::websocket::{WsRead, WsWrite};
+use crate::models::transports::websocket::WebSocketTransport;
 use crate::traits::transport_reader::IPCTransportReader;
 
 /// Async Arrow IPC reader over a WebSocket connection.
@@ -77,11 +78,7 @@ impl WebSocketTableReader {
     /// The write half is dropped - use the Lightstream connection for
     /// bidirectional communication.
     pub async fn connect(url: &str, limits: Option<DecodeLimits>) -> io::Result<Self> {
-        let (ws_stream, _response) = connect_async(url)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let raw = ws_stream.into_inner();
-        let (read_half, write_half) = tokio::io::split(raw);
+        let (read_half, write_half) = WebSocketTransport::connect(url).await?;
         let (shared_writer, _ws_write) = WsWrite::new_client(write_half);
         let ws_read = WsRead::new_client(read_half, shared_writer);
         let inner = TableReader::<Vec64<u8>>::new(
@@ -91,6 +88,25 @@ impl WebSocketTableReader {
             limits,
         );
         Ok(Self { inner })
+    }
+
+    /// Accept the next inbound connection, run the server upgrade
+    /// handshake, and return a table reader over it.
+    ///
+    /// Serves the accepting peer role. The caller binds the listener,
+    /// e.g. via `WebSocketTransport::bind`, and holds it across
+    /// connections. Uses `IPCMessageProtocol::Stream`.
+    pub async fn accept(
+        listener: &TcpListener,
+        limits: Option<DecodeLimits>,
+    ) -> io::Result<Self> {
+        let (read_half, write_half) = WebSocketTransport::accept(listener).await?;
+        Ok(Self::from_halves(
+            read_half,
+            write_half,
+            IPCMessageProtocol::Stream,
+            limits,
+        ))
     }
 
     /// Wrap a raw, post-handshake TCP read half as a WebSocket table reader.
@@ -150,39 +166,48 @@ impl WebSocketTableReader {
         Self { inner }
     }
 
-    /// Connect to a `wss://` endpoint, performing the TLS handshake using
-    /// the supplied `rustls::ClientConfig`.
-    ///
-    /// `connect` already handles `wss://` via tokio-tungstenite's bundled
-    /// webpki-roots verifier; this entry point is for callers that need a
-    /// custom verifier, pinned roots, or client-auth keys.
+    /// As [`Self::from_halves`], for the connecting peer, whose pong
+    /// responses are masked as RFC 6455 requires of every
+    /// client-to-server frame.
+    pub fn from_client_halves<R, W>(
+        read_half: R,
+        write_half: W,
+        protocol: IPCMessageProtocol,
+        limits: Option<DecodeLimits>,
+    ) -> Self
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (shared_writer, _ws_write) = WsWrite::new_client(write_half);
+        let ws_read = WsRead::new_client(read_half, shared_writer);
+        let inner = TableReader::<Vec64<u8>>::new(
+            ws_read,
+            BufferChunkSize::WebSocket.chunk_size(),
+            protocol,
+            limits,
+        );
+        Self { inner }
+    }
+
+    /// Connect to a `wss://` endpoint, performing the TLS handshake
+    /// using the supplied `rustls::ClientConfig`, with the upgrade
+    /// handshake read byte-precisely so early server frames stay in
+    /// the stream for the frame parser. The caller controls verifier
+    /// and root store through their config.
     #[cfg(feature = "tls")]
     pub async fn connect_tls(
         url: &str,
         config: std::sync::Arc<tokio_rustls::rustls::ClientConfig>,
         limits: Option<DecodeLimits>,
     ) -> io::Result<Self> {
-        use tokio_tungstenite::{Connector, connect_async_tls_with_config};
-        let connector = Connector::Rustls(config);
-        // Positional args: tungstenite WebSocketConfig override (None = library
-        // defaults) and a Nagle disable flag (false = leave socket default).
-        let ws_config: Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig> = None;
-        let disable_nagle = false;
-        let (ws_stream, _response) =
-            connect_async_tls_with_config(url, ws_config, disable_nagle, Some(connector))
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        let raw = ws_stream.into_inner();
-        let (read_half, write_half) = tokio::io::split(raw);
-        let (shared_writer, _ws_write) = WsWrite::new_client(write_half);
-        let ws_read = WsRead::new_client(read_half, shared_writer);
-        let inner = TableReader::<Vec64<u8>>::new(
-            ws_read,
-            BufferChunkSize::WebSocket.chunk_size(),
+        let (read_half, write_half) = WebSocketTransport::connect_tls(url, config).await?;
+        Ok(Self::from_client_halves(
+            read_half,
+            write_half,
             IPCMessageProtocol::Stream,
             limits,
-        );
-        Ok(Self { inner })
+        ))
     }
 }
 

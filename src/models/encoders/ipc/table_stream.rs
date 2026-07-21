@@ -266,9 +266,10 @@ mod tests {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut writer = TableStreamWriter::new(
+        let mut writer: TableStreamWriter = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt32, true),
             IPCMessageProtocol::Stream,
+            None,
         );
 
         let arr = CategoricalArray {
@@ -363,9 +364,10 @@ mod tests {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut writer = TableStreamWriter::new(
+        let mut writer: TableStreamWriter = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt8, true),
             IPCMessageProtocol::Stream,
+            None,
         );
 
         let arr = CategoricalArray {
@@ -389,7 +391,7 @@ mod tests {
             4,
         );
 
-        writer.write_table(&tbl).unwrap();
+        writer.write(&tbl).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -407,9 +409,10 @@ mod tests {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut writer = TableStreamWriter::new(
+        let mut writer: TableStreamWriter = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt16, false),
             IPCMessageProtocol::Stream,
+            None,
         );
 
         let arr = CategoricalArray {
@@ -433,7 +436,7 @@ mod tests {
             4,
         );
 
-        writer.write_table(&tbl).unwrap();
+        writer.write(&tbl).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -451,9 +454,10 @@ mod tests {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut writer = TableStreamWriter::new(
+        let mut writer: TableStreamWriter = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt64, false),
             IPCMessageProtocol::Stream,
+            None,
         );
 
         let arr = CategoricalArray {
@@ -477,7 +481,7 @@ mod tests {
             4,
         );
 
-        writer.write_table(&tbl).unwrap();
+        writer.write(&tbl).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -495,9 +499,10 @@ mod tests {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut writer = TableStreamWriter::new(
+        let mut writer: TableStreamWriter = TableStreamWriter::new(
             make_schema(CategoricalIndexType::UInt32, true),
             IPCMessageProtocol::File,
+            None,
         );
 
         let arr = CategoricalArray {

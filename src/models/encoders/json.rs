@@ -516,11 +516,7 @@ mod tests {
             }))),
             null_count: 1,
         };
-        Table {
-            name: "test".to_string(),
-            cols: vec![int_col, str_col],
-            n_rows: 4,
-        }
+        Table::new("test".to_string(), Some(vec![int_col, str_col]))
     }
 
     #[test]
@@ -582,11 +578,7 @@ mod tests {
             }))),
             null_count: 0,
         };
-        let tbl = Table {
-            name: "t".into(),
-            cols: vec![str_col],
-            n_rows: 1,
-        };
+        let tbl = Table::new("t".to_string(), Some(vec![str_col]));
         let mut out = Vec::new();
         encode_table_json(&tbl, &mut out, &JsonEncodeOptions::default()).unwrap();
         let s = String::from_utf8(out).unwrap();
@@ -624,11 +616,7 @@ mod tests {
             }))),
             null_count: 0,
         };
-        let tbl = Table {
-            name: "t".into(),
-            cols: vec![str_col],
-            n_rows: 1,
-        };
+        let tbl = Table::new("t".to_string(), Some(vec![str_col]));
         let mut out = Vec::new();
         encode_table_json(&tbl, &mut out, &JsonEncodeOptions::default()).unwrap();
         let s = String::from_utf8(out).unwrap();
