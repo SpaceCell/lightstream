@@ -23,7 +23,7 @@
 //! ```ignore
 //! let mut writer: TableStreamWriter = TableStreamWriter::new(schema, IPCMessageProtocol::Stream, None);
 //! writer.register_dictionary(0, vec!["A".into(), "B".into()]);
-//! writer.write(&table)?;
+//! writer.write(&table.clone().into())?;
 //! writer.finish()?;
 //! while let Some(frame) = writer.next_frame() {
 //!     let buf = frame?;
@@ -37,7 +37,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use minarrow::{Field, Table, Vec64};
+use minarrow::{Field, Table, TableV, Vec64};
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
@@ -60,7 +60,7 @@ use crate::utils::dict_values;
 /// ```ignore
 /// let mut writer: TableStreamWriter = TableStreamWriter::new(schema, IPCMessageProtocol::Stream, None);
 /// writer.register_dictionary(0, vec!["A".into(), "B".into()]);
-/// writer.write(&table)?;
+/// writer.write(&table.clone().into())?;
 /// writer.finish()?;
 /// while let Some(frame) = writer.next_frame() {
 ///     let buf = frame?;
@@ -119,15 +119,15 @@ where
         self.encoder.register_dictionary(dict_id, values);
     }
 
-    /// Write a single Table as a record batch frame.
+    /// Write a single table view as a record batch frame.
     /// Emits schema and any required dictionaries as needed.
-    pub fn write(&mut self, table: &Table) -> io::Result<()> {
+    pub fn write(&mut self, view: &TableV) -> io::Result<()> {
         if self.encoder.state == WriterState::Closed {
             return Err(io::Error::other(
                 "writer already finished",
             ));
         }
-        if table.cols.len() != self.encoder.schema.len() {
+        if view.cols.len() != self.encoder.schema.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "table column count mismatch with writer schema",
@@ -152,7 +152,7 @@ where
         }
 
         // Encode and emit the record batch
-        let (meta, body) = self.encoder.encode_record_batch(table)?;
+        let (meta, body) = self.encoder.encode_record_batch(view)?;
         self.emit_frame(meta, body, fbm::MessageHeader::RecordBatch);
         Ok(())
     }
@@ -303,11 +303,11 @@ where
 
     for table in tables {
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = dict_values(col) {
+            if let Some(values) = dict_values(&col.array) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(table)?;
+        writer.write(&TableV::from_table(table.clone(), 0, table.n_rows))?;
     }
     writer.finish()?;
 
@@ -339,11 +339,11 @@ where
 
     // Register dictionaries (if any categorical columns present)
     for (col_idx, col) in table.cols.iter().enumerate() {
-        if let Some(values) = dict_values(col) {
+        if let Some(values) = dict_values(&col.array) {
             writer.register_dictionary(col_idx as i64, values);
         }
     }
-    writer.write(table)?;
+    writer.write(&TableV::from_table(table.clone(), 0, table.n_rows))?;
     writer.finish()?;
 
     while let Some(frame) = writer.next_frame() {
@@ -390,11 +390,11 @@ mod tests {
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = dict_values(col) {
+            if let Some(values) = dict_values(&col.array) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&table).unwrap();
+        writer.write(&table.clone().into()).unwrap();
         writer.finish().unwrap();
 
         let frames = writer.drain_all_frames();
@@ -420,12 +420,12 @@ mod tests {
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table1.cols.iter().enumerate() {
-            if let Some(values) = dict_values(col) {
+            if let Some(values) = dict_values(&col.array) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&table1).unwrap();
-        writer.write(&table2).unwrap();
+        writer.write(&table1.clone().into()).unwrap();
+        writer.write(&table2.clone().into()).unwrap();
         writer.finish().unwrap();
 
         let frames = writer.drain_all_frames();
@@ -451,7 +451,7 @@ mod tests {
         let mut bad_table = test_table();
         bad_table.cols.pop(); // Now schema and columns mismatch
         let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
-        let err = writer.write(&bad_table).unwrap_err();
+        let err = writer.write(&bad_table.clone().into()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
@@ -467,7 +467,7 @@ mod tests {
     //     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
     //     // Register dictionary explicitly
     //     writer.register_dictionary((table.cols.len() - 1) as i64, dict_col.array.as_dict_values().unwrap());
-    //     writer.write(&table).unwrap();
+    //     writer.write(&table.clone().into()).unwrap();
     //     writer.finish().unwrap();
 
     //     let frames = writer.drain_all_frames();
@@ -482,11 +482,11 @@ mod tests {
         let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
         // Register dictionaries for categorical columns
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = dict_values(col) {
+            if let Some(values) = dict_values(&col.array) {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&table).unwrap();
+        writer.write(&table.clone().into()).unwrap();
         writer.finish().unwrap();
 
         let mut pin_writer = Box::pin(writer);

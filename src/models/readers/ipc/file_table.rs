@@ -123,6 +123,7 @@ use crate::models::decoders::ipc::parser::{
     convert_fb_field_to_arrow, decode_record_batch, handle_dictionary_batch,
 };
 use crate::models::decoders::limits::DecodeLimits;
+use crate::models::readers::ipc::window::window_table;
 
 /// Footer-declared block entry (i.e., offsets/lengths) for a dictionary or record batch.
 #[derive(Debug, Clone)]
@@ -332,6 +333,72 @@ impl FileTableReader {
         self.parse_batch_block(blk, Some(&projection))
     }
 
+    /// Read the row window `[row_offset, row_offset + rows)` of record
+    /// batch `idx` as a standalone `Table`.
+    ///
+    /// The block is read from disk once and the window's column buffers
+    /// view it zero-copy through its shared backing. String columns
+    /// rewrite their small offsets strip against the window base, which
+    /// is the only data written. `row_offset` must be a multiple of 512
+    /// rows so bit-packed buffers cut on 64-byte boundaries.
+    pub fn read_batch_window(
+        &self,
+        idx: usize,
+        row_offset: usize,
+        rows: usize,
+    ) -> io::Result<Table> {
+        let table = self.read_batch(idx)?;
+        window_table(&table, row_offset, rows)
+    }
+
+    /// Read record batch `idx` as row windows sized towards `target_bytes`
+    /// each, returned as a `SuperTable` of standalone (smaller) batch tables.
+    ///
+    /// See [`Self::batch_windows`] for how the row count is derived and
+    /// why a window can exceed the target. A batch that already fits
+    /// yields one window sharing the batch's buffers.
+    pub fn read_batch_windows(&self, idx: usize, target_bytes: usize) -> io::Result<SuperTable> {
+        let mut batches = Vec::new();
+        for window in self.batch_windows(idx, target_bytes)? {
+            batches.push(Arc::new(window?));
+        }
+        Ok(SuperTable::from_batches(batches, None))
+    }
+
+    /// Iterate record batch `idx` as row windows sized towards
+    /// `target_bytes` each. As [`Self::read_batch_windows`] without
+    /// collecting, so a streaming consumer holds one window at a time
+    /// over the batch's single block buffer.
+    ///
+    /// The row count derives from the batch's average bytes per row
+    /// (`body_bytes / rows`), so `target_bytes` is a target rather than a
+    /// hard ceiling. A window exceeds it in two cases:
+    ///     1. The window row count is rounded to a 512-row boundary purposely
+    ///     so bit-packed and fixed-width buffers cut on 64-byte boundaries,
+    ///     with a floor of 512 rows including when a single 512-row block is larger
+    ///     than `target_bytes`. The 64-bytes is to uphold SIMD compatiblity for
+    ///     any calculations that may need to take place on the Arrow data buffers.
+    ///     2. Variable-width columns deviate from the average, so a window denser
+    ///     than the batch mean carries more than the average row size implies.
+    pub fn batch_windows(
+        &self,
+        idx: usize,
+        target_bytes: usize,
+    ) -> io::Result<impl Iterator<Item = io::Result<Table>> + '_> {
+        let blk = self
+            .record_blocks
+            .get(idx)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
+        let body_bytes = blk.body_bytes;
+        let table = self.parse_batch_block(blk, None)?;
+        let rows = table.n_rows;
+        let per_row = (body_bytes / rows.max(1)).max(1);
+        let stride = ((target_bytes / per_row) & !511).max(512).min(rows.max(1));
+        Ok((0..rows.max(1))
+            .step_by(stride)
+            .map(move |off| window_table(&table, off, stride.min(rows - off))))
+    }
+
     /// Read every record batch into a `SuperTable` whose batches retain
     /// the file's chunking. Each `Arc<Table>` references the file
     /// reader's owned per-batch buffers; total resident memory is the
@@ -525,11 +592,16 @@ impl FileTableReader {
 
 #[cfg(test)]
 mod tests {
-    use minarrow::{Array, NumericArray, TextArray};
+    use minarrow::{
+        Array, Field, FieldArray, NumericArray, Table, TextArray, Vec64, arr_f64, arr_i32,
+        arr_str32,
+    };
+    use tempfile::NamedTempFile;
     use tracing::debug;
 
     use crate::{
         models::readers::ipc::file_table::FileTableReader,
+        models::writers::ipc::table::write_tables_to_file,
         test_helpers::{make_all_types_table, write_test_table_to_file},
     };
 
@@ -694,5 +766,58 @@ mod tests {
         // Just verify the file was read correctly
         assert_eq!(table2.n_rows, 4);
         assert_eq!(table2.cols.len(), table.cols.len());
+    }
+
+    #[tokio::test]
+    async fn test_read_batch_window_matches_slice_clone() {
+        let n: usize = 2048;
+        let ids: Vec64<i32> = (0..n as i32).collect();
+        let vals: Vec64<f64> = (0..n).map(|i| i as f64 * 0.5).collect();
+        let labels: Vec<String> = (0..n).map(|i| format!("row_{i}")).collect();
+        let label_refs: Vec64<&str> = labels.iter().map(String::as_str).collect();
+        let table = Table::new(
+            "windowed".to_string(),
+            Some(vec![
+                FieldArray::from_arr("ids", arr_i32!(ids)),
+                FieldArray::from_arr("vals", arr_f64!(vals)),
+                FieldArray::from_arr("labels", arr_str32!(label_refs)),
+            ]),
+        );
+
+        let schema: Vec<Field> = table.schema().iter().map(|f| (**f).clone()).collect();
+        let temp = NamedTempFile::new().unwrap();
+        write_tables_to_file(temp.path().to_str().unwrap(), &[table.clone()], schema)
+            .await
+            .unwrap();
+        let rdr = FileTableReader::open(&temp.path()).unwrap();
+
+        // Windows at 512-row starts, including the ragged tail.
+        for (off, len) in [(0usize, 512usize), (512, 512), (1024, 1024), (1536, 512)] {
+            let window = rdr.read_batch_window(0, off, len).unwrap();
+            let expected = table.slice_clone(off, len);
+            assert_eq!(window.n_rows, len);
+            for (w, e) in window.cols.iter().zip(expected.cols.iter()) {
+                assert_eq!(w.array.to_string(), e.array.to_string(), "col {}", w.field.name);
+            }
+        }
+
+        // Batch iteration covers every row once, in order.
+        let mut rows = 0usize;
+        for subbatch in rdr.batch_windows(0, 4096).unwrap() {
+            let subbatch = subbatch.unwrap();
+            let expected = table.slice_clone(rows, subbatch.n_rows);
+            for (w, e) in subbatch.cols.iter().zip(expected.cols.iter()) {
+                assert_eq!(w.array.to_string(), e.array.to_string(), "col {}", w.field.name);
+            }
+            rows += subbatch.n_rows;
+        }
+        assert_eq!(rows, n);
+
+        // SuperTable variant carries the same total.
+        let st = rdr.read_batch_windows(0, 4096).unwrap();
+        assert_eq!(st.n_rows(), n);
+
+        // Misaligned window start raises an error.
+        assert!(rdr.read_batch_window(0, 100, 100).is_err());
     }
 }

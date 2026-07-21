@@ -162,10 +162,10 @@ async fn test_protocol_mixed_roundtrip() {
 
         // Send: message, table, message, table, table
         writer.send("Ping", b"hello").await.unwrap();
-        writer.send_table("Events", &write_table).await.unwrap();
+        writer.send_table("Events", write_table.clone()).await.unwrap();
         writer.send("Ping", b"world").await.unwrap();
-        writer.send_table("Events", &write_table).await.unwrap();
-        writer.send_table("Events", &write_table).await.unwrap();
+        writer.send_table("Events", write_table.clone()).await.unwrap();
+        writer.send_table("Events", write_table.clone()).await.unwrap();
         writer.flush().await.unwrap();
         writer.shutdown().await.unwrap();
     });
@@ -233,8 +233,8 @@ async fn test_protocol_connection_roundtrip() {
         conn.register_table("Data", write_schema);
 
         conn.send("Ack", b"ready").await.unwrap();
-        conn.send_table("Data", &write_table).await.unwrap();
-        conn.send_table("Data", &write_table).await.unwrap();
+        conn.send_table("Data", write_table.clone()).await.unwrap();
+        conn.send_table("Data", write_table.clone()).await.unwrap();
         conn.flush().await.unwrap();
         conn.shutdown().await.unwrap();
     });
@@ -412,7 +412,7 @@ async fn test_protocol_protobuf_mixed_with_tables() {
             is_buy: true,
         };
         conn.send_proto("Trade", &trade).await.unwrap();
-        conn.send_table("Prices", &write_table).await.unwrap();
+        conn.send_table("Prices", write_table.clone()).await.unwrap();
 
         let trade2 = TradeEvent {
             id: 2,
@@ -422,7 +422,7 @@ async fn test_protocol_protobuf_mixed_with_tables() {
             is_buy: false,
         };
         conn.send_proto("Trade", &trade2).await.unwrap();
-        conn.send_table("Prices", &write_table).await.unwrap();
+        conn.send_table("Prices", write_table.clone()).await.unwrap();
 
         conn.flush().await.unwrap();
         conn.shutdown().await.unwrap();
@@ -684,7 +684,7 @@ async fn test_protocol_msgpack_mixed_with_tables() {
             raw_payload: vec![0xFF],
         };
         conn.send_msgpack("Sensor", &reading).await.unwrap();
-        conn.send_table("Readings", &write_table).await.unwrap();
+        conn.send_table("Readings", write_table.clone()).await.unwrap();
 
         let reading2 = SensorReading {
             device_id: "probe-2".into(),
@@ -694,7 +694,7 @@ async fn test_protocol_msgpack_mixed_with_tables() {
             raw_payload: vec![],
         };
         conn.send_msgpack("Sensor", &reading2).await.unwrap();
-        conn.send_table("Readings", &write_table).await.unwrap();
+        conn.send_table("Readings", write_table.clone()).await.unwrap();
 
         conn.flush().await.unwrap();
         conn.shutdown().await.unwrap();

@@ -212,7 +212,12 @@ impl IoUringWsConnection {
     }
 
     /// Send an Arrow table by type name.
-    pub async fn send_table(&mut self, name: &str, table: &minarrow::Table) -> io::Result<()> {
+    pub async fn send_table(
+        &mut self,
+        name: &str,
+        table: impl Into<minarrow::TableV>,
+    ) -> io::Result<()> {
+        let view: minarrow::TableV = table.into();
         let tag = self.write_codec.tag_by_name(name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -221,7 +226,7 @@ impl IoUringWsConnection {
         })?;
 
         self.write_codec
-            .encode_table(tag, table, &mut self.encode_buf)?;
+            .encode_table(tag, &view, &mut self.encode_buf)?;
 
         let wire_buf = std::mem::replace(&mut self.encode_buf, Vec64::with_capacity(0));
         let UringBuf(returned) = self.ws_write_binary(UringBuf(wire_buf)).await?;

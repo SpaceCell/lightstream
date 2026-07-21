@@ -21,7 +21,7 @@
 
 use std::io;
 
-use minarrow::Field;
+use minarrow::{Field, TableV};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::models::codecs::lightstream::LightstreamCodec;
@@ -76,19 +76,21 @@ impl<W: AsyncWrite + Unpin + Send, B: StreamBuffer + Unpin> LightstreamWriter<W,
         Ok(())
     }
 
-    /// Send an Arrow table by type name.
+    /// Send an Arrow table or table view by type name. A whole table
+    /// sends as the full-width view of itself.
     ///
-    /// Uses the direct encode path which writes column data from the Table's
+    /// Uses the direct encode path which writes column data from the view's
     /// arrays into a pooled buffer in one pass. After warmup the encode buffer
     /// is reused and no per-batch allocation occurs.
-    pub async fn send_table(&mut self, name: &str, table: &minarrow::Table) -> io::Result<()> {
+    pub async fn send_table(&mut self, name: &str, table: impl Into<TableV>) -> io::Result<()> {
+        let view: TableV = table.into();
         let tag = self.codec.tag_by_name(name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("unknown type name '{}'", name),
             )
         })?;
-        self.codec.encode_table(tag, table, &mut self.encode_buf)?;
+        self.codec.encode_table(tag, &view, &mut self.encode_buf)?;
         self.dest.write_all(self.encode_buf.as_ref()).await?;
         Ok(())
     }

@@ -145,14 +145,14 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
         encode_frame::<B>(tag, payload)
     }
 
-    /// Encode an Arrow table into a caller-provided buffer as a TLV frame.
+    /// Encode an Arrow table view into a caller-provided buffer as a TLV frame.
     ///
     /// Writes the complete TLV wire frame in one pass: column data is written
-    /// from the Table's arrays into `out`. Reuses the same buffer across calls.
+    /// from the view's arrays into `out`. Reuses the same buffer across calls.
     pub fn encode_table(
         &mut self,
         tag: u8,
-        table: &minarrow::Table,
+        view: &minarrow::TableV,
         out: &mut B,
     ) -> io::Result<()> {
         let entry = self.types.get_mut(tag as usize).ok_or_else(|| {
@@ -182,7 +182,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
         out.extend_from_slice(&0u32.to_le_bytes());
 
         // Append IPC frames after the TLV header
-        let ipc_len = codec.encode_stream_batch(table, out, 0, None)?;
+        let ipc_len = codec.encode_stream_batch(view, out, 0, None)?;
 
         // Patch the TLV payload length
         let len_bytes = (ipc_len as u32).to_le_bytes();
@@ -218,7 +218,7 @@ impl<B: StreamBuffer + Unpin> LightstreamCodec<B> {
                     .ok_or_else(|| io::Error::other("table codec missing"))?;
                 let shared = SharedBuffer::from_vec64(payload);
                 let table = codec.decode_payload(shared)?;
-                Ok(LightstreamMessage::Table { tag, table })
+                Ok(LightstreamMessage::Table { tag, table: table.into() })
             }
         }
     }
@@ -362,7 +362,7 @@ mod tests {
 
         let table = make_table();
         let mut frame = Vec64::with_capacity(0);
-        codec.encode_table(tag, &table, &mut frame).unwrap();
+        codec.encode_table(tag, &table.clone().into(), &mut frame).unwrap();
 
         let msg = codec.decode_frame(tag, strip_tlv_header(frame)).unwrap();
         assert!(msg.is_table());
@@ -380,7 +380,7 @@ mod tests {
         let mut frame = Vec64::with_capacity(0);
 
         // First table: encoder emits schema + dict + record batch
-        codec.encode_table(tag, &table, &mut frame).unwrap();
+        codec.encode_table(tag, &table.clone().into(), &mut frame).unwrap();
         let msg1 = codec.decode_frame(tag, strip_tlv_header(frame)).unwrap();
         let decoded1 = msg1.into_table().unwrap();
         assert_eq!(decoded1.n_rows, 3);
@@ -388,7 +388,7 @@ mod tests {
 
         // Second table: encoder emits only record batch, decoder reuses schema
         frame = Vec64::with_capacity(0);
-        codec.encode_table(tag, &table, &mut frame).unwrap();
+        codec.encode_table(tag, &table.clone().into(), &mut frame).unwrap();
         let msg2 = codec.decode_frame(tag, strip_tlv_header(frame)).unwrap();
         let decoded2 = msg2.into_table().unwrap();
         assert_eq!(decoded2.n_rows, 3);
@@ -396,7 +396,7 @@ mod tests {
 
         // Third table
         frame = Vec64::with_capacity(0);
-        codec.encode_table(tag, &table, &mut frame).unwrap();
+        codec.encode_table(tag, &table.clone().into(), &mut frame).unwrap();
         let msg3 = codec.decode_frame(tag, strip_tlv_header(frame)).unwrap();
         let decoded3 = msg3.into_table().unwrap();
         assert_eq!(decoded3.n_rows, 3);

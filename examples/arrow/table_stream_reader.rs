@@ -101,7 +101,7 @@ async fn write_stream(
     let schema: Vec<Field> = tables[0].schema().iter().map(|f| (**f).clone()).collect();
     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, protocol, None);
     for table in tables {
-        writer.write(table)?;
+        writer.write(&table.clone().into())?;
     }
     writer.finish()?;
 

@@ -470,7 +470,7 @@ fn bench_protocol_tcp(
                     let mut conn = TcpLightstreamConnection::from_tcp(stream, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -1085,7 +1085,7 @@ fn bench_uds_io_uring(
                     let mut conn = IoUringUdsConnection::new(stream_a, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -1137,7 +1137,7 @@ fn bench_tcp_io_uring(
                     let mut conn = IoUringTcpConnection::new(stream, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();

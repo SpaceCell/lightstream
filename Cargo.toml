@@ -225,6 +225,7 @@ bench_arrow_flight = [
     "dep:tokio-stream",
     "dep:futures",
     "dep:bytes",
+    "minarrow/cast_arrow",
 ]
 # Enable polars comparison in benchmarks
 bench_polars = ["polars"]

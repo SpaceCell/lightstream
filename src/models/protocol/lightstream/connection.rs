@@ -87,8 +87,12 @@ where
         self.writer.send(name, payload).await
     }
 
-    /// Send an Arrow table by type name.
-    pub async fn send_table(&mut self, name: &str, table: &minarrow::Table) -> io::Result<()> {
+    /// Send an Arrow table or table view by type name.
+    pub async fn send_table(
+        &mut self,
+        name: &str,
+        table: impl Into<minarrow::TableV>,
+    ) -> io::Result<()> {
         self.writer.send_table(name, table).await
     }
 

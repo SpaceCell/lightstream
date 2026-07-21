@@ -13,20 +13,35 @@
 //!
 //! Two data sources cover the two serving patterns:
 //!
-//! * `memory` - the table is materialised once in RAM and every send reuses
-//!   it through its reference-counted columns, copying no payload bytes and
-//!   measuring pure transport throughput with no storage in the path.
+//! * `memory` - the table is materialised once in RAM and every send splits
+//!   it into zero-copy batches sized towards `--max-batch-size` through its
+//!   reference-counted columns, copying no payload bytes and measuring pure
+//!   transport throughput with no storage in the path. The Flight server
+//!   serves the table's zero-copy Arrow export, verified for type parity,
+//!   so both transports send identical memory.
 //! * `nvme` - a dataset of `--dataset-gb` gigabytes is written to local NVMe
-//!   as one Arrow IPC file per configured stream. A cell selects the first N
-//!   files and delivers their record batches in file-index order.
-//!   This is the replay-server pattern where a host streams a large recorded
-//!   dataset to a remote consumer. Lightstream replays through its zero-copy
-//!   mmap reader and Arrow Flight reads the same files through the `arrow`
-//!   IPC file reader. Every batch in the dataset is distinct: its first
-//!   column carries the batch's global sequence, which the sink verifies on
-//!   receipt. Each cell runs one cold pass with the files evicted from the
-//!   page cache first, then `runs` warm passes over the cached files,
-//!   covering both the first-scan and steady-state replay cases.
+//!   as one Arrow IPC file per configured stream, and each stream count
+//!   selects the first N files and delivers their record batches in
+//!   file-index order. This is the replay-server pattern, measuring the
+//!   time for the remote server to pull data from disk and then send it.
+//!   Flight reads through Arrow's native IPC reader and Lightstream through
+//!   its own native implementation of an Arrow reader, both the stock
+//!   buffered variants rather than mmap. `--use-mmap true` switches
+//!   Lightstream to its zero-copy mmap reader instead, however keep in
+//!   mind what this then measures is not directly comparable, as
+//!   Lightstream will potentially then be hitting warm cache in more
+//!   scenarios than native page caching within the one run. That setting
+//!   disqualifies a direct comparison and is provided for informational
+//!   benchmarking only.
+//!
+//! Every batch in the nvme dataset is distinct: its first column carries
+//! the batch's global sequence, which the sink verifies on receipt. Each
+//! combination runs one cold pass, then `runs` warm passes over the cached
+//! files, covering both the first-scan and steady-state replay cases. A
+//! cold pass first flushes and drops the selected files from the page
+//! cache through `posix_fadvise`, so its reads come off the device even
+//! when a prior pass or the dataset generation left those pages resident.
+//! Within one pass each byte is read once, so a pass never warms itself.
 //!
 //! For each stream count the source opens the Lightstream protocol parallel
 //! writer to the sink with one connection per stream and sends
@@ -48,7 +63,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
@@ -62,6 +77,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
 use lightstream::enums::IPCMessageProtocol;
+use lightstream::models::readers::ipc::file_table::FileTableReader;
 use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 use lightstream::models::writers::ipc::sync_table::SyncTableWriter;
 use lightstream::models::writers::parallel::lightstream::LightstreamParallelWriter;
@@ -71,9 +87,7 @@ mod bench_helpers;
 #[path = "../common/arrow_flight_bench.rs"]
 mod arrow_flight_bench;
 
-use arrow_flight_bench::{
-    BenchFlightService, FLIGHT_HTTP2_WINDOW, FLIGHT_MAX_MESSAGE_BYTES, make_record_batch,
-};
+use arrow_flight_bench::{BenchFlightService, FLIGHT_HTTP2_WINDOW, assert_export_parity};
 use bench_helpers::{
     BenchShape, batches_per_stream_for_budget, bench_schema, make_bench_table_shape,
     replay_batch_table,
@@ -111,12 +125,11 @@ struct Args {
     data_source: DataSource,
     dataset_dir: PathBuf,
     max_batch_size: usize,
-    out_of_core: bool,
+    use_mmap: bool,
     flight_bind: String,
     echo_bind: String,
     ctrl_bind: String,
     sink_ls_addr: String,
-    flight_single_message: bool,
 }
 
 fn parse_shape(s: &str) -> Result<BenchShape, String> {
@@ -152,12 +165,11 @@ fn parse_args() -> Result<Args, String> {
     let mut data_source = DataSource::Memory;
     let mut dataset_dir = PathBuf::from("/data");
     let mut max_batch_size: usize = 0;
-    let mut out_of_core = false;
+    let mut use_mmap = false;
     let mut flight_bind = "0.0.0.0:9101".to_string();
     let mut echo_bind = "0.0.0.0:9102".to_string();
     let mut ctrl_bind = "0.0.0.0:9104".to_string();
     let mut sink_ls_addr = "127.0.0.1:9103".to_string();
-    let mut flight_single_message = false;
 
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -175,12 +187,17 @@ fn parse_args() -> Result<Args, String> {
             "--max-batch-size" => {
                 max_batch_size = next()?.parse().map_err(|e| format!("--max-batch-size: {e}"))?
             }
-            "--out-of-core" => out_of_core = true,
+            "--use-mmap" => {
+                use_mmap = match next()?.as_str() {
+                    "true" | "1" => true,
+                    "false" | "0" => false,
+                    other => return Err(format!("--use-mmap: expected true or false, got {other}")),
+                }
+            }
             "--flight-bind" => flight_bind = next()?,
             "--echo-bind" => echo_bind = next()?,
             "--ctrl-bind" => ctrl_bind = next()?,
             "--sink-ls-addr" => sink_ls_addr = next()?,
-            "--flight-single-message" => flight_single_message = true,
             "--help" | "-h" => {
                 println!("Usage: bench_ecs_source [options]");
                 println!("  --shape SHAPE              mixed | narrow_numeric | string_heavy | wide");
@@ -193,13 +210,14 @@ fn parse_args() -> Result<Args, String> {
                 println!("  --dataset-dir PATH        nvme dataset directory (default /data)");
                 println!("  --max-batch-size N        nvme replay batch size limit in bytes, 0 replays");
                 println!("                            whole batches (default 0)");
-                println!("  --out-of-core             stream the nvme replay mappings with a bounded");
-                println!("                            resident footprint, for datasets larger than RAM");
+                println!("  --use-mmap BOOL           replay nvme files through the buffered file");
+                println!("                            reader (false, default) or the mmap reader");
+                println!("                            (true). true is informational only and");
+                println!("                            disqualifies a direct Flight comparison");
                 println!("  --flight-bind ADDR        Flight server bind (default 0.0.0.0:9101)");
                 println!("  --echo-bind ADDR          latency echo bind (default 0.0.0.0:9102)");
                 println!("  --ctrl-bind ADDR          sink control bind (default 0.0.0.0:9104)");
                 println!("  --sink-ls-addr ADDR       sink Lightstream address (host:port)");
-                println!("  --flight-single-message   ship each batch as one gRPC message");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
@@ -219,12 +237,11 @@ fn parse_args() -> Result<Args, String> {
         data_source,
         dataset_dir,
         max_batch_size,
-        out_of_core,
+        use_mmap,
         flight_bind,
         echo_bind,
         ctrl_bind,
         sink_ls_addr,
-        flight_single_message,
     })
 }
 
@@ -264,7 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches_per_stream =
         batches_per_stream_for_budget(args.shape, args.rows, max_streams, args.dataset_gb);
     eprintln!(
-        "[source] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_batch_size={} sink_ls={} flight_single_message={}",
+        "[source] shape={} rows={} dataset_gb={} batches_per_stream={} streams={:?} runs={} data={} max_batch_size={} sink_ls={}",
         args.shape.label(),
         args.rows,
         args.dataset_gb,
@@ -274,7 +291,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.data_source.label(),
         args.max_batch_size,
         args.sink_ls_addr,
-        args.flight_single_message
     );
 
     let table = Arc::new(make_bench_table_shape(args.shape, args.rows));
@@ -320,10 +336,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // first DoGet never races generation, and stays up for the whole run.
     match &dataset {
         None => {
-            let record_batch = Arc::new(make_record_batch(args.shape, args.rows));
+            let record_batch = Arc::new(table.to_apache_arrow());
+            assert_export_parity(&table, &record_batch);
             let service = BenchFlightService {
                 batch: record_batch,
-                single_message: args.flight_single_message,
             };
             tokio::spawn(async move {
                 serve_flight(flight_addr, FlightServiceServer::new(service)).await;
@@ -332,7 +348,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(dataset) => {
             let service = ReplayFlightService {
                 dataset: Arc::clone(dataset),
-                single_message: args.flight_single_message,
             };
             tokio::spawn(async move {
                 serve_flight(flight_addr, FlightServiceServer::new(service)).await;
@@ -355,6 +370,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         total,
                         &schema,
                         &table,
+                        args.max_batch_size,
                         &mut ctrl,
                         b'W',
                     )
@@ -369,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &schema,
                     dataset,
                     args.max_batch_size,
-                    args.out_of_core,
+                    args.use_mmap,
                     &mut ctrl,
                     b'C',
                     true,
@@ -383,7 +399,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &schema,
                         dataset,
                         args.max_batch_size,
-                        args.out_of_core,
+                        args.use_mmap,
                         &mut ctrl,
                         b'W',
                         false,
@@ -416,11 +432,7 @@ where
     Server::builder()
         .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
         .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
-        .add_service(
-            service
-                .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-                .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES),
-        )
+        .add_service(service)
         .serve_with_incoming(incoming)
         .await
         .unwrap();
@@ -490,7 +502,7 @@ fn generate_dataset(
         );
         for b in 0..batches_per_stream {
             let seq = i as u64 * batches_per_stream + b;
-            writer.write_table(&replay_batch_table(table, seq))?;
+            writer.write_table(replay_batch_table(table, seq))?;
         }
         writer.finish()?;
         eprintln!("[source] wrote {} ({}/{})", path.display(), i + 1, max_streams);
@@ -544,24 +556,43 @@ async fn read_pulse(ctrl: &mut TcpStream, expected: u8) -> io::Result<()> {
 // Lightstream push
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Send the in-memory table `total` times to the sink over the Lightstream
-/// protocol parallel writer, one connection per stream. Each send bumps the
-/// reference counts on the table's shared columns without copying the
-/// payload. Each connection announces its index at open, so the sink merges
-/// the round-robin rotation back into global write order under `Ordered`.
+/// Send `total` sequenced batches to the sink over the Lightstream protocol
+/// parallel writer, which opens one connection per stream.
+///
+/// Each batch is built through [`replay_batch_table`] inside the timed
+/// region, so its leading column tells the sink where it belongs in the
+/// dataset. The sink uses that position to verify the delivery arrived
+/// ordered and complete, under the same contract as the nvme replay.
+///
+/// When `max_batch_size` is nonzero, each send is further split into
+/// zero-copy views of that target size through
+/// `get_views_for_target_batch_size`, which also happens inside the timed
+/// region.
+///
+/// Each connection announces its index when it opens, so the sink can
+/// merge the round-robin rotation back into global write order under
+/// `Ordered`.
 async fn push_memory_workload(
     addr: &str,
     streams: usize,
     total: u64,
     schema: &[Field],
     table: &Arc<Table>,
+    max_batch_size: usize,
     ctrl: &mut TcpStream,
     expected_pulse: u8,
 ) -> io::Result<()> {
     let mut writer = connect_retry(addr, streams, schema).await?;
     read_pulse(ctrl, expected_pulse).await?;
-    for _ in 0..total {
-        writer.send_table(TYPE_NAME, (**table).clone()).await?;
+    for seq in 0..total {
+        let batch = replay_batch_table(table, seq);
+        if max_batch_size == 0 {
+            writer.send_table(TYPE_NAME, batch).await?;
+        } else {
+            for view in batch.get_views_for_target_batch_size(max_batch_size).slices {
+                writer.send_table(TYPE_NAME, view).await?;
+            }
+        }
     }
     writer.finish().await
 }
@@ -569,18 +600,24 @@ async fn push_memory_workload(
 /// Replay batches from the selected files through the Lightstream protocol
 /// parallel writer. Files are visited by index, record batches retain their
 /// order within each file, and the writer distributes the resulting tables
-/// across its connection tasks round-robin. Each mmap-backed table owns its
-/// mapping while queued or in flight. A nonzero `max_batch_size` replays each
-/// record batch as row windows of at most that size through the reader's
-/// windowed batch iteration. `out_of_core` opens each reader in its
-/// streaming mode for datasets larger than RAM.
+/// across its connection tasks round-robin. A nonzero `max_batch_size`
+/// replays each record batch as row windows of at most that size through the
+/// reader's windowed batch iteration.
+///
+/// `use_mmap` selects the reader, with the buffered file reader as the
+/// default. The buffered reader leaves the pages it reads cheaply
+/// reclaimable, so it also suits datasets larger than RAM, where mapped
+/// pages would stall page faults in reclaim once memory fills. The mmap
+/// reader serves each table zero-copy out of the page cache and each table
+/// owns its mapping while queued or in flight, so it suits datasets that
+/// fit in RAM.
 async fn push_replay_workload(
     addr: &str,
     streams: usize,
     schema: &[Field],
     dataset: &Arc<ReplayDataset>,
     max_batch_size: usize,
-    out_of_core: bool,
+    use_mmap: bool,
     ctrl: &mut TcpStream,
     expected_pulse: u8,
     evict: bool,
@@ -593,16 +630,33 @@ async fn push_replay_workload(
         }
     }
     for file in &dataset.files[..streams] {
-        let reader = MmapTableReader::open(file, out_of_core)?;
-        let n = (dataset.batches_per_stream as usize).min(reader.num_batches());
-        if max_batch_size == 0 {
-            for idx in 0..n {
-                writer.send_table(TYPE_NAME, reader.read_batch(idx)?).await?;
+        let n_batches = dataset.batches_per_stream as usize;
+        if use_mmap {
+            let reader = MmapTableReader::open(file)?;
+            let n = n_batches.min(reader.num_batches());
+            if max_batch_size == 0 {
+                for idx in 0..n {
+                    writer.send_table(TYPE_NAME, reader.read_batch(idx)?).await?;
+                }
+            } else {
+                for idx in 0..n {
+                    for window in reader.batch_windows(idx, max_batch_size)? {
+                        writer.send_table(TYPE_NAME, window?).await?;
+                    }
+                }
             }
         } else {
-            for idx in 0..n {
-                for window in reader.batch_portions(idx, max_batch_size)? {
-                    writer.send_table(TYPE_NAME, window?).await?;
+            let reader = FileTableReader::open(file)?;
+            let n = n_batches.min(reader.num_batches());
+            if max_batch_size == 0 {
+                for idx in 0..n {
+                    writer.send_table(TYPE_NAME, reader.read_batch(idx)?).await?;
+                }
+            } else {
+                for idx in 0..n {
+                    for window in reader.batch_windows(idx, max_batch_size)? {
+                        writer.send_table(TYPE_NAME, window?).await?;
+                    }
                 }
             }
         }
@@ -655,7 +709,6 @@ async fn connect_retry(
 #[derive(Clone)]
 struct ReplayFlightService {
     dataset: Arc<ReplayDataset>,
-    single_message: bool,
 }
 
 #[tonic::async_trait]
@@ -773,14 +826,35 @@ impl FlightService for ReplayFlightService {
                 .map(|batch| batch.map_err(arrow_flight::error::FlightError::from)),
         );
 
-        // Default: the encoder keeps its shipped flight-data size, so batches
-        // above 2 MiB split into multiple messages per Arrow Flight's own
-        // tuning. Single-message mode raises the limit for the sensitivity
-        // comparison.
-        let mut builder = FlightDataEncoderBuilder::new();
-        if self.single_message {
-            builder = builder.with_max_flight_data_size(FLIGHT_MAX_MESSAGE_BYTES);
-        }
+        // The encoder keeps its default flight-data size, so batches above
+        // 2 MiB split into multiple messages per Arrow Flight's own tuning.
+        // Resending dictionaries ensures Flight uses the more efficient
+        // dictionary-encoded representation rather than defaulting to
+        // actual strings for compatibility reasons. Per the upstream
+        // documentation at
+        // https://docs.rs/arrow-flight/latest/arrow_flight/encode/enum.DictionaryHandling.html
+        //
+        // "Variants
+        //
+        //  Hydrate
+        //  Expands to the underlying type (default). This likely sends more
+        //  data over the network but requires less memory (dictionaries are
+        //  not tracked) and is more compatible with other arrow flight
+        //  client implementations that may not support DictionaryEncoding
+        //
+        //  See also:
+        //  https://github.com/apache/arrow-rs/issues/1206
+        //
+        //  Resend
+        //  Send dictionary FlightData with every RecordBatch that contains
+        //  a DictionaryArray. See Self::Hydrate for more tradeoffs. No
+        //  attempt is made to skip sending the same (logical) dictionary
+        //  values twice.
+        //
+        //  This requires identifying the different dictionaries in use and
+        //  assigning them unique IDs"
+        let builder = FlightDataEncoderBuilder::new()
+            .with_dictionary_handling(DictionaryHandling::Resend);
         let flight_data = builder
             .build(batch_stream)
             .map_err(|err| Status::internal(format!("flight encode failure: {err}")));

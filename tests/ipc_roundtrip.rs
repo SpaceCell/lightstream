@@ -461,7 +461,7 @@ mod integration {
         for (dict_id, unique) in dicts_for_table(&table) {
             writer.register_dictionary(dict_id, unique.to_vec());
         }
-        writer.write(&table).unwrap();
+        writer.write(&table.clone().into()).unwrap();
         writer.finish().unwrap();
 
         // Collect frames and write to duplex
@@ -544,7 +544,7 @@ mod integration {
         for (dict_id, unique) in dicts_for_table(&table) {
             writer.register_dictionary(dict_id, unique.to_vec());
         }
-        writer.write(&table).unwrap();
+        writer.write(&table.clone().into()).unwrap();
         writer.finish().unwrap();
 
         // Collect frames and write to duplex

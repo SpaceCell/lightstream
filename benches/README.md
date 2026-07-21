@@ -105,7 +105,7 @@ Enabling `io_uring` adds the Linux-only `tcp_io_uring` and `uds_io_uring` benchm
 ```bash
 LIGHTSTREAM_BENCH_MATRIX=quick \
 cargo bench --bench arrow_flight_comparison \
-  --features "bench_arrow_flight,tcp" \
+  --features "bench_arrow_flight,tcp,protocol" \
   -- --quick
 ```
 
@@ -119,10 +119,11 @@ The group contains:
 
 ```text
 arrow_flight_do_get
-lightstream_tcp
+lightstream_protocol
+lightstream_arrow_tcp
 ```
 
-Both benchmarks use the same workload over loopback.
+plus the parallel variants at each stream count. `lightstream_protocol` is the Lightstream protocol over TCP, the headline comparison against Flight. The `lightstream_arrow_*` benchmarks measure Lightstream's Arrow IPC transport writers over TCP, HTTP/2 and QUIC as additional comparisons. All benchmarks use the same workload over loopback.
 
 Arrow Flight splits batches that exceed the 2 MiB gRPC target. The receiver may therefore decode more `RecordBatch` values than the sender submitted. Throughput is calculated from the logical size of the input data, so batch splitting does not affect the denominator.
 
@@ -186,7 +187,7 @@ cargo bench --bench json_throughput \
 
 ## Methodology
 
-The benchmarks measure sustained throughput. Connection setup is performed outside the timed region, and per-batch latency is not measured.
+The benchmarks measure sustained throughput. Connection setup is performed outside the timed region, and per-batch latency is not measured, except in the ECS benchmark that outputs more detailed checkpoints (please refer to its dedicated README.md).
 
 Criterion reports are written under:
 
@@ -194,9 +195,9 @@ Criterion reports are written under:
 target/criterion/<group>/<benchmark>/report/index.html
 ```
 
-Throughput is expressed in logical payload bytes, calculated by `bench_helpers::logical_payload_bytes_shape`. This is the size of the source columns rather than the encoded byte count transmitted by the transport.
+Throughput is expressed in logical payload bytes, using minarrow's `ByteSize::logical_bytes` accounting via `bench_helpers::logical_payload_bytes_shape`. This is the size of the source columns rather than the encoded byte count transmitted by the transport.
 
-Wire throughput differs because of framing and encoding overhead. The difference is generally smaller for numeric shapes and larger for `StringHeavy`, which includes offset and dictionary buffers.
+Wire throughput differs because of framing and encoding overhead. The difference is generally smaller for numeric shapes and larger for `StringHeavy`, which includes offset and dictionary buffers. For the Arrow Flight comparison, it uses `Resend` (see the advice in the `arrow_flight_comparison.rs` file), which ensures strings are kept in this encoding rather than 'hydrated' into actual Strings, which the native implementation does by default (i.e., so that Flight is not unfairly penalised).
 
 Decoded columns and protocol messages are passed through `std::hint::black_box` where applicable to prevent the compiler from removing payload materialisation.
 

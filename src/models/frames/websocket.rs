@@ -196,7 +196,7 @@ pub fn unmask(payload: &mut [u8], mask_key: [u8; 4]) {
         *byte ^= mask_key[i % 4];
     }
 
-    // XOR 8 bytes at a time on the aligned portion
+    // XOR 8 bytes at a time on the aligned region
     let offset = prefix.len() % 4;
     let aligned_mask = if offset == 0 {
         mask_u64

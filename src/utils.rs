@@ -90,10 +90,10 @@ macro_rules! debug_println {
 }
 
 // Helper supporting dictionary columns for tables
-/// Return the dictionary values for a categorical column, or None if not categorical.
-pub(crate) fn dict_values(col: &minarrow::FieldArray) -> Option<Vec<String>> {
+/// Return the dictionary values for a categorical array, or None if not categorical.
+pub(crate) fn dict_values(array: &minarrow::Array) -> Option<Vec<String>> {
     use minarrow::TextArray::*;
-    match &col.array {
+    match array {
         #[cfg(any(
             not(feature = "default_categorical_8"),
             feature = "extended_categorical"

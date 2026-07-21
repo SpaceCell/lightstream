@@ -166,8 +166,8 @@ fn test_io_uring_connection_roundtrip() {
             conn.register_table("Data", write_schema);
 
             conn.send("Ack", b"ready").await.unwrap();
-            conn.send_table("Data", &write_table).await.unwrap();
-            conn.send_table("Data", &write_table).await.unwrap();
+            conn.send_table("Data", write_table.clone()).await.unwrap();
+            conn.send_table("Data", write_table.clone()).await.unwrap();
             conn.flush().await.unwrap();
             conn.shutdown().await.unwrap();
         });
@@ -243,7 +243,7 @@ fn test_io_uring_multi_batch() {
             conn.register_table("Data", write_schema);
 
             for _ in 0..n_batches {
-                conn.send_table("Data", &write_table).await.unwrap();
+                conn.send_table("Data", write_table.clone()).await.unwrap();
             }
             conn.flush().await.unwrap();
             conn.shutdown().await.unwrap();

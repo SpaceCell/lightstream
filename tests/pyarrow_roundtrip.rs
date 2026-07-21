@@ -335,7 +335,7 @@ mod pyarrow_roundtrip_tests {
             return;
         }
 
-        let reader = MmapTableReader::open(file_path, false).expect("Failed to mmap file");
+        let reader = MmapTableReader::open(file_path).expect("Failed to mmap file");
         assert!(reader.num_batches() > 0, "No record batches found");
 
         let expected = create_expected_table(2048);
@@ -346,7 +346,7 @@ mod pyarrow_roundtrip_tests {
 
         // Chunked read
         let chunked = reader
-            .read_batch_portion(0, 16 * 1024)
+            .read_batch_windows(0, 16 * 1024)
             .expect("Failed to read batch chunks");
         assert!(
             chunked.batches.len() > 1,

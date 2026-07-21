@@ -31,7 +31,7 @@
 
 use std::io;
 
-use minarrow::{Field, Table, Vec64};
+use minarrow::{Field, Table, TableV, Vec64};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
@@ -89,15 +89,17 @@ where
         self.inner.register_dictionary(dict_id, values);
     }
 
-    /// Write a single table, auto-registering dictionaries from any
-    /// categorical columns present, then drain encoded frames to the sink.
-    pub fn write_table(&mut self, table: &Table) -> io::Result<()> {
-        for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = dict_values(col) {
+    /// Write a single table or table view, auto-registering dictionaries
+    /// from any categorical columns present, then drain encoded frames to
+    /// the sink.
+    pub fn write_table(&mut self, table: impl Into<TableV>) -> io::Result<()> {
+        let view: TableV = table.into();
+        for (col_idx, col) in view.cols.iter().enumerate() {
+            if let Some(values) = dict_values(col.as_tuple_ref().0) {
                 self.inner.register_dictionary(col_idx as i64, values);
             }
         }
-        self.inner.write(table)?;
+        self.inner.write(&view)?;
         self.drain_frames()
     }
 
@@ -107,7 +109,7 @@ where
         I: IntoIterator<Item = Table>,
     {
         for table in tables {
-            self.write_table(&table)?;
+            self.write_table(table)?;
         }
         self.finish()
     }
@@ -153,7 +155,7 @@ pub fn write_tables_to_file_sync(
     let file = std::fs::File::create(file_path)?;
     let mut writer = SyncTableWriter::<_, Vec64<u8>>::new(file, schema, IPCMessageProtocol::File, None);
     for table in tables {
-        writer.write_table(table)?;
+        writer.write_table(table.clone())?;
     }
     writer.finish()
 }
@@ -242,9 +244,9 @@ mod tests {
             IPCMessageProtocol::File,
             None,
         );
-        writer.write_table(&t1).unwrap();
-        writer.write_table(&t2).unwrap();
-        writer.write_table(&t3).unwrap();
+        writer.write_table(t1.clone()).unwrap();
+        writer.write_table(t2.clone()).unwrap();
+        writer.write_table(t3.clone()).unwrap();
         writer.finish().unwrap();
 
         let reader = FileTableReader::open(&path).unwrap();
@@ -266,8 +268,8 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         let mut writer =
             SyncTableWriter::<_, Vec64<u8>>::new(&mut buf, schema, IPCMessageProtocol::Stream, None);
-        writer.write_table(&t1).unwrap();
-        writer.write_table(&t2).unwrap();
+        writer.write_table(t1.clone()).unwrap();
+        writer.write_table(t2.clone()).unwrap();
         writer.finish().unwrap();
         drop(writer);
 

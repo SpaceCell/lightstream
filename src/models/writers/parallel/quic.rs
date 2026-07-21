@@ -17,7 +17,7 @@
 
 use std::io;
 
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, TableV};
 use quinn::Connection;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -40,7 +40,7 @@ const STREAM_CHANNEL_DEPTH: usize = 8;
 /// stream.
 pub struct QuicParallelTableWriter {
     schema: Vec<Field>,
-    senders: Vec<mpsc::Sender<(Table, Option<u64>)>>,
+    senders: Vec<mpsc::Sender<(TableV, Option<u64>)>>,
     tasks: Vec<JoinHandle<io::Result<()>>>,
     next: usize,
     /// When set, each table is tagged with a monotonic sequence id on its
@@ -72,7 +72,7 @@ impl QuicParallelTableWriter {
             for (dict_id, values) in &dictionaries {
                 writer.register_dictionary(*dict_id, values.clone());
             }
-            let (tx, mut rx) = mpsc::channel::<(Table, Option<u64>)>(STREAM_CHANNEL_DEPTH);
+            let (tx, mut rx) = mpsc::channel::<(TableV, Option<u64>)>(STREAM_CHANNEL_DEPTH);
             let task = tokio::spawn(async move {
                 while let Some((table, seq)) = rx.recv().await {
                     match seq {
@@ -122,12 +122,12 @@ impl ParallelTransportWriter for QuicParallelTableWriter {
         self.senders.len()
     }
 
-    async fn write_table(&mut self, table: Table) -> io::Result<()> {
+    async fn write_table(&mut self, table: impl Into<TableV> + Send) -> io::Result<()> {
         let seq = if self.ordered { Some(self.next as u64) } else { None };
         let idx = self.next % self.senders.len();
         self.next = self.next.wrapping_add(1);
         self.senders[idx]
-            .send((table, seq))
+            .send((table.into(), seq))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC stream task closed"))
     }

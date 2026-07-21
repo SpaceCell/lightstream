@@ -162,7 +162,7 @@ async fn file_read_batch_cols_all_equals_read_batch() {
 async fn mmap_read_batch_cols_single_numeric() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
-    let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+    let rdr = MmapTableReader::open(temp.path()).unwrap();
 
     let projected = rdr.read_batch_cols(0, &["score"]).unwrap();
     assert_eq!(projected.n_rows, 3);
@@ -182,7 +182,7 @@ async fn mmap_read_batch_cols_single_numeric() {
 async fn mmap_read_batch_cols_multiple_in_schema_order() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
-    let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+    let rdr = MmapTableReader::open(temp.path()).unwrap();
 
     let projected = rdr.read_batch_cols(0, &["name", "id"]).unwrap();
     assert_eq!(projected.cols.len(), 2);
@@ -195,7 +195,7 @@ async fn mmap_read_batch_cols_multiple_in_schema_order() {
 async fn mmap_read_batch_cols_with_string() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
-    let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+    let rdr = MmapTableReader::open(temp.path()).unwrap();
 
     let projected = rdr.read_batch_cols(0, &["name"]).unwrap();
     assert_eq!(projected.cols.len(), 1);
@@ -213,7 +213,7 @@ async fn mmap_read_batch_cols_with_string() {
 async fn mmap_read_batch_cols_unknown_name_errors() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
-    let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+    let rdr = MmapTableReader::open(temp.path()).unwrap();
 
     let err = rdr.read_batch_cols(0, &["nonexistent"]).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -224,7 +224,7 @@ async fn mmap_read_batch_cols_unknown_name_errors() {
 async fn mmap_read_batch_cols_all_equals_read_batch() {
     let table = make_test_table();
     let temp = write_to_file(&table).await;
-    let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+    let rdr = MmapTableReader::open(temp.path()).unwrap();
 
     let all_names: Vec<&str> = rdr.schema().iter().map(|f| f.name.as_str()).collect();
     let projected = rdr.read_batch_cols(0, &all_names).unwrap();

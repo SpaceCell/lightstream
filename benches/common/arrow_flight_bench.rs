@@ -7,236 +7,97 @@
 //! Arrow Flight benchmark scaffolding shared by the loopback comparison bench
 //! and the cross-host benchmark.
 //!
-//! Builds an Arrow `RecordBatch` for each [`BenchShape`] and serves it over a
+//! Verifies the zero-copy Arrow export of a bench table and serves it over a
 //! minimal Flight service whose `DoGet` returns the pre-built batch repeated
 //! the number of times the ticket requests. Every other RPC is unsupported.
 //!
-//! The 8 MiB HTTP/2 windows and the raised gRPC message limits remove the
-//! transport-level ceilings. Flight-data slicing stays at the encoder's
-//! default 2 MiB, matching how Arrow Flight ships.
+//! The 8 MiB HTTP/2 windows remove the transport-level flow-control
+//! ceiling. Flight-data slicing stays at the encoder's default 2 MiB.
+//! The encoder resends dictionaries, which ensures Flight uses the more
+//! efficient dictionary-encoded representation rather than defaulting to
+//! actual strings for compatibility reasons, so the wire carries the same
+//! representation Lightstream sends.
 
 #![allow(dead_code)]
 
 use std::sync::Arc;
 
-use arrow::array::{
-    ArrayRef, DictionaryArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
-};
-use arrow::datatypes::{DataType, Field as ArrowField, Int32Type, Schema as ArrowSchema};
+use arrow::array::{ArrayRef, Int32Array};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
+use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
-    encode::FlightDataEncoderBuilder,
+    encode::{DictionaryHandling, FlightDataEncoderBuilder},
 };
 use futures::stream::{self, BoxStream, TryStreamExt};
+use minarrow::ffi::arrow_dtype::CategoricalIndexType;
+use minarrow::{ArrowType, Table};
 use tonic::{Request, Response, Status, Streaming};
-
-use super::bench_helpers::BenchShape;
-
-const STRING_HEAVY_DICT_CARDINALITY: usize = 100;
-const WIDE_GROUP_SIZE: usize = 25;
 
 /// HTTP/2 flow-control window advertised on both the Flight server and client.
 pub const FLIGHT_HTTP2_WINDOW: u32 = 8 * 1024 * 1024;
 
-/// gRPC message decode and encode limit, raised so no transport ceiling
-/// interferes with the encoder's own flight-data slicing.
-pub const FLIGHT_MAX_MESSAGE_BYTES: usize = i32::MAX as usize;
-
-/// Build the Arrow record batch matching `shape` at `n_rows` rows.
-pub fn make_record_batch(shape: BenchShape, n_rows: usize) -> RecordBatch {
-    match shape {
-        BenchShape::Mixed => mixed_batch(n_rows),
-        BenchShape::NarrowNumeric => narrow_numeric_batch(n_rows),
-        BenchShape::StringHeavy => string_heavy_batch(n_rows),
-        BenchShape::Wide => wide_batch(n_rows),
-    }
-}
-
-fn mixed_batch(n_rows: usize) -> RecordBatch {
-    let ids = Int32Array::from((0..n_rows as i32).collect::<Vec<_>>());
-    let values = Float64Array::from((0..n_rows).map(|i| i as f64 * 0.5).collect::<Vec<_>>());
-    let labels =
-        StringArray::from((0..n_rows).map(|i| format!("row_{}", i)).collect::<Vec<_>>());
-    let dict_keys = Int32Array::from((0..n_rows).map(|i| (i % 3) as i32).collect::<Vec<_>>());
-    let dict_values = StringArray::from(vec!["red", "green", "blue"]);
-    let category = DictionaryArray::<Int32Type>::try_new(dict_keys, Arc::new(dict_values)).unwrap();
-
-    let schema = Arc::new(ArrowSchema::new(vec![
-        ArrowField::new("ids", DataType::Int32, false),
-        ArrowField::new("values", DataType::Float64, false),
-        ArrowField::new("labels", DataType::Utf8, false),
-        ArrowField::new(
-            "category",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            true,
-        ),
-    ]));
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(values),
-            Arc::new(labels),
-            Arc::new(category),
-        ],
-    )
-    .unwrap()
-}
-
-fn narrow_numeric_batch(n_rows: usize) -> RecordBatch {
-    let ids = Int32Array::from((0..n_rows as i32).collect::<Vec<_>>());
-    let counters = Int64Array::from((0..n_rows).map(|i| (i as i64) * 7).collect::<Vec<_>>());
-    let prices = Float32Array::from((0..n_rows).map(|i| i as f32 * 0.25).collect::<Vec<_>>());
-    let values = Float64Array::from((0..n_rows).map(|i| i as f64 * 0.5).collect::<Vec<_>>());
-
-    let schema = Arc::new(ArrowSchema::new(vec![
-        ArrowField::new("ids", DataType::Int32, false),
-        ArrowField::new("counters", DataType::Int64, false),
-        ArrowField::new("prices", DataType::Float32, false),
-        ArrowField::new("values", DataType::Float64, false),
-    ]));
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(counters),
-            Arc::new(prices),
-            Arc::new(values),
-        ],
-    )
-    .unwrap()
-}
-
-fn string_heavy_batch(n_rows: usize) -> RecordBatch {
-    let ids = Int32Array::from((0..n_rows as i32).collect::<Vec<_>>());
-    let long_text = StringArray::from(
-        (0..n_rows)
-            .map(|i| {
-                format!(
-                    "row_{:08}_payload_{:08x}_lorem_ipsum_dolor_sit",
-                    i,
-                    i.wrapping_mul(2_654_435_761usize)
-                )
-            })
-            .collect::<Vec<_>>(),
+/// Asserts the zero-copy Arrow export of `table` matches it column for
+/// column, with equal row counts, names, and Arrow types of the same bit
+/// width, so any type drift in the export fails before measurement.
+pub fn assert_export_parity(table: &Table, batch: &RecordBatch) {
+    assert_eq!(
+        batch.num_rows(),
+        table.n_rows,
+        "row count drift in the Arrow export"
     );
-    let short_text = StringArray::from(
-        (0..n_rows)
-            .map(|i| format!("s_{:04x}", (i & 0xFFFF) as u16))
-            .collect::<Vec<_>>(),
+    assert_eq!(
+        batch.num_columns(),
+        table.n_cols(),
+        "column count drift in the Arrow export"
     );
-    let dict_keys = Int32Array::from(
-        (0..n_rows)
-            .map(|i| (i % STRING_HEAVY_DICT_CARDINALITY) as i32)
-            .collect::<Vec<_>>(),
-    );
-    let dict_values = StringArray::from(
-        (0..STRING_HEAVY_DICT_CARDINALITY)
-            .map(|i| format!("cat_{:03}", i))
-            .collect::<Vec<_>>(),
-    );
-    let category = DictionaryArray::<Int32Type>::try_new(dict_keys, Arc::new(dict_values)).unwrap();
-
-    let schema = Arc::new(ArrowSchema::new(vec![
-        ArrowField::new("ids", DataType::Int32, false),
-        ArrowField::new("long_text", DataType::Utf8, false),
-        ArrowField::new("short_text", DataType::Utf8, false),
-        ArrowField::new(
-            "category",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ]));
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(long_text),
-            Arc::new(short_text),
-            Arc::new(category),
-        ],
-    )
-    .unwrap()
+    for (field, arrow_field) in table.schema().iter().zip(batch.schema().fields()) {
+        assert_eq!(
+            arrow_field.name(),
+            &field.name,
+            "column name drift in the Arrow export"
+        );
+        let expected = match field.dtype {
+            ArrowType::Int32 => DataType::Int32,
+            ArrowType::Int64 => DataType::Int64,
+            ArrowType::Float32 => DataType::Float32,
+            ArrowType::Float64 => DataType::Float64,
+            ArrowType::String => DataType::Utf8,
+            #[cfg(not(feature = "default_categorical_8"))]
+            ArrowType::Dictionary(CategoricalIndexType::UInt32) => {
+                DataType::Dictionary(Box::new(DataType::UInt32), Box::new(DataType::Utf8))
+            }
+            #[cfg(feature = "default_categorical_8")]
+            ArrowType::Dictionary(CategoricalIndexType::UInt8) => {
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+            }
+            ref other => panic!("bench shapes do not cover the {:?} column type", other),
+        };
+        assert_eq!(
+            arrow_field.data_type(),
+            &expected,
+            "type drift in the Arrow export for column {}",
+            field.name
+        );
+    }
 }
 
-fn wide_batch(n_rows: usize) -> RecordBatch {
-    let mut fields: Vec<ArrowField> = Vec::with_capacity(WIDE_GROUP_SIZE * 4);
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(WIDE_GROUP_SIZE * 4);
 
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("i32_{:03}", k),
-            DataType::Int32,
-            false,
-        ));
-        let arr = Int32Array::from(
-            (0..n_rows)
-                .map(|i| (i as i32).wrapping_add(k as i32))
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("i64_{:03}", k),
-            DataType::Int64,
-            false,
-        ));
-        let arr = Int64Array::from(
-            (0..n_rows)
-                .map(|i| (i as i64).wrapping_mul(k as i64 + 1))
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("f32_{:03}", k),
-            DataType::Float32,
-            false,
-        ));
-        let arr = Float32Array::from(
-            (0..n_rows)
-                .map(|i| i as f32 + k as f32 * 0.125)
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("f64_{:03}", k),
-            DataType::Float64,
-            false,
-        ));
-        let arr = Float64Array::from(
-            (0..n_rows)
-                .map(|i| i as f64 + k as f64 * 0.5)
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-
-    let schema = Arc::new(ArrowSchema::new(fields));
-    RecordBatch::try_new(schema, columns).unwrap()
-}
-
-/// Minimal Flight service. `GetFlightInfo` describes an ordered dataset split
-/// across the requested number of endpoints. `DoGet` returns the pre-built
-/// batch repeated the number of times its endpoint ticket requests.
+/// Minimal Flight service for the benchmark workloads. `GetFlightInfo`
+/// describes an ordered dataset split across the requested number of
+/// endpoints.
 ///
-/// `single_message` raises the flight-data size so each batch ships as one
-/// gRPC message instead of the encoder's default 2 MiB slices. Used for the
-/// message-size sensitivity comparison.
+/// `DoGet` serves two callers. The loopback benchmark sends a plain repeat
+/// count in its ticket and receives the pre-built batch that many times.
+/// The ECS rig's endpoint tickets also carry a partition index, so each
+/// endpoint receives its contiguous range of sequenced batches, which the
+/// sink verifies for ordered, complete delivery.
 #[derive(Clone)]
 pub struct BenchFlightService {
     pub batch: Arc<RecordBatch>,
-    pub single_message: bool,
 }
 
 #[tonic::async_trait]
@@ -324,25 +185,68 @@ impl FlightService for BenchFlightService {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
-        let n = match ticket.ticket.len() {
-            // The loopback benchmark calls DoGet directly.
-            8 => u64::from_le_bytes(ticket.ticket.as_ref().try_into().unwrap()),
-            // ECS endpoint tickets additionally identify the logical partition.
-            17 => u64::from_le_bytes(ticket.ticket[0..8].try_into().unwrap()),
+        let (n, start_seq) = match ticket.ticket.len() {
+            // The loopback benchmark calls DoGet directly and receives the
+            // pre-built batch repeated `n` times.
+            8 => (u64::from_le_bytes(ticket.ticket.as_ref().try_into().unwrap()), None),
+            // ECS endpoint tickets additionally identify the logical
+            // partition, which anchors the endpoint's sequence range.
+            17 => {
+                let n = u64::from_le_bytes(ticket.ticket[0..8].try_into().unwrap());
+                let idx = u64::from_le_bytes(ticket.ticket[8..16].try_into().unwrap());
+                (n, Some(idx * n))
+            }
             _ => return Err(Status::invalid_argument("flight ticket must be 8 or 17 bytes")),
         };
         let batch = Arc::clone(&self.batch);
-        let batch_stream = stream::iter((0..n).map(move |_| {
-            Ok::<RecordBatch, arrow_flight::error::FlightError>((*batch).clone())
+        let batch_stream = stream::iter((0..n).map(move |b| match start_seq {
+            None => Ok((*batch).clone()),
+            // Batch `seq` regenerates the leading i32 column to hold
+            // `seq + i` at row `i`, which mirrors `replay_batch_table` on
+            // the Lightstream side. The remaining columns stay shared with
+            // the base export, and the column builds as the stream is
+            // polled, so the work lands inside the timed transfer on both
+            // transports.
+            Some(start) => {
+                let seq = start + b;
+                let rows = batch.num_rows();
+                let first = Int32Array::from_iter_values(
+                    (0..rows).map(|i| (seq as i32).wrapping_add(i as i32)),
+                );
+                let mut cols = batch.columns().to_vec();
+                cols[0] = Arc::new(first) as ArrayRef;
+                RecordBatch::try_new(batch.schema(), cols).map_err(FlightError::from)
+            }
         }));
-        // Default: the encoder keeps its shipped flight-data size, so batches
-        // above 2 MiB split into multiple messages per Arrow Flight's own
-        // tuning. Single-message mode raises the limit for the sensitivity
-        // comparison.
-        let mut builder = FlightDataEncoderBuilder::new();
-        if self.single_message {
-            builder = builder.with_max_flight_data_size(FLIGHT_MAX_MESSAGE_BYTES);
-        }
+        // The encoder keeps its default flight-data size, so batches above
+        // 2 MiB split into multiple messages per Arrow Flight's own tuning.
+        // Resending dictionaries ensures Flight uses the more efficient
+        // dictionary-encoded representation rather than defaulting to
+        // actual strings for compatibility reasons. Per the upstream
+        // documentation at
+        // https://docs.rs/arrow-flight/latest/arrow_flight/encode/enum.DictionaryHandling.html
+        //
+        // "Variants
+        //
+        //  Hydrate
+        //  Expands to the underlying type (default). This likely sends more
+        //  data over the network but requires less memory (dictionaries are
+        //  not tracked) and is more compatible with other arrow flight
+        //  client implementations that may not support DictionaryEncoding
+        //
+        //  See also:
+        //  https://github.com/apache/arrow-rs/issues/1206
+        //
+        //  Resend
+        //  Send dictionary FlightData with every RecordBatch that contains
+        //  a DictionaryArray. See Self::Hydrate for more tradeoffs. No
+        //  attempt is made to skip sending the same (logical) dictionary
+        //  values twice.
+        //
+        //  This requires identifying the different dictionaries in use and
+        //  assigning them unique IDs"
+        let builder = FlightDataEncoderBuilder::new()
+            .with_dictionary_handling(DictionaryHandling::Resend);
         let flight_data = builder
             .build(batch_stream)
             .map_err(|err| Status::internal(format!("flight encode failure: {err}")));

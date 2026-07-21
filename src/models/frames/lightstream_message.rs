@@ -48,12 +48,14 @@ pub enum LightstreamMessage {
         /// The raw payload bytes.
         payload: Vec<u8>,
     },
-    /// A decoded Arrow table.
+    /// An Arrow table, carried as a view. The writer sends any row
+    /// window this way and the reader wraps each decoded table as the
+    /// full-width view of itself.
     Table {
         /// The registered type's tag.
         tag: u8,
-        /// The decoded table.
-        table: minarrow::Table,
+        /// The table view.
+        table: minarrow::TableV,
     },
 }
 
@@ -81,8 +83,8 @@ impl LightstreamMessage {
         }
     }
 
-    /// Get the table if this is a `Table` variant.
-    pub fn table(&self) -> Option<&minarrow::Table> {
+    /// Get the table view if this is a `Table` variant.
+    pub fn table(&self) -> Option<&minarrow::TableV> {
         match self {
             Self::Table { table, .. } => Some(table),
             _ => None,
@@ -90,9 +92,11 @@ impl LightstreamMessage {
     }
 
     /// Consume this value and return the table if it is a `Table` variant.
+    /// A full-width view returns its table through a reference-count
+    /// bump, so reader-decoded messages materialise without copying.
     pub fn into_table(self) -> Option<minarrow::Table> {
         match self {
-            Self::Table { table, .. } => Some(table),
+            Self::Table { table, .. } => Some(table.to_table()),
             _ => None,
         }
     }

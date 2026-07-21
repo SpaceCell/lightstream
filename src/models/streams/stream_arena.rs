@@ -352,7 +352,7 @@ mod tests {
         let start = arena.write_pos();
         arena.extend_from_slice(b"hello").unwrap();
 
-        // Create a window for the data portion
+        // Create a window over the written data
         let shared = arena.window(start, 5);
         assert_eq!(shared.as_slice(), b"hello");
         assert_eq!(arena.write_pos(), 5);

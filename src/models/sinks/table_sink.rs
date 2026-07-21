@@ -19,7 +19,7 @@ use crate::enums::IPCMessageProtocol;
 use crate::models::codecs::ipc::ArrowIpcCodec;
 use crate::models::writers::ipc::table_stream::TableStreamWriter;
 use crate::traits::stream_buffer::StreamBuffer;
-use minarrow::{Field, Table, Vec64};
+use minarrow::{Field, TableV, Vec64};
 use std::io;
 use tokio::io::AsyncWrite;
 
@@ -106,11 +106,11 @@ where
         &mut self.destination
     }
 
-    /// Encode `table` into the pending frame buffer, attaching `custom_metadata`
-    /// to its record batch message.
+    /// Encode the table view into the pending frame buffer, attaching
+    /// `custom_metadata` to its record batch message.
     pub(crate) fn encode_frame(
         &mut self,
-        table: &Table,
+        view: &TableV,
         custom_metadata: Option<&[(String, String)]>,
     ) -> io::Result<()> {
         if self.protocol == IPCMessageProtocol::Stream {
@@ -122,19 +122,19 @@ where
                 buf.drain(0..len);
             }
             self.codec
-                .encode_stream_batch(table, &mut buf, 0, custom_metadata)?;
+                .encode_stream_batch(view, &mut buf, 0, custom_metadata)?;
             self.frame_buf = Some(buf);
             self.frame_pos = 0;
         } else if let Some(writer) = &mut self.file_writer {
             // The File protocol routes through the frame-by-frame writer that
             // tracks footer blocks.
-            writer.write(table)?;
+            writer.write(view)?;
         }
         Ok(())
     }
 }
 
-impl<W, B> Sink<Table> for GTableSink<W, B>
+impl<W, B> Sink<TableV> for GTableSink<W, B>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
     B: StreamBuffer + std::fmt::Debug + Unpin + 'static,
@@ -145,8 +145,8 @@ where
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(self: Pin<&mut Self>, table: Table) -> Result<(), Self::Error> {
-        self.get_mut().encode_frame(&table, None)
+    fn start_send(self: Pin<&mut Self>, view: TableV) -> Result<(), Self::Error> {
+        self.get_mut().encode_frame(&view, None)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

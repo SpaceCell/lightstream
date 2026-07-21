@@ -18,7 +18,7 @@
 use std::future::Future;
 use std::io;
 
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, TableV};
 
 /// Shared writing interface for all transport-level Arrow IPC writers.
 pub trait IPCTransportWriter {
@@ -29,7 +29,10 @@ pub trait IPCTransportWriter {
     fn register_dictionary(&mut self, dict_id: i64, values: Vec<String>);
 
     /// Write a single table and flush.
-    fn write_table(&mut self, table: Table) -> impl Future<Output = io::Result<()>> + Send;
+    fn write_table(
+        &mut self,
+        table: impl Into<TableV> + Send,
+    ) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Write all tables and close.
     fn write_all_tables(

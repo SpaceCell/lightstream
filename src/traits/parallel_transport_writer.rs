@@ -13,7 +13,7 @@
 use std::future::Future;
 use std::io;
 
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, TableV};
 
 /// Arrow `custom_metadata` key carrying the per-table sequence id that the
 /// ordered parallel writers attach and the parallel readers surface. The
@@ -30,7 +30,10 @@ pub trait ParallelTransportWriter {
     fn stream_count(&self) -> usize;
 
     /// Writes a table to the next stream in round-robin order.
-    fn write_table(&mut self, table: Table) -> impl Future<Output = io::Result<()>> + Send;
+    fn write_table(
+        &mut self,
+        table: impl Into<TableV> + Send,
+    ) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Writes all tables, distributing them across the available streams.
     fn write_all_tables(

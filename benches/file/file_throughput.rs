@@ -190,7 +190,7 @@ fn bench_file_throughput(c: &mut Criterion) {
     group.bench_function("read_mmap_warm", |b| {
         use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
         b.iter(|| {
-            let reader = MmapTableReader::open(&read_path, false).unwrap();
+            let reader = MmapTableReader::open(&read_path).unwrap();
             assert_eq!(reader.num_batches(), BENCH_BATCHES);
             for i in 0..reader.num_batches() {
                 let batch = reader.read_batch(i).unwrap();
@@ -220,7 +220,7 @@ fn bench_file_throughput(c: &mut Criterion) {
             }
             drop(f);
 
-            let reader = MmapTableReader::open(&read_path, false).unwrap();
+            let reader = MmapTableReader::open(&read_path).unwrap();
             assert_eq!(reader.num_batches(), BENCH_BATCHES);
             for i in 0..reader.num_batches() {
                 let batch = reader.read_batch(i).unwrap();

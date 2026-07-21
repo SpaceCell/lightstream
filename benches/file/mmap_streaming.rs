@@ -318,7 +318,7 @@ fn cleanup_on_exit() -> bool {
 // ---------------------------------------------------------------------------
 
 fn sum_lightstream_mmap(path: &PathBuf, n_batches: usize) -> f64 {
-    let reader = MmapTableReader::open(path, false).unwrap();
+    let reader = MmapTableReader::open(path).unwrap();
     let mut sum = 0.0f64;
     for i in 0..n_batches {
         let batch = reader.read_batch(i).unwrap();
@@ -341,7 +341,7 @@ fn sum_lightstream_file(path: &PathBuf, n_batches: usize) -> f64 {
 // of the projected batch.
 
 fn sum_lightstream_mmap_projected(path: &PathBuf, n_batches: usize) -> f64 {
-    let reader = MmapTableReader::open(path, false).unwrap();
+    let reader = MmapTableReader::open(path).unwrap();
     let mut sum = 0.0f64;
     for i in 0..n_batches {
         let batch = reader.read_batch_cols(i, &[VALUES_COL_NAME]).unwrap();
@@ -405,7 +405,7 @@ fn sum_arrow_rs_file(path: &PathBuf, projection: Option<Vec<usize>>) -> f64 {
 // cost from the f64 add loop in the corresponding `_warm` sum benchmarks.
 
 fn decode_only_lightstream_mmap(path: &PathBuf, n_batches: usize) -> u64 {
-    let reader = MmapTableReader::open(path, false).unwrap();
+    let reader = MmapTableReader::open(path).unwrap();
     let mut touched = 0u64;
     for i in 0..n_batches {
         let batch = reader.read_batch(i).unwrap();

@@ -27,7 +27,7 @@ use std::io;
 use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, TableV};
 use tokio::io::Stdout;
 
 use crate::compression::Compression;
@@ -73,8 +73,8 @@ impl IPCTransportWriter for StdoutTableWriter {
     }
 
     /// Write a single table and flush.
-    async fn write_table(&mut self, table: Table) -> io::Result<()> {
-        SinkExt::send(&mut self.sink, table).await?;
+    async fn write_table(&mut self, table: impl Into<TableV> + Send) -> io::Result<()> {
+        SinkExt::send(&mut self.sink, table.into()).await?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
@@ -83,7 +83,7 @@ impl IPCTransportWriter for StdoutTableWriter {
     async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
-            SinkExt::send(&mut sink, table).await?;
+            SinkExt::send(&mut sink, table.into()).await?;
         }
         SinkExt::close(&mut sink).await?;
         Ok(())

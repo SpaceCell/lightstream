@@ -15,29 +15,44 @@
 //! byte to the source (`C` for cold, `W` for warm or memory), keeping the
 //! two sides' phase order in lockstep.
 //!
-//! Under `memory` each cell interleaves the transports run by run. Under
-//! `nvme` each transport runs as a block per cell: one cold pass with the
+//! Under `memory` (the standard setting that measures the transport and protocol
+//! performance), each cell interleaves the transports run by run. Due to cost,
+//! most users should consider `memory`, as `nvme` is trivial to run on localhost
+//! via the separate benchmarks, and does not an EC2 instance. 
+//! 
+//! Under `nvme` (included for a full 'get data off disk and send it, using Lightstream's
+//! custom native arrow readers and Arrow-Rs's Arrow reader for Flight), 
+//! each transport runs as a block per cell: one cold pass with the
 //! source's files evicted from the page cache first, then `runs` warm passes
 //! over the cached files. Cold passes report `cache=cold`, warm passes
 //! `cache=warm`, and the cell medians cover the warm passes only.
 //!
-//! Each transport delivers the strongest contract it defines:
+//! Each transport provides the strongest ordering guarantee defined by its
+//! protocol:
 //!
-//! * Lightstream returns one globally ordered result. Each protocol
-//!   connection announces its index at open, so the `Ordered` merge holds
-//!   regardless of the order the connections were accepted.
-//! * Flight endpoints are consumed concurrently and independently, since
-//!   Flight defines no cross-endpoint order for a partitioned dataset -
-//!   each endpoint carries a contiguous range, so a globally ordered read
-//!   would serialise the endpoints. Each endpoint verifies its own range
-//!   in order.
+//! * Lightstream returns a single globally ordered result. Each protocol
+//!   connection announces its index when opened, so an `Ordered` merge
+//!   preserves global order regardless of the order in which connections are
+//!   accepted.
 //!
-//! Delivery is verified from the data. Under `nvme` every batch's first
-//! column carries its global sequence: Lightstream must deliver files,
-//! record batches and row windows in dataset order, and each Flight
-//! endpoint must deliver its range in order and complete. Under `memory`
-//! every send carries the one shared bench table, so the sink asserts the
-//! received row totals.
+//! * Flight endpoints are consumed concurrently and independently because
+//!   Flight does not define ordering across endpoints in a partitioned dataset.
+//!   Each endpoint contains a contiguous range and preserves the order of its
+//!   own batches, but the final set of batches is not globally reordered during
+//!   reassembly.
+//!
+//!   Producing globally ordered Flight output in this benchmark would require
+//!   either a single TCP connection, which would unfairly constrain Flight's
+//!   parallelism, or custom reordering logic. The latter was found to introduce
+//!   head-of-line blocking. Global reordering is therefore intentionally
+//!   omitted to avoid distorting Flight's benchmark results and because it is
+//!   not provided by the Flight implementation itself.
+//!
+//! Delivery is verified from the data. Under both data sources every
+//! batch's first column carries its global sequence: Lightstream must
+//! deliver record batches and row windows in dataset order, which under
+//! `nvme` spans the replay files in file order, and each Flight endpoint
+//! must deliver its contiguous range in order and complete.
 //!
 //! Each transfer records:
 //!
@@ -69,7 +84,7 @@
 use std::time::{Duration, Instant};
 
 use arrow::array::{Array as ArrowArray, Int32Array};
-use arrow_flight::{FlightClient, FlightDescriptor, FlightEndpoint};
+use arrow_flight::{FlightClient, FlightDescriptor};
 use arrow_flight::flight_service_client::FlightServiceClient;
 use futures::future::try_join_all;
 use futures::stream::StreamExt;
@@ -86,7 +101,7 @@ mod bench_helpers;
 #[path = "../common/arrow_flight_bench.rs"]
 mod arrow_flight_bench;
 
-use arrow_flight_bench::{FLIGHT_HTTP2_WINDOW, FLIGHT_MAX_MESSAGE_BYTES};
+use arrow_flight_bench::FLIGHT_HTTP2_WINDOW;
 use bench_helpers::{
     BenchShape, batches_per_stream_for_budget, bench_schema, logical_payload_bytes_shape,
     make_bench_table_shape,
@@ -253,14 +268,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shape = args.shape.label();
     let data = args.data_source.label();
-    // Tags Lightstream nvme RESULT lines so size-limited and whole-batch
-    // replays are distinguishable in the summary. Flight replays are
-    // unaffected by the batch size limit, so their lines stay untagged.
-    let ls_batch = if args.max_batch_size > 0 && args.data_source == DataSource::Nvme {
-        format!(" max_batch_size={}", args.max_batch_size)
-    } else {
-        String::new()
-    };
     let per_table_bytes = logical_payload_bytes_shape(args.shape, args.rows, 1);
     // The protocol reader registers the bench table type up front, mirroring
     // the source's registration, so both sides agree on the wire tag.
@@ -392,7 +399,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await?;
                 println!(
-                    "RESULT protocol=lightstream shape={shape} data={data}{ls_batch} cache=cold rows={} streams={streams} batches={total} gib_per_s={cold_gib:.3}",
+                    "RESULT protocol=lightstream shape={shape} data={data} cache=cold rows={} streams={streams} batches={total} gib_per_s={cold_gib:.3}",
                     args.rows
                 );
                 report_series(
@@ -413,7 +420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?;
                     println!(
-                        "RESULT protocol=lightstream shape={shape} data={data}{ls_batch} cache=warm rows={} streams={streams} batches={total} run={run} gib_per_s={ls_gib:.3}",
+                        "RESULT protocol=lightstream shape={shape} data={data} cache=warm rows={} streams={streams} batches={total} run={run} gib_per_s={ls_gib:.3}",
                         args.rows
                     );
                     report_series(
@@ -432,7 +439,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let (min, median, max) = spread(&mut ls_runs);
         println!(
-            "RESULT protocol=lightstream shape={shape} data={data}{ls_batch}{summary_cache} rows={} streams={streams} batches={total} stat=median runs={} gib_per_s={median:.3} min_gib_per_s={min:.3} max_gib_per_s={max:.3}",
+            "RESULT protocol=lightstream shape={shape} data={data}{summary_cache} rows={} streams={streams} batches={total} stat=median runs={} gib_per_s={median:.3} min_gib_per_s={min:.3} max_gib_per_s={max:.3}",
             args.rows, args.runs
         );
     }
@@ -443,12 +450,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Request one Flight dataset, fetch its endpoints concurrently over
 /// separate Tonic gRPC connections, and consume every stream as it arrives.
-/// Endpoints are read independently with no cross-endpoint ordering, which is
-/// the delivery contract Flight defines for partitioned datasets. Timing
-/// starts immediately before `GetFlightInfo` and ends after the final batch
-/// is decoded and verified, so discovery, endpoint connections, `DoGet` and
-/// decoding are all included. Each decoded record batch contributes one
-/// arrival timestamp.
+///
+/// Endpoints are read independently with no cross-endpoint ordering, which
+/// is the delivery contract Flight defines for partitioned datasets.
+///
+/// The gRPC channels open before the timer, matching the Lightstream pass,
+/// which accepts its transport connections before its own timer starts.
+/// Timing starts immediately before `GetFlightInfo` and ends after the
+/// final batch is decoded and verified, so discovery, `DoGet` and decoding
+/// are all included.
+///
+/// Each decoded record batch contributes one arrival timestamp.
 async fn flight_phase(
     source_flight_addr: &str,
     data_source: DataSource,
@@ -460,6 +472,15 @@ async fn flight_phase(
 ) -> Result<(f64, Vec<u64>), Box<dyn std::error::Error>> {
     let metadata_channel = flight_connect_retry(source_flight_addr, data_source).await?;
     let mut metadata_client = flight_client(metadata_channel);
+
+    // One channel per endpoint opens before the timer so connection setup
+    // stays outside the timed region. Connection attempts run concurrently.
+    // The source's services publish location-free endpoints, meaning every
+    // `DoGet` goes to the source address these channels already reach.
+    let channels = try_join_all(
+        (0..streams).map(|_| flight_connect_retry(source_flight_addr, data_source)),
+    )
+    .await?;
 
     let start = Instant::now();
     let mut command = Vec::with_capacity(17);
@@ -475,25 +496,29 @@ async fn flight_phase(
         "Flight endpoint count does not match the request"
     );
 
-    // Connection attempts run concurrently, while try_join_all preserves the
-    // endpoint order returned by FlightInfo.
-    let endpoints = try_join_all(info.endpoint.into_iter().map(|endpoint| async move {
-        let ticket = endpoint
-            .ticket
-            .clone()
-            .ok_or("Flight endpoint has no ticket")?;
-        let channel =
-            flight_connect_endpoint_retry(source_flight_addr, data_source, &endpoint).await?;
-        Ok::<_, Box<dyn std::error::Error>>((ticket, channel))
-    }))
-    .await?;
+    // Tickets pair with the pre-opened channels in the endpoint order
+    // FlightInfo returned.
+    let endpoints = info
+        .endpoint
+        .into_iter()
+        .zip(channels)
+        .map(|(endpoint, channel)| {
+            assert!(
+                endpoint.location.is_empty(),
+                "endpoint carries a location, which the pre-opened channel cannot serve"
+            );
+            let ticket = endpoint
+                .ticket
+                .clone()
+                .ok_or("Flight endpoint has no ticket")?;
+            Ok::<_, Box<dyn std::error::Error>>((ticket, channel))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    // Each endpoint is decoded and verified on its own task so all streams
-    // draw down the wire concurrently. Draining endpoints in `FlightInfo`
-    // order would serialise the transfer instead: an endpoint carries a
-    // contiguous range of the dataset, so globally ordered consumption
-    // cannot release an endpoint's batches until every earlier endpoint has
-    // fully arrived. Every endpoint still verifies its own range in order.
+    // Each endpoint is decoded and verified on its own task, so every
+    // stream draws down the wire at the same time. Draining them in
+    // `FlightInfo` order would serialise the transfer. Each endpoint still
+    // verifies its own range in order.
     let mut handles = Vec::with_capacity(streams);
     for (endpoint_idx, (ticket, channel)) in endpoints.into_iter().enumerate() {
         handles.push(tokio::spawn(async move {
@@ -502,50 +527,37 @@ async fn flight_phase(
             let mut stamps: Vec<Instant> = Vec::with_capacity(batches_per_stream as usize);
             let mut batch_rows = 0usize;
             let mut batches_done = 0u64;
-            let mut total_rows = 0u64;
             while let Some(item) = stream.next().await {
                 let rb = item.unwrap();
                 stamps.push(Instant::now());
-                if data_source == DataSource::Nvme {
-                    let col = rb
-                        .column(0)
-                        .as_any()
-                        .downcast_ref::<Int32Array>()
-                        .expect("replay batch missing leading i32 column");
-                    let seq = endpoint_idx as u64 * batches_per_stream + batches_done;
-                    let expected = (seq as i32).wrapping_add(batch_rows as i32);
-                    assert_eq!(
-                        col.value(0),
-                        expected,
-                        "replay verification failed for endpoint {endpoint_idx}"
-                    );
-                    batch_rows += rb.num_rows();
-                    assert!(batch_rows <= rows, "flight record batch crosses a source batch");
-                    if batch_rows == rows {
-                        batches_done += 1;
-                        batch_rows = 0;
-                    }
+                let col = rb
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .expect("sequenced batch missing leading i32 column");
+                let seq = endpoint_idx as u64 * batches_per_stream + batches_done;
+                let expected = (seq as i32).wrapping_add(batch_rows as i32);
+                assert_eq!(
+                    col.value(0),
+                    expected,
+                    "sequence verification failed for endpoint {endpoint_idx}"
+                );
+                batch_rows += rb.num_rows();
+                assert!(batch_rows <= rows, "flight record batch crosses a source batch");
+                if batch_rows == rows {
+                    batches_done += 1;
+                    batch_rows = 0;
                 }
-                total_rows += rb.num_rows() as u64;
                 std::hint::black_box(rb.columns());
             }
-            match data_source {
-                DataSource::Memory => assert_eq!(
-                    total_rows,
-                    batches_per_stream * rows as u64,
-                    "flight row count mismatch for endpoint {endpoint_idx}"
-                ),
-                DataSource::Nvme => {
-                    assert_eq!(
-                        batches_done, batches_per_stream,
-                        "flight batch count mismatch for endpoint {endpoint_idx}"
-                    );
-                    assert_eq!(
-                        batch_rows, 0,
-                        "flight endpoint {endpoint_idx} ended mid-batch"
-                    );
-                }
-            }
+            assert_eq!(
+                batches_done, batches_per_stream,
+                "flight batch count mismatch for endpoint {endpoint_idx}"
+            );
+            assert_eq!(
+                batch_rows, 0,
+                "flight endpoint {endpoint_idx} ended mid-batch"
+            );
             stamps
         }));
     }
@@ -563,51 +575,7 @@ async fn flight_phase(
 }
 
 fn flight_client(channel: Channel) -> FlightClient {
-    let inner = FlightServiceClient::new(channel)
-        .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-        .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
-    FlightClient::new_from_inner(inner)
-}
-
-/// Open a fresh Tonic channel for one Flight endpoint.
-///
-/// Location handling:
-///
-/// * Empty and reuse locations reconnect to the server that returned the
-///   `FlightInfo`.
-/// * Explicit gRPC locations are converted to the URI scheme Tonic expects.
-async fn flight_connect_endpoint_retry(
-    source_flight_addr: &str,
-    data_source: DataSource,
-    endpoint: &FlightEndpoint,
-) -> Result<Channel, Box<dyn std::error::Error>> {
-    let uri = if endpoint.location.is_empty()
-        || endpoint
-            .location
-            .iter()
-            .any(|location| location.uri == "arrow-flight-reuse-connection://?")
-    {
-        format!("http://{source_flight_addr}")
-    } else {
-        endpoint
-            .location
-            .iter()
-            .find_map(|location| {
-                location
-                    .uri
-                    .strip_prefix("grpc+tcp://")
-                    .or_else(|| location.uri.strip_prefix("grpc://"))
-                    .map(|addr| format!("http://{addr}"))
-                    .or_else(|| {
-                        location
-                            .uri
-                            .strip_prefix("grpc+tls://")
-                            .map(|addr| format!("https://{addr}"))
-                    })
-            })
-            .ok_or("Flight endpoint has no supported gRPC location")?
-    };
-    flight_connect_uri_retry(&uri, data_source).await
+    FlightClient::new_from_inner(FlightServiceClient::new(channel))
 }
 
 /// Connect the Flight channel, retrying until the source's server is up. The
@@ -683,38 +651,35 @@ async fn lightstream_phase(
         None,
     )
     .await?;
+    // The memory workload forms one contiguous sequence of batches, where
+    // nvme spans one replay file per stream. Both verify through the same
+    // window checks against the leading sequence column.
+    let (files_expected, batches_per_file) = match data_source {
+        DataSource::Memory => (1usize, total),
+        DataSource::Nvme => (streams, batches_per_stream),
+    };
+
     let start = Instant::now();
     ctrl.write_all(&[pulse]).await?;
-    let mut received = 0u64;
     while let Some(item) = reader.next().await {
         let msg = item?;
         let Some(table) = msg.into_table() else {
             return Err("lightstream frame is not a table".into());
         };
         stamps.push(Instant::now());
-        match data_source {
-            DataSource::Memory => assert_eq!(table.n_rows, rows, "row count mismatch"),
-            DataSource::Nvme => verify_replay_table(
-                &table,
-                rows,
-                batches_per_stream,
-                &mut file_idx,
-                &mut batch_idx,
-                &mut row_offset,
-            ),
-        }
+        verify_sequenced_table(
+            &table,
+            rows,
+            batches_per_file,
+            &mut file_idx,
+            &mut batch_idx,
+            &mut row_offset,
+        );
         std::hint::black_box(&table.cols);
-        received += 1;
     }
-    if data_source == DataSource::Memory {
-        assert_eq!(received, total, "lightstream batch count mismatch");
-    }
-
-    if data_source == DataSource::Nvme {
-        assert_eq!(file_idx, streams, "not every replay file arrived");
-        assert_eq!(batch_idx, 0, "replay ended between files");
-        assert_eq!(row_offset, 0, "replay ended within a record batch");
-    }
+    assert_eq!(file_idx, files_expected, "the dataset did not fully arrive");
+    assert_eq!(batch_idx, 0, "the transfer ended between batches");
+    assert_eq!(row_offset, 0, "the transfer ended within a record batch");
     let elapsed = start.elapsed();
     let offsets = stamps
         .iter()
@@ -723,9 +688,11 @@ async fn lightstream_phase(
     Ok((logical_gib / elapsed.as_secs_f64(), offsets))
 }
 
-/// Verify that a replay table starts at the next expected dataset row.
-/// Advances the file, record-batch and row offsets after a successful check.
-fn verify_replay_table(
+/// Verify that a sequenced table arrived in order: its leading column must
+/// start at the exact next expected dataset row, so any reordered, missing
+/// or duplicated delivery fails the assertion. Advances the file,
+/// record-batch and row offsets after a successful check.
+fn verify_sequenced_table(
     table: &Table,
     rows: usize,
     batches_per_file: u64,
@@ -735,11 +702,11 @@ fn verify_replay_table(
 ) {
     let first = match &table.cols[0].array {
         Array::NumericArray(NumericArray::Int32(a)) => a.data[0] as i64,
-        _ => panic!("replay batch missing leading i32 column"),
+        _ => panic!("sequenced batch missing leading i32 column"),
     };
     let global_batch = *file_idx as u64 * batches_per_file + *batch_idx;
     let expected = (global_batch as i32).wrapping_add(*row_offset as i32);
-    assert_eq!(first as i32, expected, "replay table arrived out of order");
+    assert_eq!(first as i32, expected, "sequenced table arrived out of order");
     assert!(
         table.n_rows <= rows - *row_offset,
         "table overruns its batch"

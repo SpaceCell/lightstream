@@ -275,6 +275,9 @@ pub mod models {
 
             /// Streamed IPC table reader
             pub mod table;
+
+            /// Row windowing over decoded record batches
+            pub(crate) mod window;
         }
 
         /// CSV reader utilities.

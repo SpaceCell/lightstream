@@ -58,7 +58,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -105,7 +105,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -150,7 +150,7 @@ fn bench_throughput(c: &mut Criterion) {
                     let mut conn = WebSocketLightstreamConnection::from_websocket(ws, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -224,7 +224,7 @@ fn bench_throughput(c: &mut Criterion) {
                     let mut conn = QuicLightstreamConnection::from_quic(recv, send, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -292,7 +292,7 @@ fn bench_throughput(c: &mut Criterion) {
                         WebTransportLightstreamConnection::from_webtransport(recv, send, None);
                     conn.register_table("Data", write_schema);
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -360,7 +360,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -404,7 +404,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();
@@ -483,7 +483,7 @@ fn bench_throughput(c: &mut Criterion) {
                     conn.register_table("Data", write_schema);
 
                     for _ in 0..n {
-                        conn.send_table("Data", &write_table).await.unwrap();
+                        conn.send_table("Data", Arc::clone(&write_table)).await.unwrap();
                     }
                     conn.flush().await.unwrap();
                     conn.shutdown().await.unwrap();

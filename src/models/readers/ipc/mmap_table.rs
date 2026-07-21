@@ -27,18 +27,11 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io;
-#[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 
 use flatbuffers::Vector;
-use minarrow::{
-    Array, Bitmask, BooleanArray, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
-    Integer, IntegerArray, NumericArray, StringArray, SuperTable, Table, TextArray, Vec64,
-};
-#[cfg(feature = "datetime")]
-use minarrow::{DatetimeArray, TemporalArray};
+use minarrow::{Field, SuperTable, Table};
 
 use crate::arrow::file::org::apache::arrow::flatbuf as fbf;
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
@@ -51,6 +44,7 @@ use crate::models::decoders::ipc::parser::{
 };
 use crate::models::decoders::limits::DecodeLimits;
 use crate::models::mmap::MemMap;
+use crate::models::readers::ipc::window::window_table;
 
 /// Footer-declared block entry offsets/lengths for a dictionary or record batch.
 #[derive(Debug, Clone)]
@@ -65,9 +59,8 @@ struct IPCFileBlock {
 
 /// Keeps file handle and mmap region alive together; dereferences to file bytes.
 struct MmapBytes {
-    /// File handle - kept alive for the lifetime of the mapping and
-    /// used for page cache advice on out-of-core reads
-    file: File,
+    /// File handle - kept alive for the lifetime of the mapping
+    _file: File,
     /// Memory-mapped region - 64-byte aligned mapping wrapper
     mmap: Arc<MemMap<64>>,
 }
@@ -99,10 +92,8 @@ impl AsRef<[u8]> for MmapRegionOwner {
     }
 }
 
-// Safety: the inner File is held to keep the mmap alive and to issue page
-// cache advice on its descriptor. No data is read through it after
-// construction and advice syscalls are safe on a shared descriptor, so
-// sharing across threads is safe.
+// Safety: the inner File is held only to keep the mmap alive. No data is
+// read through it after construction, so sharing across threads is safe.
 unsafe impl Send for MmapRegionOwner {}
 unsafe impl Sync for MmapRegionOwner {}
 
@@ -142,9 +133,6 @@ pub struct MmapTableReader {
     /// Offset from original file start to the chosen 64-byte aligned data start
     #[allow(dead_code)]
     aligned_offset: usize,
-    /// Streams the mapping with a bounded resident footprint when true.
-    /// Set through [`Self::open`] for datasets larger than RAM.
-    out_of_core: bool,
 }
 
 impl MmapTableReader {
@@ -152,15 +140,12 @@ impl MmapTableReader {
     ///
     /// Parses footer/schema and block tables.
     ///
-    /// Set `out_of_core` to true when the dataset is larger than RAM.
-    /// The reader then streams the mapping with a bounded resident
-    /// footprint. The kernel's sequential readahead keeps the disk busy
-    /// ahead of the read cursor while the reader releases pages once
-    /// the cursor moves past them, so sequential reads hold disk speed
-    /// instead of stalling in page reclaim when memory fills. Leave it
-    /// false when the file fits in RAM, as released pages fault back in
-    /// from disk on any later pass rather than staying resident.
-    pub fn open<P: AsRef<Path>>(path: P, out_of_core: bool) -> io::Result<Self> {
+    /// The mapping reads through the OS page cache, so the file should
+    /// fit in RAM. For datasets larger than RAM use
+    /// [`FileTableReader`](crate::models::readers::ipc::file_table::FileTableReader),
+    /// whose buffered reads leave the page cache cheaply reclaimable
+    /// instead of stalling page faults in reclaim when memory fills.
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(&path)?;
         let meta = file.metadata()?;
         let file_len = meta.len() as usize;
@@ -185,7 +170,7 @@ impl MmapTableReader {
 
         // MMAP entire file and find 64-byte aligned data region
         let mmap = Arc::new(MemMap::<64>::open(path_str, 0, file_len)?);
-        let region = Arc::new(MmapBytes { file, mmap });
+        let region = Arc::new(MmapBytes { _file: file, mmap });
 
         let data = region.as_ref();
 
@@ -307,7 +292,6 @@ impl MmapTableReader {
             record_blocks,
             dictionaries: std::collections::HashMap::new(),
             aligned_offset: aligned_data_offset,
-            out_of_core,
         };
 
         rdr.load_all_dictionaries()?;
@@ -364,36 +348,36 @@ impl MmapTableReader {
         window_table(&table, row_offset, rows)
     }
 
-    /// Read record batch `idx` as row portions sized towards `target_bytes`
+    /// Read record batch `idx` as row windows sized towards `target_bytes`
     /// each, returned as a `SuperTable` of standalone (smaller) batch tables.
     ///
-    /// See [`Self::batch_portions`] for how the row count is derived and
-    /// why a portion can exceed the target. A batch that already fits
-    /// yields one portion sharing the batch's buffers.
-    pub fn read_batch_portion(&self, idx: usize, target_bytes: usize) -> io::Result<SuperTable> {
+    /// See [`Self::batch_windows`] for how the row count is derived and
+    /// why a window can exceed the target. A batch that already fits
+    /// yields one window sharing the batch's buffers.
+    pub fn read_batch_windows(&self, idx: usize, target_bytes: usize) -> io::Result<SuperTable> {
         let mut batches = Vec::new();
-        for portion in self.batch_portions(idx, target_bytes)? {
-            batches.push(Arc::new(portion?));
+        for window in self.batch_windows(idx, target_bytes)? {
+            batches.push(Arc::new(window?));
         }
         Ok(SuperTable::from_batches(batches, None))
     }
 
-    /// Iterate record batch `idx` as row portions sized towards
-    /// `target_bytes` each. As [`Self::read_batch_portion`] without
-    /// collecting, so a streaming consumer holds one portion at a time and
-    /// the map's pages fault in portion by portion.
+    /// Iterate record batch `idx` as row windows sized towards
+    /// `target_bytes` each. As [`Self::read_batch_windows`] without
+    /// collecting, so a streaming consumer holds one window at a time and
+    /// the map's pages fault in window by window.
     ///
     /// The row count derives from the batch's average bytes per row
     /// (`body_bytes / rows`), so `target_bytes` is a target rather than a
-    /// hard ceiling. A portion exceeds it in two cases:
-    ///     1. The portion row count is rounded to a 512-row boundary purposely
+    /// hard ceiling. A window exceeds it in two cases:
+    ///     1. The window row count is rounded to a 512-row boundary purposely
     ///     so bit-packed and fixed-width buffers cut on 64-byte boundaries,
     ///     with a floor of 512 rows including when a single 512-row block is larger
     ///     than `target_bytes`. The 64-bytes is to uphold SIMD compatiblity for
     ///     any calculations that may need to take place on the Arrow data buffers.
-    ///     2. Variable-width columns deviate from the average, so a portion denser
+    ///     2. Variable-width columns deviate from the average, so a window denser
     ///     than the batch mean carries more than the average row size implies.
-    pub fn batch_portions(
+    pub fn batch_windows(
         &self,
         idx: usize,
         target_bytes: usize,
@@ -516,9 +500,6 @@ impl MmapTableReader {
             .record_blocks
             .get(idx)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch idx OOB"))?;
-        if self.out_of_core {
-            self.release_behind_cursor(idx);
-        }
         let data = self.region.as_ref();
         let meta_slice = self.slice_message(data, blk)?;
 
@@ -557,55 +538,6 @@ impl MmapTableReader {
             DecodeLimits::default(),
         )?;
         Ok(table)
-    }
-
-    /// Release pages behind the sequential read cursor for out-of-core
-    /// reads.
-    ///
-    /// Drops the block two positions behind the cursor. Two behind rather
-    /// than one so a batch still queued in a transport writer keeps its
-    /// pages while in flight. The madvise zaps the mapping's page table
-    /// entries and the fadvise then drops the backing page cache pages,
-    /// so the resident window stays bounded to a few blocks and page
-    /// faults never enter direct reclaim. The release rounds inward to
-    /// whole pages so a page straddling a block boundary is never dropped.
-    ///
-    /// Reads ahead of the cursor are served by the kernel's sequential
-    /// readahead, set up with MADV_SEQUENTIAL when the file is mapped.
-    /// Forcing the window forward with MADV_WILLNEED instead disrupts
-    /// that readahead and more than halves throughput.
-    ///
-    /// All calls are advice, so a window that still references a released
-    /// region faults its pages back in from disk.
-    fn release_behind_cursor(&self, idx: usize) {
-        if idx < 2 {
-            return;
-        }
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        let base = self.region.mmap.ptr as usize;
-        let map_len = self.region.mmap.len;
-
-        let prev = &self.record_blocks[idx - 2];
-        let start = (base + prev.offset + page - 1) & !(page - 1);
-        let end =
-            (base + (prev.offset + prev.meta_bytes + prev.body_bytes).min(map_len)) & !(page - 1);
-        if start < end {
-            unsafe {
-                libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_DONTNEED);
-            }
-            // madvise releases the mapping's references. The fadvise then
-            // drops the now-unmapped page cache pages themselves,
-            // returning the memory to the free pool.
-            #[cfg(target_os = "linux")]
-            unsafe {
-                libc::posix_fadvise(
-                    self.region.file.as_raw_fd(),
-                    (start - base) as libc::off_t,
-                    (end - start) as libc::off_t,
-                    libc::POSIX_FADV_DONTNEED,
-                );
-            }
-        }
     }
 
     /// Slice and validate the FlatBuffers message at the given block - checks continuation + size.
@@ -883,7 +815,7 @@ mod tests {
     async fn test_single_batch_roundtrip_mmap() {
         let table = make_all_types_table();
         let temp = write_test_table_to_file(&[table.clone()]).await;
-        let rdr = MmapTableReader::open(&temp.path(), false).unwrap();
+        let rdr = MmapTableReader::open(&temp.path()).unwrap();
         assert_eq!(rdr.num_batches(), 1);
         let table2 = rdr.read_batch(0).unwrap();
 
@@ -972,7 +904,7 @@ mod tests {
     async fn test_read_batch_and_sharedness() {
         let table = make_all_types_table();
         let temp = write_test_table_to_file(&[table.clone()]).await;
-        let rdr = MmapTableReader::open(&temp.path(), false).unwrap();
+        let rdr = MmapTableReader::open(&temp.path()).unwrap();
 
         let t2 = rdr.read_batch(0).unwrap();
         // Note: Currently mmap requires copying data to create Arc<[u8]>
@@ -1045,7 +977,7 @@ mod tests {
         let t2 = make_all_types_table();
         let temp = write_test_table_to_file(&[t1.clone(), t2.clone()]).await;
 
-        let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+        let rdr = MmapTableReader::open(temp.path()).unwrap();
         assert_eq!(rdr.num_batches(), 2);
 
         let supertbl = rdr
@@ -1069,7 +1001,7 @@ mod tests {
     async fn test_big_super_table_iteration_and_owned_conversion() {
         let tables: Vec<Table> = (0..10).map(|_| make_all_types_table()).collect();
         let temp = write_test_table_to_file(&tables).await;
-        let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+        let rdr = MmapTableReader::open(temp.path()).unwrap();
         let supertbl = rdr.load_batched(None).unwrap();
         assert_eq!(supertbl.batches.len(), 10);
 
@@ -1154,7 +1086,7 @@ mod tests {
         write_tables_to_file(temp.path().to_str().unwrap(), &[table.clone()], schema)
             .await
             .unwrap();
-        let rdr = MmapTableReader::open(&temp.path(), false).unwrap();
+        let rdr = MmapTableReader::open(&temp.path()).unwrap();
 
         // Windows at 512-row starts, including the ragged tail.
         for (off, len) in [(0usize, 512usize), (512, 512), (1024, 1024), (1536, 512)] {
@@ -1168,7 +1100,7 @@ mod tests {
 
         // Batch iteration covers every row once, in order.
         let mut rows = 0usize;
-        for subbatch in rdr.batch_portions(0, 4096).unwrap() {
+        for subbatch in rdr.batch_windows(0, 4096).unwrap() {
             let subbatch = subbatch.unwrap();
             let expected = table.slice_clone(rows, subbatch.n_rows);
             for (w, e) in subbatch.cols.iter().zip(expected.cols.iter()) {
@@ -1179,7 +1111,7 @@ mod tests {
         assert_eq!(rows, n);
 
         // SuperTable variant carries the same total.
-        let st = rdr.read_batch_portion(0, 4096).unwrap();
+        let st = rdr.read_batch_windows(0, 4096).unwrap();
         assert_eq!(st.n_rows(), n);
 
         // Misaligned window start raises an error.
@@ -1190,7 +1122,7 @@ mod tests {
     async fn test_error_on_invalid_batch_index() {
         let table = make_all_types_table();
         let temp = write_test_table_to_file(&[table]).await;
-        let rdr = MmapTableReader::open(temp.path(), false).unwrap();
+        let rdr = MmapTableReader::open(temp.path()).unwrap();
         let err = rdr.read_batch(1000).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
@@ -1204,7 +1136,7 @@ mod tests {
         // Too short for magic + footer length + magic.
         let temp = NamedTempFile::new().unwrap();
         temp.as_file().write_all_at(b"ARROW1", 0).unwrap();
-        assert!(MmapTableReader::open(temp.path(), false).is_err());
+        assert!(MmapTableReader::open(temp.path()).is_err());
 
         // Valid magics but a footer length that exceeds the file.
         let temp = NamedTempFile::new().unwrap();
@@ -1213,7 +1145,7 @@ mod tests {
         bytes.extend_from_slice(&u32::MAX.to_le_bytes());
         bytes.extend_from_slice(b"ARROW1");
         temp.as_file().write_all_at(&bytes, 0).unwrap();
-        assert!(MmapTableReader::open(temp.path(), false).is_err());
+        assert!(MmapTableReader::open(temp.path()).is_err());
 
         // Well-sized but garbage footer bytes.
         let temp = NamedTempFile::new().unwrap();
@@ -1223,88 +1155,6 @@ mod tests {
         bytes.extend_from_slice(&32u32.to_le_bytes());
         bytes.extend_from_slice(b"ARROW1");
         temp.as_file().write_all_at(&bytes, 0).unwrap();
-        assert!(MmapTableReader::open(temp.path(), false).is_err());
-    }
-
-    /// Count via mincore(2) how many of a record block's interior pages
-    /// are resident, returning (resident, total).
-    #[cfg(target_os = "linux")]
-    fn resident_block_pages(rdr: &MmapTableReader, idx: usize) -> (usize, usize) {
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        let blk = &rdr.record_blocks[idx];
-        let base = rdr.region.mmap.ptr as usize;
-        let start = (base + blk.offset + page - 1) & !(page - 1);
-        let end = (base + blk.offset + blk.meta_bytes + blk.body_bytes) & !(page - 1);
-        assert!(start < end, "block too small to hold whole pages");
-        let total = (end - start) / page;
-        let mut vec = vec![0u8; total];
-        let rc = unsafe {
-            libc::mincore(start as *mut libc::c_void, end - start, vec.as_mut_ptr())
-        };
-        assert_eq!(rc, 0, "mincore failed");
-        (vec.iter().filter(|b| **b & 1 == 1).count(), total)
-    }
-
-    /// Sequentially read and touch every batch, then report residency of
-    /// the first and last blocks. Touching the first column faults the
-    /// block's data pages in, so any later non-residency comes from the
-    /// reader's own release advice.
-    #[cfg(target_os = "linux")]
-    fn read_all_then_measure(rdr: &MmapTableReader) -> ((usize, usize), (usize, usize)) {
-        for idx in 0..rdr.num_batches() {
-            let t = rdr.read_batch(idx).unwrap();
-            for col in &t.cols {
-                if let Array::NumericArray(NumericArray::Int64(a)) = &col.array {
-                    let sum: i64 = a.data.iter().sum();
-                    std::hint::black_box(sum);
-                }
-            }
-        }
-        (
-            resident_block_pages(rdr, 0),
-            resident_block_pages(rdr, rdr.num_batches() - 1),
-        )
-    }
-
-    /// Out-of-core reads must release pages behind the cursor while the
-    /// default mode keeps every touched page resident.
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn test_out_of_core_releases_pages_behind_cursor() {
-        use minarrow::arr_i64;
-
-        let n: usize = 40_000;
-        let vals: Vec64<i64> = (0..n as i64).collect();
-        let table = Table::new(
-            "ooc".to_string(),
-            Some(vec![FieldArray::from_arr("vals", arr_i64!(vals))]),
-        );
-        let schema: Vec<Field> = table.schema().iter().map(|f| (**f).clone()).collect();
-        let tables = vec![table; 6];
-        // The system temp dir is often tmpfs, whose pages cannot leave the
-        // page cache, so the file lives under the target directory on a
-        // real filesystem.
-        let temp = NamedTempFile::new_in(concat!(env!("CARGO_MANIFEST_DIR"), "/target")).unwrap();
-        write_tables_to_file(temp.path().to_str().unwrap(), &tables, schema)
-            .await
-            .unwrap();
-        // Dirty pages cannot leave the page cache, so flush the fresh
-        // file before measuring release behaviour.
-        temp.as_file().sync_all().unwrap();
-
-        let rdr = MmapTableReader::open(temp.path(), true).unwrap();
-        let ((first_resident, first_total), (last_resident, _)) = read_all_then_measure(&rdr);
-        assert_eq!(
-            first_resident, 0,
-            "out-of-core left {first_resident}/{first_total} pages of block 0 resident"
-        );
-        assert!(last_resident > 0, "final block should remain resident");
-
-        let rdr = MmapTableReader::open(temp.path(), false).unwrap();
-        let ((first_resident, first_total), _) = read_all_then_measure(&rdr);
-        assert_eq!(
-            first_resident, first_total,
-            "default mode should keep block 0 fully resident"
-        );
+        assert!(MmapTableReader::open(temp.path()).is_err());
     }
 }

@@ -22,7 +22,7 @@ use std::env;
 use std::sync::Arc;
 
 use minarrow::{
-    Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, FloatArray,
+    Array, ArrowType, Buffer, ByteSize, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, Table, TextArray, Vec64, arr_f64, arr_i32, arr_str32,
     ffi::arrow_dtype::CategoricalIndexType,
 };
@@ -205,13 +205,13 @@ pub fn make_bench_table_shape(shape: BenchShape, n_rows: usize) -> Table {
 /// Compute the logical payload size of `n_batches` of `shape` x `n_rows`.
 /// Used as the throughput denominator so reported bytes/sec reflects the
 /// raw source columns rather than the encoded bytes on the wire.
+///
+/// The accounting is minarrow's [`ByteSize::logical_bytes`], so every
+/// benchmark in the suite shares one definition of the payload size.
+/// Callers that already hold the workload table can call `logical_bytes`
+/// on it and get the identical per-batch figure.
 pub fn logical_payload_bytes_shape(shape: BenchShape, n_rows: usize, n_batches: usize) -> u64 {
-    let per_batch = match shape {
-        BenchShape::Mixed => mixed_bytes_per_batch(n_rows),
-        BenchShape::NarrowNumeric => narrow_numeric_bytes_per_batch(n_rows),
-        BenchShape::StringHeavy => string_heavy_bytes_per_batch(n_rows),
-        BenchShape::Wide => wide_bytes_per_batch(n_rows),
-    };
+    let per_batch = make_bench_table_shape(shape, n_rows).logical_bytes();
     (per_batch as u64) * (n_batches as u64)
 }
 
@@ -285,7 +285,7 @@ fn mixed_dict_col_u32(n_rows: usize) -> FieldArray {
         Field {
             name: "category".into(),
             dtype: ArrowType::Dictionary(CategoricalIndexType::UInt32),
-            nullable: true,
+            nullable: false,
             metadata: Default::default(),
         },
         Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
@@ -295,7 +295,7 @@ fn mixed_dict_col_u32(n_rows: usize) -> FieldArray {
                 "green".to_string(),
                 "blue".to_string(),
             ]),
-            null_mask: Some(Bitmask::new_set_all(n_rows, true)),
+            null_mask: None,
         }))),
     )
 }
@@ -307,7 +307,7 @@ fn mixed_dict_col_u8(n_rows: usize) -> FieldArray {
         Field {
             name: "category".into(),
             dtype: ArrowType::Dictionary(CategoricalIndexType::UInt8),
-            nullable: true,
+            nullable: false,
             metadata: Default::default(),
         },
         Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
@@ -317,23 +317,9 @@ fn mixed_dict_col_u8(n_rows: usize) -> FieldArray {
                 "green".to_string(),
                 "blue".to_string(),
             ]),
-            null_mask: Some(Bitmask::new_set_all(n_rows, true)),
+            null_mask: None,
         }))),
     )
-}
-
-fn mixed_bytes_per_batch(n_rows: usize) -> usize {
-    let ids = n_rows * size_of::<i32>();
-    let values = n_rows * size_of::<f64>();
-    let label_offsets = (n_rows + 1) * size_of::<u32>();
-    let label_data: usize = (0..n_rows).map(|i| format!("row_{}", i).len()).sum();
-    let category_indices = n_rows
-        * if cfg!(feature = "default_categorical_8") {
-            size_of::<u8>()
-        } else {
-            size_of::<u32>()
-        };
-    ids + values + label_offsets + label_data + category_indices
 }
 
 // ---------------------------------------------------------------------------
@@ -399,10 +385,6 @@ fn narrow_numeric_table(n_rows: usize) -> Table {
         "bench_narrow_numeric".to_string(),
         Some(vec![id_col, counter_col, price_col, value_col]),
     )
-}
-
-fn narrow_numeric_bytes_per_batch(n_rows: usize) -> usize {
-    n_rows * (size_of::<i32>() + size_of::<i64>() + size_of::<f32>() + size_of::<f64>())
 }
 
 // ---------------------------------------------------------------------------
@@ -483,32 +465,6 @@ fn string_heavy_table(n_rows: usize) -> Table {
     )
 }
 
-fn string_heavy_bytes_per_batch(n_rows: usize) -> usize {
-    let ids = n_rows * size_of::<i32>();
-    let long_offsets = (n_rows + 1) * size_of::<u32>();
-    let long_data: usize = (0..n_rows)
-        .map(|i| {
-            format!(
-                "row_{:08}_payload_{:08x}_lorem_ipsum_dolor_sit",
-                i,
-                i.wrapping_mul(2_654_435_761)
-            )
-            .len()
-        })
-        .sum();
-    let short_offsets = (n_rows + 1) * size_of::<u32>();
-    let short_data: usize = (0..n_rows)
-        .map(|i| format!("s_{:04x}", (i & 0xFFFF) as u16).len())
-        .sum();
-    let category_indices = n_rows
-        * if cfg!(feature = "default_categorical_8") {
-            size_of::<u8>()
-        } else {
-            size_of::<u32>()
-        };
-    ids + long_offsets + long_data + short_offsets + short_data + category_indices
-}
-
 // ---------------------------------------------------------------------------
 // Wide - 25 each of i32 / i64 / f32 / f64 = 100 cols
 // ---------------------------------------------------------------------------
@@ -585,10 +541,4 @@ fn wide_table(n_rows: usize) -> Table {
     }
 
     Table::new("bench_wide".to_string(), Some(cols))
-}
-
-fn wide_bytes_per_batch(n_rows: usize) -> usize {
-    n_rows
-        * WIDE_GROUP_SIZE
-        * (size_of::<i32>() + size_of::<i64>() + size_of::<f32>() + size_of::<f64>())
 }

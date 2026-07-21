@@ -98,7 +98,7 @@ impl ChunkedTableWriter for ChunkedArrowWriter {
         let file = File::create(path)?;
         let mut writer: SyncTableWriter<_> =
             SyncTableWriter::new(file, schema, IPCMessageProtocol::File, None);
-        writer.write_table(table)?;
+        writer.write_table(table.clone())?;
         writer.finish()?;
         Ok(())
     }

@@ -14,8 +14,9 @@
 # figures here only confirm the code path runs.
 #
 # Override SHAPE, DATA_SOURCES, ROWS, DATASET_GB, STREAMS, RUNS and
-# OUT_OF_CORE via the environment. OUT_OF_CORE=1 streams the nvme replay
-# mappings with a bounded resident footprint, for datasets larger than RAM.
+# USE_MMAP via the environment. USE_MMAP=1 replays the nvme files through
+# the mmap reader instead of the default buffered file reader, for the
+# in-RAM replay comparison.
 
 set -euo pipefail
 
@@ -35,7 +36,7 @@ ROWS="${ROWS:-100000}"
 DATASET_GB="${DATASET_GB:-1}"
 STREAMS="${STREAMS:-1,4}"
 RUNS="${RUNS:-1}"
-OUT_OF_CORE="${OUT_OF_CORE:-0}"
+USE_MMAP="${USE_MMAP:-0}"
 
 FLIGHT_PORT="${FLIGHT_PORT:-9101}"
 ECHO_PORT="${ECHO_PORT:-9102}"
@@ -88,19 +89,11 @@ for DS in $DATA_SOURCES; do
   echo "[local] shape=$SHAPE data=$DS"
   docker rm -f bench-ecs-source bench-ecs-sink >/dev/null 2>&1 || true
 
-  # --out-of-core is a bare flag on the source, so it is appended only
-  # when OUT_OF_CORE is set.
-  OOC_ARGS=()
-  if [ "$OUT_OF_CORE" = "1" ]; then
-    OOC_ARGS=(--out-of-core)
-  fi
-
   echo "[local] starting source"
   docker run -d --name bench-ecs-source --network "$NET" -v "$VOLUME:/data" "$IMAGE" \
     bench_ecs_source --shape "$SHAPE" --rows "$ROWS" \
     --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
-    --data-source "$DS" --dataset-dir /data \
-    "${OOC_ARGS[@]}" \
+    --data-source "$DS" --dataset-dir /data --use-mmap "$USE_MMAP" \
     --flight-bind "0.0.0.0:${FLIGHT_PORT}" --echo-bind "0.0.0.0:${ECHO_PORT}" \
     --ctrl-bind "0.0.0.0:${CTRL_PORT}" \
     --sink-ls-addr "bench-ecs-sink:${LS_PORT}" >/dev/null

@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 
-use minarrow::{ArrowType, Field, Table};
+use minarrow::{ArrowType, Field, TableV};
 
 use crate::arrow::message::org::apache::arrow::flatbuf as fbm;
 use crate::compression::{Compression, compress};
@@ -119,14 +119,14 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
             .collect()
     }
 
-    /// Serialise a [`Table`] as an Arrow IPC record batch, returning (metadata, body) buffers.
+    /// Serialise a table view as an Arrow IPC record batch, returning (metadata, body) buffers.
     ///
     /// Uses `compute_body_layout` to collect column data as zero-copy slices,
     /// then writes them into a single body buffer.
-    pub fn encode_record_batch(&mut self, tbl: &Table) -> io::Result<(Vec<u8>, B)> {
+    pub fn encode_record_batch(&mut self, view: &TableV) -> io::Result<(Vec<u8>, B)> {
         use crate::models::encoders::ipc::record_batch::compute_body_layout;
 
-        let layout = compute_body_layout::<B>(tbl)?;
+        let layout = compute_body_layout::<B>(view)?;
 
         // When compression is active, compress each buffer with a u64 LE
         // uncompressed length prefix and rebuild the buffer metadata against
@@ -137,10 +137,11 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
                 if region.data.is_empty() {
                     compressed.push(Vec::new());
                 } else {
-                    let c = compress(region.data, codec)
+                    let raw = region.data.compression_bytes();
+                    let c = compress(&raw, codec)
                         .map_err(|e| io::Error::other(format!("{}", e)))?;
                     let mut wire = Vec::with_capacity(8 + c.len());
-                    wire.extend_from_slice(&(region.data.len() as u64).to_le_bytes());
+                    wire.extend_from_slice(&(raw.len() as u64).to_le_bytes());
                     wire.extend_from_slice(&c);
                     compressed.push(wire);
                 }
@@ -161,7 +162,7 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
         } else {
             let mut body = B::with_capacity(layout.body_size.max(DEFAULT_FRAME_ALLOCATION_SIZE));
             for region in &layout.regions {
-                body.extend_from_slice(region.data);
+                region.data.write_into(&mut body);
                 if region.pad > 0 {
                     body.extend_from_slice(&[0u8; 64][..region.pad]);
                 }
@@ -175,7 +176,7 @@ impl<B: StreamBuffer> TableStreamEncoder<B> {
         };
         let meta = build_flatbuf_recordbatch(
             &mut self.fbb,
-            tbl.n_rows,
+            view.len,
             &layout.fb_field_nodes,
             &fb_buffers,
             body_size,
@@ -293,7 +294,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.clone().into()).unwrap();
         writer.finish().unwrap();
 
         let mut file = StdFile::create(&path).unwrap();
@@ -342,7 +343,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.clone().into()).unwrap();
         writer.finish().unwrap();
 
         let mut file = StdFile::create(&path).unwrap();
@@ -526,7 +527,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.clone().into()).unwrap();
         writer.finish().unwrap();
 
         // Write to temp file
@@ -590,7 +591,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.clone().into()).unwrap();
         writer.finish().unwrap();
 
         let mut file = StdFile::create(&path).unwrap();
@@ -653,7 +654,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.clone().into()).unwrap();
         writer.finish().unwrap();
 
         // Write to temp file

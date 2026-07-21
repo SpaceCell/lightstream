@@ -113,7 +113,7 @@ async fn write_arrow_file(
 fn read_with_mmap(file_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
 
-    let reader = MmapTableReader::open(file_path, false)?;
+    let reader = MmapTableReader::open(file_path)?;
     let table = reader.read_batch(0)?;
 
     let read_time = start.elapsed();

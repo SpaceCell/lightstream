@@ -28,7 +28,7 @@ use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::GTableSink;
 use crate::utils::dict_values;
 use futures_util::sink::SinkExt;
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, TableV};
 use tokio::fs::File;
 use tokio::io::AsyncWrite;
 
@@ -97,8 +97,8 @@ where
     }
 
     /// Write a single table to the sink and flush all output.
-    pub async fn write_table(&mut self, table: Table) -> io::Result<()> {
-        SinkExt::send(&mut self.sink, table).await?;
+    pub async fn write_table(&mut self, table: impl Into<TableV> + Send) -> io::Result<()> {
+        SinkExt::send(&mut self.sink, table.into()).await?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
@@ -110,7 +110,7 @@ where
     {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
-            SinkExt::send(&mut sink, table).await?;
+            SinkExt::send(&mut sink, table.into()).await?;
         }
         SinkExt::close(&mut sink).await?;
         Ok(())
@@ -138,7 +138,7 @@ pub async fn write_tables_to_file(
     // Automatically register any Categorical dictionaries found in the tables.
     for table in tables {
         for (col_idx, col) in table.cols.iter().enumerate() {
-            if let Some(values) = dict_values(col) {
+            if let Some(values) = dict_values(&col.array) {
                 // We use the column index as the unique dictionary key
                 writer.register_dictionary(col_idx as i64, values);
             }
@@ -158,7 +158,7 @@ pub async fn write_table_to_file(
     let mut writer = TableWriter::new(file, schema, IPCMessageProtocol::File, None)?;
     // Automatically register any Categorical dictionaries found in the table.
     for (col_idx, col) in table.cols.iter().enumerate() {
-        if let Some(values) = dict_values(col) {
+        if let Some(values) = dict_values(&col.array) {
             writer.register_dictionary(col_idx as i64, values);
         }
     }

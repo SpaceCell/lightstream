@@ -130,7 +130,7 @@ fn roundtrip_via_reader_writer_ndjson() {
         ..Default::default()
     };
     let mut writer = JsonWriter::new(Vec64::<u8>::new(), opts);
-    writer.write_table(&table).unwrap();
+    writer.write_table(table.clone()).unwrap();
     let bytes = writer.into_inner();
 
     let dec_opts = JsonDecodeOptions {
@@ -151,7 +151,7 @@ fn roundtrip_via_reader_writer_ndjson() {
 fn writer_default_output_is_64_byte_aligned() {
     let table = make_mixed_table();
     let mut writer = JsonWriter::new(Vec64::<u8>::new(), JsonEncodeOptions::default());
-    writer.write_table(&table).unwrap();
+    writer.write_table(table.clone()).unwrap();
     let bytes = writer.into_inner();
     assert_eq!(
         bytes.as_ptr() as usize % 64,
@@ -169,7 +169,7 @@ fn array_omit_nulls_produces_compact_objects() {
         ..Default::default()
     };
     let mut writer = JsonWriter::new(Vec64::<u8>::new(), opts);
-    writer.write_table(&table).unwrap();
+    writer.write_table(table.clone()).unwrap();
     let bytes = writer.into_inner();
     let s = std::str::from_utf8(&bytes).unwrap().to_string();
 
@@ -202,7 +202,7 @@ fn ndjson_batched_reader_end_to_end() {
         ..Default::default()
     };
     let mut writer = JsonWriter::new(Vec64::<u8>::new(), opts);
-    writer.write_table(&table).unwrap();
+    writer.write_table(table.clone()).unwrap();
     let bytes = writer.into_inner();
 
     let dec_opts = JsonDecodeOptions {
@@ -234,7 +234,7 @@ fn pretty_output_is_parseable() {
         ..Default::default()
     };
     let mut writer = JsonWriter::new(Vec64::<u8>::new(), opts);
-    writer.write_table(&table).unwrap();
+    writer.write_table(table.clone()).unwrap();
     let bytes = writer.into_inner();
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains('\n'));

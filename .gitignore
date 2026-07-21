@@ -49,3 +49,5 @@ benches/ecs/results/
 benches/ecs/terraform/.terraform/
 benches/ecs/terraform/terraform.tfstate
 benches/ecs/terraform/terraform.tfstate.backup
+
+.cargo

@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
 
     for table in &tables {
-        writer.write(table)?;
+        writer.write(&table.clone().into())?;
     }
     writer.finish()?;
 

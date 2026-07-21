@@ -19,7 +19,7 @@ use std::io;
 use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
-use minarrow::{Field, Table};
+use minarrow::{Field, Table, TableV};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
@@ -57,10 +57,10 @@ impl QuicTableWriter {
     /// attached to its record batch message, then flush.
     pub async fn write_table_with_metadata(
         &mut self,
-        table: Table,
+        table: impl Into<TableV> + Send,
         metadata: Vec<(String, String)>,
     ) -> io::Result<()> {
-        self.sink.encode_frame(&table, Some(metadata.as_slice()))?;
+        self.sink.encode_frame(&table.into(), Some(metadata.as_slice()))?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
@@ -78,8 +78,8 @@ impl IPCTransportWriter for QuicTableWriter {
     }
 
     /// Write a single table and flush.
-    async fn write_table(&mut self, table: Table) -> io::Result<()> {
-        SinkExt::send(&mut self.sink, table).await?;
+    async fn write_table(&mut self, table: impl Into<TableV> + Send) -> io::Result<()> {
+        SinkExt::send(&mut self.sink, table.into()).await?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
@@ -88,7 +88,7 @@ impl IPCTransportWriter for QuicTableWriter {
     async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
-            SinkExt::send(&mut sink, table).await?;
+            SinkExt::send(&mut sink, table.into()).await?;
         }
         SinkExt::close(&mut sink).await?;
         Ok(())

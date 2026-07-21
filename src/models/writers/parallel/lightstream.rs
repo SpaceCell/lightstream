@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 
-use minarrow::{Field, Table, Vec64};
+use minarrow::{Field, TableV, Vec64};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -120,10 +120,11 @@ impl LightstreamParallelWriter {
         self.route(LightstreamMessage::Message { tag, payload }).await
     }
 
-    /// Send an Arrow table by registered type name.
-    pub async fn send_table(&mut self, name: &str, table: Table) -> io::Result<()> {
+    /// Send an Arrow table or table view by registered type name. A
+    /// whole table sends as the full-width view of itself.
+    pub async fn send_table(&mut self, name: &str, table: impl Into<TableV>) -> io::Result<()> {
         let tag = self.tag_for(name)?;
-        self.route(LightstreamMessage::Table { tag, table }).await
+        self.route(LightstreamMessage::Table { tag, table: table.into() }).await
     }
 
     /// Send a protobuf message by registered type name. Encodes via prost and

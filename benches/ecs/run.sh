@@ -40,9 +40,9 @@
 #   RUNS               Warm runs per cell. Defaults to 5.
 #   MAX_BATCH_SIZE     Nvme replay batch size limit in bytes for Lightstream. 0
 #                      replays whole batches. Defaults to 0.
-#   OUT_OF_CORE        Set to 1 to stream the nvme replay mappings with a
-#                      bounded resident footprint. Use when DATASET_GB
-#                      exceeds the host's RAM. Defaults to 0.
+#   USE_MMAP           Set to 0 to replay the nvme files through the buffered
+#                      file reader instead of the mmap reader. Use 0 when
+#                      DATASET_GB exceeds the host's RAM. Defaults to 1.
 #   FLIGHT_PORT        Source Flight port. Defaults to 9101.
 #   ECHO_PORT          Source latency echo port. Defaults to 9102.
 #   LS_PORT            Sink Lightstream port. Defaults to 9103.
@@ -68,8 +68,8 @@ ROWS="${ROWS:-1000000}"
 DATASET_GB="${DATASET_GB:-350}"
 STREAMS="${STREAMS:-1,4,8,16}"
 RUNS="${RUNS:-5}"
-MAX_BATCH_SIZE="${MAX_BATCH_SIZE:-0}"
-OUT_OF_CORE="${OUT_OF_CORE:-0}"
+MAX_BATCH_SIZE="${MAX_BATCH_SIZE:-8388608}"
+USE_MMAP="${USE_MMAP:-0}"
 FLIGHT_PORT="${FLIGHT_PORT:-9101}"
 ECHO_PORT="${ECHO_PORT:-9102}"
 LS_PORT="${LS_PORT:-9103}"
@@ -142,8 +142,8 @@ if ! docker run --rm "$LOCAL_IMAGE" bench_ecs_source --help | grep -q -- '--max-
   echo "[run] built image does not support --max-batch-size: stale binaries" >&2
   exit 1
 fi
-if ! docker run --rm "$LOCAL_IMAGE" bench_ecs_source --help | grep -q -- '--out-of-core'; then
-  echo "[run] built image does not support --out-of-core: stale binaries" >&2
+if ! docker run --rm "$LOCAL_IMAGE" bench_ecs_source --help | grep -q -- '--use-mmap'; then
+  echo "[run] built image does not support --use-mmap: stale binaries" >&2
   exit 1
 fi
 
@@ -283,14 +283,7 @@ diagnose_task() {
 
 for SHAPE in $SHAPES; do
   for DS in $DATA_SOURCES; do
-    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS max_batch_size=$MAX_BATCH_SIZE out_of_core=$OUT_OF_CORE"
-
-    # --out-of-core is a bare flag on the source, so it is appended only
-    # when OUT_OF_CORE is set.
-    OOC_ARGS=()
-    if [ "$OUT_OF_CORE" = "1" ]; then
-      OOC_ARGS=(--out-of-core)
-    fi
+    echo "[run] shape=$SHAPE data=$DS rows=$ROWS dataset_gb=$DATASET_GB streams=$STREAMS runs=$RUNS max_batch_size=$MAX_BATCH_SIZE use_mmap=$USE_MMAP"
 
     # Source starts first and listens; the sink then drives both transfers.
     SOURCE_ARN="$(run_task "$SOURCE_FAMILY" source source \
@@ -298,8 +291,7 @@ for SHAPE in $SHAPES; do
       --shape "$SHAPE" --rows "$ROWS" \
       --dataset-gb "$DATASET_GB" --streams "$STREAMS" --runs "$RUNS" \
       --data-source "$DS" --dataset-dir /data \
-      --max-batch-size "$MAX_BATCH_SIZE" \
-      "${OOC_ARGS[@]}" \
+      --max-batch-size "$MAX_BATCH_SIZE" --use-mmap "$USE_MMAP" \
       --flight-bind "0.0.0.0:${FLIGHT_PORT}" --echo-bind "0.0.0.0:${ECHO_PORT}" \
       --ctrl-bind "0.0.0.0:${CTRL_PORT}" \
       --sink-ls-addr "${SINK_IP}:${LS_PORT}")"

@@ -4,359 +4,79 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Compares Apache Arrow Flight and Lightstream TCP throughput.
+//! Compares Apache Arrow Flight and Lightstream throughput on loopback.
 //!
 //! Each [`BenchMatrix`] cell runs the same workload over Arrow Flight and
-//! Lightstream TCP on loopback. Both servers run in-process and listen on
-//! `127.0.0.1`. Only the client receive loop is timed. Connection setup,
-//! schema negotiation and per-iteration buffer construction are excluded.
+//! the Lightstream protocol over TCP. Both servers run in-process and
+//! listen on `127.0.0.1`. Lightstream's Arrow IPC transport writers over
+//! TCP, HTTP/2 and QUIC are also measured as additional comparisons when
+//! the feature flags are on, and their labels carry `arrow` to distinguish 
+//! them from the protocol.
 //!
-//! Arrow Flight uses 8 MiB HTTP/2 flow-control windows and raised gRPC
-//! message limits so no transport ceiling interferes, while flight-data
-//! slicing stays at the encoder's default 2 MiB, matching how Arrow Flight
-//! ships. Lightstream uses its default configuration.
+//! The timer covers the transfer from the moment it is requested until the
+//! last batch is drained. Flight's timer starts before the `DoGet` request,
+//! and the Lightstream single-stream writers hold every send behind a
+//! release signal fired the instant the timer starts, so neither side moves
+//! bytes before its clock is running. Connection setup, schema negotiation
+//! and per-iteration buffer construction are excluded on both sides.
 //!
-//! Throughput is calculated from the source columns using
-//! [`bench_helpers::logical_payload_bytes_shape`], matching the accounting used
-//! by the transport benchmarks.
+//! Arrow Flight uses 8 MiB HTTP/2 flow-control windows so flow control
+//! imposes no ceiling, and otherwise runs on tonic's default gRPC limits.
+//! Flight-data slicing stays at the encoder's default 2 MiB. The encoder
+//! resends dictionaries, which ensures Flight uses the more efficient
+//! dictionary-encoded representation rather than defaulting to actual
+//! strings for compatibility reasons, so both transports carry the same
+//! representation. Lightstream uses its default configuration.
+//!
+//! The workload is one table per shape and scale combination. The Arrow
+//! Flight record batch is the table's zero-copy Arrow export, verified
+//! for type parity before any measurement, so both transports send
+//! identical memory. Lightstream splits each send into 8 MiB views
+//! through `get_views_for_target_batch_size` inside the timed region,
+//! which uses its native 'slice a zero-copy view from a Table' approach,
+//! where Flight's encoder slices its sends to its default 2 MiB, which,
+//! under the hood, similarly uses its native zero-copy offsets.
+//!
+//! Throughput is expressed in logical payload bytes via minarrow's
+//! [`minarrow::ByteSize::logical_bytes`], the accounting every benchmark
+//! in the suite shares.
 //!
 //! This benchmark requires the `bench_arrow_flight` feature. Arrow Flight and
 //! Tonic are not included in the dependency graph when the feature is disabled.
 
 #[path = "../common/bench_helpers.rs"]
 mod bench_helpers;
+#[path = "../common/arrow_flight_bench.rs"]
+mod arrow_flight_bench;
 
 use std::sync::Arc;
 
-use arrow::array::{
-    ArrayRef, DictionaryArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
-};
-use arrow::datatypes::{DataType, Field as ArrowField, Int32Type, Schema as ArrowSchema};
 use arrow::record_batch::RecordBatch;
+use arrow_flight::Ticket;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
-use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
-    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
-    encode::FlightDataEncoderBuilder,
-};
-use bench_helpers::{
-    BenchMatrix, BenchScale, BenchShape, bench_schema, logical_payload_bytes_shape,
-    make_bench_table_shape,
-};
+use arrow_flight::flight_service_server::FlightServiceServer;
+use arrow_flight_bench::{BenchFlightService, FLIGHT_HTTP2_WINDOW, assert_export_parity};
+use bench_helpers::{BenchMatrix, BenchScale, bench_schema, make_bench_table_shape};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use futures::stream::{self, BoxStream, StreamExt, TryStreamExt};
-use minarrow::{Field, Table, Vec64};
+use futures::stream::{StreamExt, TryStreamExt};
+use minarrow::{ByteSize, Field, Table, Vec64};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
+use tonic::Request;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status, Streaming};
 
 use lightstream::enums::{BufferChunkSize, IPCMessageProtocol};
 use lightstream::models::readers::ipc::table::TableReader;
 use lightstream::traits::transport_writer::IPCTransportWriter;
 
-// ---------------------------------------------------------------------------
-// Arrow record-batch construction matching each BenchShape
-// ---------------------------------------------------------------------------
-
-const STRING_HEAVY_DICT_CARDINALITY: usize = 100;
-const WIDE_GROUP_SIZE: usize = 25;
-
-fn make_record_batch(shape: BenchShape, n_rows: usize) -> RecordBatch {
-    match shape {
-        BenchShape::Mixed => mixed_batch(n_rows),
-        BenchShape::NarrowNumeric => narrow_numeric_batch(n_rows),
-        BenchShape::StringHeavy => string_heavy_batch(n_rows),
-        BenchShape::Wide => wide_batch(n_rows),
-    }
-}
-
-fn mixed_batch(n_rows: usize) -> RecordBatch {
-    let ids = Int32Array::from((0..n_rows as i32).collect::<Vec<_>>());
-    let values = Float64Array::from((0..n_rows).map(|i| i as f64 * 0.5).collect::<Vec<_>>());
-    let labels =
-        StringArray::from((0..n_rows).map(|i| format!("row_{}", i)).collect::<Vec<_>>());
-    let dict_keys = Int32Array::from((0..n_rows).map(|i| (i % 3) as i32).collect::<Vec<_>>());
-    let dict_values = StringArray::from(vec!["red", "green", "blue"]);
-    let category = DictionaryArray::<Int32Type>::try_new(dict_keys, Arc::new(dict_values)).unwrap();
-
-    let schema = Arc::new(ArrowSchema::new(vec![
-        ArrowField::new("ids", DataType::Int32, false),
-        ArrowField::new("values", DataType::Float64, false),
-        ArrowField::new("labels", DataType::Utf8, false),
-        ArrowField::new(
-            "category",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            true,
-        ),
-    ]));
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(values),
-            Arc::new(labels),
-            Arc::new(category),
-        ],
-    )
-    .unwrap()
-}
-
-fn narrow_numeric_batch(n_rows: usize) -> RecordBatch {
-    let ids = Int32Array::from((0..n_rows as i32).collect::<Vec<_>>());
-    let counters = Int64Array::from((0..n_rows).map(|i| (i as i64) * 7).collect::<Vec<_>>());
-    let prices = Float32Array::from((0..n_rows).map(|i| i as f32 * 0.25).collect::<Vec<_>>());
-    let values = Float64Array::from((0..n_rows).map(|i| i as f64 * 0.5).collect::<Vec<_>>());
-
-    let schema = Arc::new(ArrowSchema::new(vec![
-        ArrowField::new("ids", DataType::Int32, false),
-        ArrowField::new("counters", DataType::Int64, false),
-        ArrowField::new("prices", DataType::Float32, false),
-        ArrowField::new("values", DataType::Float64, false),
-    ]));
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(counters),
-            Arc::new(prices),
-            Arc::new(values),
-        ],
-    )
-    .unwrap()
-}
-
-fn string_heavy_batch(n_rows: usize) -> RecordBatch {
-    let ids = Int32Array::from((0..n_rows as i32).collect::<Vec<_>>());
-    let long_text = StringArray::from(
-        (0..n_rows)
-            .map(|i| {
-                format!(
-                    "row_{:08}_payload_{:08x}_lorem_ipsum_dolor_sit",
-                    i,
-                    i.wrapping_mul(2_654_435_761usize)
-                )
-            })
-            .collect::<Vec<_>>(),
-    );
-    let short_text = StringArray::from(
-        (0..n_rows)
-            .map(|i| format!("s_{:04x}", (i & 0xFFFF) as u16))
-            .collect::<Vec<_>>(),
-    );
-    let dict_keys = Int32Array::from(
-        (0..n_rows)
-            .map(|i| (i % STRING_HEAVY_DICT_CARDINALITY) as i32)
-            .collect::<Vec<_>>(),
-    );
-    let dict_values = StringArray::from(
-        (0..STRING_HEAVY_DICT_CARDINALITY)
-            .map(|i| format!("cat_{:03}", i))
-            .collect::<Vec<_>>(),
-    );
-    let category = DictionaryArray::<Int32Type>::try_new(dict_keys, Arc::new(dict_values)).unwrap();
-
-    let schema = Arc::new(ArrowSchema::new(vec![
-        ArrowField::new("ids", DataType::Int32, false),
-        ArrowField::new("long_text", DataType::Utf8, false),
-        ArrowField::new("short_text", DataType::Utf8, false),
-        ArrowField::new(
-            "category",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ]));
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(long_text),
-            Arc::new(short_text),
-            Arc::new(category),
-        ],
-    )
-    .unwrap()
-}
-
-fn wide_batch(n_rows: usize) -> RecordBatch {
-    let mut fields: Vec<ArrowField> = Vec::with_capacity(WIDE_GROUP_SIZE * 4);
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(WIDE_GROUP_SIZE * 4);
-
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("i32_{:03}", k),
-            DataType::Int32,
-            false,
-        ));
-        let arr = Int32Array::from(
-            (0..n_rows)
-                .map(|i| (i as i32).wrapping_add(k as i32))
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("i64_{:03}", k),
-            DataType::Int64,
-            false,
-        ));
-        let arr = Int64Array::from(
-            (0..n_rows)
-                .map(|i| (i as i64).wrapping_mul(k as i64 + 1))
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("f32_{:03}", k),
-            DataType::Float32,
-            false,
-        ));
-        let arr = Float32Array::from(
-            (0..n_rows)
-                .map(|i| i as f32 + k as f32 * 0.125)
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-    for k in 0..WIDE_GROUP_SIZE {
-        fields.push(ArrowField::new(
-            format!("f64_{:03}", k),
-            DataType::Float64,
-            false,
-        ));
-        let arr = Float64Array::from(
-            (0..n_rows)
-                .map(|i| i as f64 + k as f64 * 0.5)
-                .collect::<Vec<_>>(),
-        );
-        columns.push(Arc::new(arr));
-    }
-
-    let schema = Arc::new(ArrowSchema::new(fields));
-    RecordBatch::try_new(schema, columns).unwrap()
-}
-
-// ---------------------------------------------------------------------------
-// Minimal Flight service: DoGet returns a pre-built batch repeated `iters`
-// times. Every other RPC is unsupported.
-// ---------------------------------------------------------------------------
-
-// Flight tuning that mirrors lightstream within Flight's public API. The 8 MiB
-// HTTP/2 windows match the lightstream HTTP/2 path, and the raised gRPC
-// message limits remove the transport-level ceilings. Flight-data slicing
-// stays at the encoder's default 2 MiB, matching how Arrow Flight ships.
-const FLIGHT_HTTP2_WINDOW: u32 = 8 * 1024 * 1024;
-const FLIGHT_MAX_MESSAGE_BYTES: usize = i32::MAX as usize;
+// Lightstream's max_batch_size. Each send splits the workload table into
+// zero-copy batches of this target size inside the timed region, where
+// Flight's encoder slices its own sends to its default 2 MiB.
+const MAX_BATCH_SIZE: usize = 8 * 1024 * 1024;
 
 // Stream counts for the matched parallel comparison. Each side fans the same
 // table sequence across N concurrent streams, one connection per stream.
 const PARALLEL_STREAM_COUNTS: &[usize] = &[2, 4, 8, 16];
-
-// The DoGet ticket carries the batch count the client wants, so each concurrent
-// stream in the parallel comparison asks for its own share.
-#[derive(Clone)]
-struct BenchFlightService {
-    batch: Arc<RecordBatch>,
-}
-
-#[tonic::async_trait]
-impl FlightService for BenchFlightService {
-    type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
-    type ListFlightsStream = BoxStream<'static, Result<FlightInfo, Status>>;
-    type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
-    type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
-    type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
-    type ListActionsStream = BoxStream<'static, Result<ActionType, Status>>;
-    type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;
-
-    async fn handshake(
-        &self,
-        _request: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<Response<Self::HandshakeStream>, Status> {
-        Err(Status::unimplemented("handshake not implemented"))
-    }
-
-    async fn list_flights(
-        &self,
-        _request: Request<Criteria>,
-    ) -> Result<Response<Self::ListFlightsStream>, Status> {
-        Err(Status::unimplemented("list_flights not implemented"))
-    }
-
-    async fn get_flight_info(
-        &self,
-        _request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info not implemented"))
-    }
-
-    async fn poll_flight_info(
-        &self,
-        _request: Request<FlightDescriptor>,
-    ) -> Result<Response<PollInfo>, Status> {
-        Err(Status::unimplemented("poll_flight_info not implemented"))
-    }
-
-    async fn get_schema(
-        &self,
-        _request: Request<FlightDescriptor>,
-    ) -> Result<Response<SchemaResult>, Status> {
-        Err(Status::unimplemented("get_schema not implemented"))
-    }
-
-    async fn do_get(
-        &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<Self::DoGetStream>, Status> {
-        let ticket = request.into_inner();
-        let n = u64::from_le_bytes(ticket.ticket.as_ref().try_into().unwrap());
-        let batch = Arc::clone(&self.batch);
-        let batch_stream = stream::iter((0..n).map(move |_| {
-            Ok::<RecordBatch, arrow_flight::error::FlightError>((*batch).clone())
-        }));
-        // The encoder keeps its default flight-data size, so batches above
-        // 2 MiB split into multiple messages per Arrow Flight's own tuning.
-        let flight_data = FlightDataEncoderBuilder::new()
-            .build(batch_stream)
-            .map_err(|err| Status::internal(format!("flight encode failure: {err}")));
-        Ok(Response::new(Box::pin(flight_data)))
-    }
-
-    async fn do_put(
-        &self,
-        _request: Request<Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoPutStream>, Status> {
-        Err(Status::unimplemented("do_put not implemented"))
-    }
-
-    async fn do_action(
-        &self,
-        _request: Request<Action>,
-    ) -> Result<Response<Self::DoActionStream>, Status> {
-        Err(Status::unimplemented("do_action not implemented"))
-    }
-
-    async fn list_actions(
-        &self,
-        _request: Request<Empty>,
-    ) -> Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("list_actions not implemented"))
-    }
-
-    async fn do_exchange(
-        &self,
-        _request: Request<Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoExchangeStream>, Status> {
-        Err(Status::unimplemented("do_exchange not implemented"))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Bench driver
@@ -374,39 +94,206 @@ fn bench_arrow_flight_compare(c: &mut Criterion) {
 
     for (shape, scale) in BenchMatrix::from_env().cells() {
         let rows = scale.rows();
-        let arrow_batch = Arc::new(make_record_batch(shape, rows));
+        // One table per shape and scale combination. The Flight record
+        // batch is the table's zero-copy Arrow export, so both transports
+        // send identical memory, verified for type parity before any
+        // measurement.
+        //
+        // In other words - the Minarrow 'Table' (which is its term for 'RecordBatch')
+        // gets mapped verbatim to an arrow-rs 'RecordBatch', using the exactly mapped
+        // types, given Minarrow implements the public Apache Arrow memory format 
+        // for its buffers.
         let table = Arc::new(make_bench_table_shape(shape, rows));
+        let arrow_batch = Arc::new(table.to_apache_arrow());
+        assert_export_parity(&table, &arrow_batch);
         let schema = bench_schema(&table);
         let dict_regs = shape.dictionary_registrations();
+
+        // Both transports report against the same logical payload figure,
+        // taken from the workload table itself.
+        let table_bytes = table.logical_bytes() as u64;
 
         let group_name =
             format!("arrow_flight_vs_lightstream_{}_{}", shape.label(), scale.label());
         let mut group = c.benchmark_group(&group_name);
-        group.throughput(Throughput::Bytes(logical_payload_bytes_shape(shape, rows, 1)));
+        group.throughput(Throughput::Bytes(table_bytes));
 
         if matches!(scale, BenchScale::Medium | BenchScale::Large) {
             group.sample_size(10);
         }
 
         bench_flight_do_get(&mut group, &rt, &arrow_batch);
-        bench_lightstream_tcp(&mut group, &rt, &table, &schema, &dict_regs);
+        #[cfg(feature = "protocol")]
+        bench_lightstream_protocol(&mut group, &rt, &table, &schema);
+        bench_lightstream_arrow_tcp(&mut group, &rt, &table, &schema, &dict_regs);
 
         // Each side fans the same per-stream workload across N concurrent
         // streams on one connection.
         for &streams in PARALLEL_STREAM_COUNTS {
-            group.throughput(Throughput::Bytes(logical_payload_bytes_shape(shape, rows, streams)));
+            group.throughput(Throughput::Bytes(table_bytes * streams as u64));
             bench_flight_parallel(&mut group, &rt, &arrow_batch, streams);
-            bench_lightstream_tcp_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
             #[cfg(feature = "protocol")]
             bench_lightstream_protocol_parallel(&mut group, &rt, &table, &schema, streams);
+            bench_lightstream_arrow_tcp_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
             #[cfg(feature = "http")]
-            bench_lightstream_http2_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
+            bench_lightstream_arrow_http2_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
             #[cfg(feature = "quic")]
-            bench_lightstream_quic_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
+            bench_lightstream_arrow_quic_parallel(&mut group, &rt, &table, &schema, &dict_regs, streams);
         }
 
         group.finish();
     }
+}
+
+
+// Lightstream protocol receiver over TCP, the headline comparison against
+// Flight's DoGet. The writer holds every send behind the release signal so
+// the split, encode and transfer all happen inside the timed region, playing
+// the role Flight's ticket request plays on its side.
+#[cfg(feature = "protocol")]
+fn bench_lightstream_protocol(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+) {
+    use lightstream::models::readers::lightstream::LightstreamReader;
+    use lightstream::models::writers::lightstream::LightstreamWriter;
+
+    const TYPE_NAME: &str = "bench";
+
+    group.bench_function("lightstream_protocol", |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let write_table = Arc::clone(&table);
+                let write_schema = schema.clone();
+                let n = iters;
+                let windows = table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices.len() as u64;
+
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+                let writer = tokio::spawn(async move {
+                    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    let mut writer = LightstreamWriter::<_, Vec64<u8>>::new(stream);
+                    writer.register_table(TYPE_NAME, write_schema);
+                    release_rx.await.unwrap();
+                    // Each repetition splits the table inside the timed region.
+                    // Note that Arrow Flight does the equivalent under the hood implicitly
+                    // to achieve its hardcoded 'ideal default' batch size of 2Mib
+                    for _ in 0..n {
+                        for view in write_table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices
+                        {
+                            writer.send_table(TYPE_NAME, view).await.unwrap();
+                        }
+                    }
+                    writer.shutdown().await.unwrap();
+                });
+
+                let (socket, _) = listener.accept().await.unwrap();
+                let (read_half, _write_half) = socket.into_split();
+                let mut reader: LightstreamReader = LightstreamReader::new(read_half, None);
+                reader.register_table(TYPE_NAME, schema.clone());
+
+                let start = std::time::Instant::now();
+                release_tx.send(()).unwrap();
+                let mut count = 0u64;
+                while let Some(item) = reader.next().await {
+                    let msg = item.unwrap();
+                    if msg.is_table() {
+                        count += 1;
+                    }
+                    std::hint::black_box(&msg);
+                }
+                let elapsed = start.elapsed();
+                assert_eq!(count, n * windows);
+
+                writer.await.unwrap();
+                elapsed
+            }
+        });
+    });
+}
+
+// Lightstream's Arrow IPC transport writer over TCP, included as an
+// additional comparison alongside the protocol. The writer holds every send
+// behind the release signal so the split, encode and transfer all happen
+// inside the timed region.
+fn bench_lightstream_arrow_tcp(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+    dict_regs: &[(i64, Vec<String>)],
+) {
+    group.bench_function("lightstream_arrow_tcp", |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            let dict_regs = dict_regs.to_vec();
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let write_table = Arc::clone(&table);
+                let write_schema = schema.clone();
+                let write_dicts = dict_regs.clone();
+                let n = iters;
+                let windows = table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices.len() as u64;
+
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+                let writer = tokio::spawn(async move {
+                    let mut writer = lightstream::models::writers::tcp::TcpTableWriter::connect(
+                        addr,
+                        write_schema,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                    for (id, values) in write_dicts {
+                        writer.register_dictionary(id, values);
+                    }
+                    release_rx.await.unwrap();
+                    // Each repetition splits the table inside the timed region.
+                    // Note that Arrow Flight does the equivalent under the hood implicitly
+                    // to achieve its hardcoded 'ideal default' batch size of 2Mib
+                    for _ in 0..n {
+                        for view in write_table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices
+                        {
+                            writer.write_table(view).await.unwrap();
+                        }
+                    }
+                    writer.finish().await.unwrap();
+                });
+
+                let (socket, _) = listener.accept().await.unwrap();
+                let (read_half, _write_half) = socket.into_split();
+                let mut reader = TableReader::<Vec64<u8>>::new(
+                    read_half,
+                    BufferChunkSize::Http.chunk_size(),
+                    IPCMessageProtocol::Stream,
+                    None,
+                );
+
+                let start = std::time::Instant::now();
+                release_tx.send(()).unwrap();
+                let mut count = 0u64;
+                while let Some(batch) = reader.read_next().await.unwrap() {
+                    assert!(batch.n_rows > 0);
+                    std::hint::black_box(&batch.cols);
+                    count += 1;
+                }
+                let elapsed = start.elapsed();
+                assert_eq!(count, n * windows);
+
+                writer.await.unwrap();
+                elapsed
+            }
+        });
+    });
 }
 
 // Arrow Flight DoGet over loopback gRPC.
@@ -432,11 +319,7 @@ fn bench_flight_do_get(
                     Server::builder()
                         .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
                         .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
-                        .add_service(
-                            FlightServiceServer::new(service)
-                                .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-                                .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES),
-                        )
+                        .add_service(FlightServiceServer::new(service))
                         .serve_with_incoming_shutdown(incoming, async {
                             let _ = shutdown_rx.await;
                         })
@@ -451,13 +334,13 @@ fn bench_flight_do_get(
                     .connect()
                     .await
                     .unwrap();
-                let mut client = FlightServiceClient::new(channel)
-                    .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-                    .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
+                let mut client = FlightServiceClient::new(channel);
 
                 let ticket = Ticket::new(iters.to_le_bytes().to_vec());
 
                 let start = std::time::Instant::now();
+
+                // Request the ticket  
                 let stream = client.do_get(Request::new(ticket)).await.unwrap().into_inner();
                 let decoder =
                     arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
@@ -488,15 +371,113 @@ fn bench_flight_do_get(
     });
 }
 
-// Lightstream TCP receiver for direct head-to-head comparison.
-fn bench_lightstream_tcp(
+// This benches the Lightstream custom protocol implementation, writing/sending Arrow.
+// 
+// Lightstream protocol across N concurrent connections to one endpoint. Frames
+// are decoded and dropped as they arrive under `None`, matching Flight's
+// per-stream ordering and drop-on-arrival materialisation.
+#[cfg(feature = "protocol")]
+fn bench_lightstream_protocol_parallel(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    rt: &Runtime,
+    table: &Arc<Table>,
+    schema: &[Field],
+    streams: usize,
+) {
+    use lightstream::models::readers::parallel::lightstream::LightstreamParallelReader;
+    use lightstream::models::writers::parallel::lightstream::LightstreamParallelWriter;
+    use lightstream::traits::parallel_transport_reader::SortBehaviour;
+
+    const TYPE_NAME: &str = "bench";
+
+    group.bench_function(format!("lightstream_protocol_parallel_{streams}"), |b| {
+        b.to_async(rt).iter_custom(|iters| {
+            let table = Arc::clone(table);
+            let schema = schema.to_vec();
+            async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let windows = table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices.len() as u64;
+                let total_tables = iters * streams as u64 * windows;
+
+                let server_schema = schema.clone();
+                let server = tokio::spawn(async move {
+                    use futures::StreamExt;
+                    let table_types = [(TYPE_NAME, server_schema)];
+                    let mut reader = LightstreamParallelReader::accept(
+                        &listener,
+                        streams,
+                        &[],
+                        &table_types,
+                        SortBehaviour::None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                    // Drop each frame as it arrives so retention matches
+                    // Flight's decode-and-drop loop.
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let msg = item.unwrap();
+                        if msg.is_table() {
+                            received += 1;
+                        }
+                        std::hint::black_box(&msg);
+                    }
+                    received
+                });
+
+                let table_types = [(TYPE_NAME, schema)];
+                let mut writer =
+                    LightstreamParallelWriter::connect(addr, streams, &[], &table_types)
+                        .await
+                        .unwrap();
+
+                let start = std::time::Instant::now();
+                // Each repetition splits the table inside the timed region,
+                // where Flight's encoder slices its own sends.
+                for _ in 0..iters * streams as u64 {
+                    for view in table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices {
+                        writer.send_table(TYPE_NAME, view).await.unwrap();
+                    }
+                }
+                writer.finish().await.unwrap();
+                let received = server.await.unwrap();
+                let elapsed = start.elapsed();
+                assert_eq!(received, total_tables);
+                elapsed
+            }
+        });
+    });
+}
+
+
+// This benchmark's Lightstream libraries' custom Arrow writer implementation
+// over TCP. I.e., the stream is Arrow stream protocol compliant.
+//
+// For the Lightstream *protocol*, see the one above.
+//
+// Lightstream's Arrow IPC transport writer across N concurrent TCP
+// connections to one endpoint. TCP has no in-band multiplexing, so each
+// connection carries its own stream. Tables are decoded and dropped as they
+// arrive under `None`, matching Flight's per-stream ordering and its
+// drop-on-arrival materialisation, so the two parallel comparisons share the
+// same ordering and retention contract.
+fn bench_lightstream_arrow_tcp_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
     table: &Arc<Table>,
     schema: &[Field],
     dict_regs: &[(i64, Vec<String>)],
+    streams: usize,
 ) {
-    group.bench_function("lightstream_tcp", |b| {
+    use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
+    use lightstream::models::writers::parallel::tcp::TcpParallelTableWriter;
+    use lightstream::traits::parallel_transport_reader::SortBehaviour;
+    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+
+    group.bench_function(format!("lightstream_arrow_tcp_parallel_{streams}"), |b| {
         b.to_async(rt).iter_custom(|iters| {
             let table = Arc::clone(table);
             let schema = schema.to_vec();
@@ -505,48 +486,42 @@ fn bench_lightstream_tcp(
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
 
-                let write_table = Arc::clone(&table);
-                let write_schema = schema.clone();
-                let write_dicts = dict_regs.clone();
-                let n = iters;
+                let windows = table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices.len() as u64;
+                let total_tables = iters * streams as u64 * windows;
 
-                let writer = tokio::spawn(async move {
-                    let mut writer = lightstream::models::writers::tcp::TcpTableWriter::connect(
-                        addr,
-                        write_schema,
-                        None,
-                    )
-                    .await
-                    .unwrap();
-                    for (id, values) in write_dicts {
-                        writer.register_dictionary(id, values);
+                let server = tokio::spawn(async move {
+                    let mut reader =
+                        TcpParallelTableReader::accept(&listener, streams, SortBehaviour::None, None)
+                            .await
+                            .unwrap();
+                    // Drop each table as it arrives so retention matches
+                    // Flight's decode-and-drop loop.
+                    let mut received = 0u64;
+                    while let Some(item) = reader.next().await {
+                        let (table, _seq) = item.unwrap();
+                        std::hint::black_box(table.n_rows);
+                        received += 1;
                     }
-                    for _ in 0..n {
-                        writer.write_table((*write_table).clone()).await.unwrap();
-                    }
-                    writer.finish().await.unwrap();
+                    received
                 });
 
-                let (socket, _) = listener.accept().await.unwrap();
-                let (read_half, _write_half) = socket.into_split();
-                let mut reader = TableReader::<Vec64<u8>>::new(
-                    read_half,
-                    BufferChunkSize::Http.chunk_size(),
-                    IPCMessageProtocol::Stream,
-                    None,
-                );
+                let mut writer =
+                    TcpParallelTableWriter::connect(addr, streams, schema, dict_regs, None)
+                        .await
+                        .unwrap();
 
                 let start = std::time::Instant::now();
-                let mut count = 0u64;
-                while let Some(batch) = reader.read_next().await.unwrap() {
-                    assert!(batch.n_rows > 0);
-                    std::hint::black_box(&batch.cols);
-                    count += 1;
+                // Each repetition splits the table inside the timed region,
+                // where Flight's encoder slices its own sends.
+                for _ in 0..iters * streams as u64 {
+                    for view in table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices {
+                        writer.write_table(view).await.unwrap();
+                    }
                 }
+                writer.finish().await.unwrap();
+                let received = server.await.unwrap();
                 let elapsed = start.elapsed();
-                assert_eq!(count, n);
-
-                writer.await.unwrap();
+                assert_eq!(received, total_tables);
                 elapsed
             }
         });
@@ -582,11 +557,7 @@ fn bench_flight_parallel(
                     Server::builder()
                         .initial_stream_window_size(FLIGHT_HTTP2_WINDOW)
                         .initial_connection_window_size(FLIGHT_HTTP2_WINDOW)
-                        .add_service(
-                            FlightServiceServer::new(service)
-                                .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-                                .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES),
-                        )
+                        .add_service(FlightServiceServer::new(service))
                         .serve_with_incoming_shutdown(incoming, async {
                             let _ = shutdown_rx.await;
                         })
@@ -610,9 +581,7 @@ fn bench_flight_parallel(
                 let start = std::time::Instant::now();
                 let mut handles = Vec::with_capacity(streams);
                 for channel in channels {
-                    let mut client = FlightServiceClient::new(channel)
-                        .max_decoding_message_size(FLIGHT_MAX_MESSAGE_BYTES)
-                        .max_encoding_message_size(FLIGHT_MAX_MESSAGE_BYTES);
+                    let mut client = FlightServiceClient::new(channel);
                     let ticket = ticket.clone();
                     handles.push(tokio::spawn(async move {
                         let stream = client
@@ -653,147 +622,12 @@ fn bench_flight_parallel(
     });
 }
 
-// lightstream TCP across N concurrent connections to one endpoint. TCP has no
-// in-band multiplexing, so each connection carries its own stream. Tables are
-// decoded and dropped as they arrive under `None`, matching Flight's
-// per-stream ordering and its drop-on-arrival materialisation, so the two
-// parallel comparisons share the same ordering and retention contract.
-fn bench_lightstream_tcp_parallel(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    rt: &Runtime,
-    table: &Arc<Table>,
-    schema: &[Field],
-    dict_regs: &[(i64, Vec<String>)],
-    streams: usize,
-) {
-    use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
-    use lightstream::models::writers::parallel::tcp::TcpParallelTableWriter;
-    use lightstream::traits::parallel_transport_reader::SortBehaviour;
-    use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
+// Extra transports with this crate's implementation of the Arrow stream protocol - just for reference.
 
-    group.bench_function(format!("lightstream_tcp_parallel_{streams}"), |b| {
-        b.to_async(rt).iter_custom(|iters| {
-            let table = Arc::clone(table);
-            let schema = schema.to_vec();
-            let dict_regs = dict_regs.to_vec();
-            async move {
-                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
-
-                let total_tables = iters * streams as u64;
-
-                let server = tokio::spawn(async move {
-                    let mut reader =
-                        TcpParallelTableReader::accept(&listener, streams, SortBehaviour::None, None)
-                            .await
-                            .unwrap();
-                    // Drop each table as it arrives so retention matches
-                    // Flight's decode-and-drop loop.
-                    let mut received = 0u64;
-                    while let Some(item) = reader.next().await {
-                        let (table, _seq) = item.unwrap();
-                        std::hint::black_box(table.n_rows);
-                        received += 1;
-                    }
-                    received
-                });
-
-                let mut writer =
-                    TcpParallelTableWriter::connect(addr, streams, schema, dict_regs, None)
-                        .await
-                        .unwrap();
-
-                let start = std::time::Instant::now();
-                for _ in 0..total_tables {
-                    writer.write_table((*table).clone()).await.unwrap();
-                }
-                writer.finish().await.unwrap();
-                let received = server.await.unwrap();
-                let elapsed = start.elapsed();
-                assert_eq!(received, total_tables);
-                elapsed
-            }
-        });
-    });
-}
-
-// Lightstream protocol across N concurrent connections to one endpoint. Frames
-// are decoded and dropped as they arrive under `None`, matching Flight's
-// per-stream ordering and drop-on-arrival materialisation.
-#[cfg(feature = "protocol")]
-fn bench_lightstream_protocol_parallel(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    rt: &Runtime,
-    table: &Arc<Table>,
-    schema: &[Field],
-    streams: usize,
-) {
-    use lightstream::models::readers::parallel::lightstream::LightstreamParallelReader;
-    use lightstream::models::writers::parallel::lightstream::LightstreamParallelWriter;
-    use lightstream::traits::parallel_transport_reader::SortBehaviour;
-
-    const TYPE_NAME: &str = "bench";
-
-    group.bench_function(format!("lightstream_protocol_parallel_{streams}"), |b| {
-        b.to_async(rt).iter_custom(|iters| {
-            let table = Arc::clone(table);
-            let schema = schema.to_vec();
-            async move {
-                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
-
-                let total_tables = iters * streams as u64;
-
-                let server_schema = schema.clone();
-                let server = tokio::spawn(async move {
-                    use futures::StreamExt;
-                    let table_types = [(TYPE_NAME, server_schema)];
-                    let mut reader = LightstreamParallelReader::accept(
-                        &listener,
-                        streams,
-                        &[],
-                        &table_types,
-                        SortBehaviour::None,
-                        None,
-                    )
-                    .await
-                    .unwrap();
-                    // Drop each frame as it arrives so retention matches
-                    // Flight's decode-and-drop loop.
-                    let mut received = 0u64;
-                    while let Some(item) = reader.next().await {
-                        let msg = item.unwrap();
-                        if msg.is_table() {
-                            received += 1;
-                        }
-                        std::hint::black_box(&msg);
-                    }
-                    received
-                });
-
-                let table_types = [(TYPE_NAME, schema)];
-                let mut writer =
-                    LightstreamParallelWriter::connect(addr, streams, &[], &table_types)
-                        .await
-                        .unwrap();
-
-                let start = std::time::Instant::now();
-                for _ in 0..total_tables {
-                    writer.send_table(TYPE_NAME, (*table).clone()).await.unwrap();
-                }
-                writer.finish().await.unwrap();
-                let received = server.await.unwrap();
-                let elapsed = start.elapsed();
-                assert_eq!(received, total_tables);
-                elapsed
-            }
-        });
-    });
-}
-
-// lightstream HTTP/2 across N concurrent request streams on one connection.
+// Lightstream's Arrow IPC transport writer across N concurrent HTTP/2
+// request streams on one connection.
 #[cfg(feature = "http")]
-fn bench_lightstream_http2_parallel(
+fn bench_lightstream_arrow_http2_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
     table: &Arc<Table>,
@@ -806,7 +640,7 @@ fn bench_lightstream_http2_parallel(
     use lightstream::traits::parallel_transport_reader::SortBehaviour;
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
-    group.bench_function(format!("lightstream_http2_parallel_{streams}"), |b| {
+    group.bench_function(format!("lightstream_arrow_http2_parallel_{streams}"), |b| {
         b.to_async(rt).iter_custom(|iters| {
             let table = Arc::clone(table);
             let schema = schema.to_vec();
@@ -816,7 +650,8 @@ fn bench_lightstream_http2_parallel(
                 let addr = listener.local_addr().unwrap();
                 let url = format!("http://{addr}/ingest");
 
-                let total_tables = iters * streams as u64;
+                let windows = table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices.len() as u64;
+                let total_tables = iters * streams as u64 * windows;
 
                 let server = tokio::spawn(async move {
                     use futures::StreamExt;
@@ -842,8 +677,12 @@ fn bench_lightstream_http2_parallel(
                         .unwrap();
 
                 let start = std::time::Instant::now();
-                for _ in 0..total_tables {
-                    writer.write_table((*table).clone()).await.unwrap();
+                // Each repetition splits the table inside the timed region,
+                // where Flight's encoder slices its own sends.
+                for _ in 0..iters * streams as u64 {
+                    for view in table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices {
+                        writer.write_table(view).await.unwrap();
+                    }
                 }
                 writer.finish().await.unwrap();
                 let received = server.await.unwrap();
@@ -855,11 +694,11 @@ fn bench_lightstream_http2_parallel(
     });
 }
 
-// lightstream QUIC across N concurrent unidirectional streams on one
-// connection. quinn drives the connection in the background, so the merged
-// reader drains as a plain `Stream`.
+// Lightstream's Arrow IPC transport writer across N concurrent QUIC
+// unidirectional streams on one connection. quinn drives the connection in
+// the background, so the merged reader drains as a plain `Stream`.
 #[cfg(feature = "quic")]
-fn bench_lightstream_quic_parallel(
+fn bench_lightstream_arrow_quic_parallel(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
     table: &Arc<Table>,
@@ -874,7 +713,7 @@ fn bench_lightstream_quic_parallel(
     use lightstream::traits::parallel_transport_reader::SortBehaviour;
     use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
 
-    group.bench_function(format!("lightstream_quic_parallel_{streams}"), |b| {
+    group.bench_function(format!("lightstream_arrow_quic_parallel_{streams}"), |b| {
         b.to_async(rt).iter_custom(|iters| {
             let table = Arc::clone(table);
             let schema = schema.to_vec();
@@ -914,7 +753,8 @@ fn bench_lightstream_quic_parallel(
                     quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
                 ));
 
-                let total_tables = iters * streams as u64;
+                let windows = table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices.len() as u64;
+                let total_tables = iters * streams as u64 * windows;
 
                 let server = tokio::spawn(async move {
                     use futures::StreamExt;
@@ -947,14 +787,13 @@ fn bench_lightstream_quic_parallel(
                         .await
                         .unwrap();
 
-                // Build the tables to send before the timer so the measured
-                // region is the transport alone. The clone is an Arc bump on
-                // the shared column buffers.
-                let tables: Vec<Table> = (0..total_tables).map(|_| (*table).clone()).collect();
-
                 let start = std::time::Instant::now();
-                for table in tables {
-                    writer.write_table(table).await.unwrap();
+                // Each repetition splits the table inside the timed region,
+                // where Flight's encoder slices its own sends.
+                for _ in 0..iters * streams as u64 {
+                    for view in table.get_views_for_target_batch_size(MAX_BATCH_SIZE).slices {
+                        writer.write_table(view).await.unwrap();
+                    }
                 }
                 writer.finish().await.unwrap();
                 let received = server.await.unwrap();
