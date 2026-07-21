@@ -30,6 +30,10 @@
 # Configuration:
 #
 #   REGION             AWS region. Defaults to eu-west-2.
+#   AVAILABILITY_ZONE  Availability zone for the rig's subnet, e.g. eu-west-2a.
+#                      Defaults to the Terraform value, which picks the
+#                      alphabetically-first default-VPC subnet. Set it when
+#                      the zone reports InsufficientInstanceCapacity.
 #   SHAPES             Space-separated data shapes. Defaults to all four.
 #   DATA_SOURCES       Space-separated data sources. Defaults to "memory nvme".
 #   ROWS               Rows per table. Defaults to 1000000.
@@ -83,6 +87,9 @@ TF_VARS=(-var "region=${REGION}" \
          -var "ctrl_port=${CTRL_PORT}")
 if [ -n "${INSTANCE_TYPE:-}" ]; then
   TF_VARS+=(-var "instance_type=${INSTANCE_TYPE}")
+fi
+if [ -n "${AVAILABILITY_ZONE:-}" ]; then
+  TF_VARS+=(-var "availability_zone=${AVAILABILITY_ZONE}")
 fi
 if [ -n "${TASK_MEMORY:-}" ]; then
   TF_VARS+=(-var "task_memory=${TASK_MEMORY}")

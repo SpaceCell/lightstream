@@ -13,9 +13,10 @@
 # data source replays through.
 #
 # Build context: this Dockerfile expects the build context to be the parent
-# directory that contains both the `lightstream` and `minarrow` checkouts, so
-# that the `minarrow = { path = "../minarrow" }` path dependency in the
-# workspace `Cargo.toml` resolves inside the image. `run.sh` and
+# directory that contains both the `lightstream` and `minarrow` checkouts.
+# The workspace `Cargo.toml` pins minarrow to its crates.io version, and the
+# build step patches that dependency to the copied `minarrow` checkout, so
+# the image builds against the sibling sources. `run.sh` and
 # `run-local-docker.sh` set the context accordingly; see the comments there.
 
 ARG RUST_IMAGE=rustlang/rust:nightly-bookworm-slim
@@ -30,13 +31,11 @@ RUN apt-get update \
         pkg-config libssl-dev ca-certificates protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Reproduce the on-disk sibling layout so the `../minarrow` path dependency
-# resolves. The workspace `Cargo.toml` declares
-# `minarrow = { path = "../minarrow" }`, one directory above the lightstream
-# checkout, so the two checkouts sit side by side under /build. The context
-# root is the parent directory holding both checkouts. `LIGHTSTREAM_DIR`
-# names the lightstream checkout within the context, so a git worktree with
-# a different directory name builds the code it sits in.
+# Copy the two checkouts side by side under /build, which mirrors their
+# on-disk sibling layout. The context root is the parent directory holding
+# both checkouts. `LIGHTSTREAM_DIR` names the lightstream checkout within
+# the context, so a git worktree with a different directory name builds the
+# code it sits in.
 ARG LIGHTSTREAM_DIR=lightstream
 COPY minarrow /build/minarrow
 COPY ${LIGHTSTREAM_DIR} /build/lightstream
@@ -50,9 +49,14 @@ WORKDIR /build/lightstream
 # cache is keyed by checkout name because cargo judges staleness by file
 # timestamps: a cache stamped by one checkout postdates another checkout's
 # files, and sharing it would hand back the other checkout's binaries.
+# The patch resolves the crates.io minarrow pin to the sibling checkout
+# copied above. Writing it here replaces any machine-local cargo config the
+# context carried in, so the image always builds against /build/minarrow.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=target-${LIGHTSTREAM_DIR},target=/build/lightstream/target \
-    cargo build --release \
+    mkdir -p .cargo \
+    && printf '[patch.crates-io]\nminarrow = { path = "/build/minarrow" }\n' > .cargo/config.toml \
+    && cargo build --release \
         --example bench_ecs_source --example bench_ecs_sink \
         --features "${FEATURES}" \
     && mkdir -p /out \

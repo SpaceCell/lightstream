@@ -53,8 +53,11 @@ locals {
 # Networking - default VPC, a single subnet, security group.
 #
 # Both instances land in the same AZ via the placement group's cluster
-# strategy, which requires same-AZ membership. The alphabetically-first subnet
-# in the default VPC is used.
+# strategy, which requires same-AZ membership. When `availability_zone` is
+# set, the default VPC subnet in that zone is used, which moves the whole
+# rig to a zone with instance capacity when the first choice runs dry.
+# When it is empty, the alphabetically-first subnet in the default VPC
+# selects the zone.
 ################################################################################
 
 data "aws_vpc" "default" {
@@ -65,6 +68,14 @@ data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
+  }
+
+  dynamic "filter" {
+    for_each = var.availability_zone == "" ? [] : [var.availability_zone]
+    content {
+      name   = "availability-zone"
+      values = [filter.value]
+    }
   }
 }
 
@@ -433,6 +444,18 @@ variable "region" {
   description = "AWS region in which to create the benchmark infrastructure."
   type        = string
   default     = "eu-west-2"
+}
+
+variable "availability_zone" {
+  description = <<-EOT
+    Availability zone for the benchmark subnet, for example `eu-west-2a`.
+    Both instances follow the subnet into this zone. Leave empty to use the
+    alphabetically-first subnet in the default VPC. Set it when the first
+    choice reports InsufficientInstanceCapacity for the instance type, as
+    the error message names the zones that currently have capacity.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "instance_type" {
