@@ -171,13 +171,13 @@ async fn arrow_tables() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "  Server received table batch {}: {} rows, {} cols",
                 i + 1,
-                table.n_rows,
+                table.n_rows(),
                 table.cols.len()
             );
             // Verify schema persists across batches
-            assert_eq!(table.cols[0].field.name, "id");
-            assert_eq!(table.cols[1].field.name, "value");
-            assert_eq!(table.cols[2].field.name, "label");
+            assert_eq!(table.fields[0].name, "id");
+            assert_eq!(table.fields[1].name, "value");
+            assert_eq!(table.fields[2].name, "label");
         }
     });
 
@@ -188,10 +188,10 @@ async fn arrow_tables() -> Result<(), Box<dyn std::error::Error>> {
     // Send two batches. The first carries the schema header; the second
     // sends only the record batch, because schema state persists.
     client
-        .send_table("metrics", &make_table("batch1", 5))
+        .send_table("metrics", make_table("batch1", 5))
         .await?;
     client
-        .send_table("metrics", &make_table("batch2", 3))
+        .send_table("metrics", make_table("batch2", 3))
         .await?;
     client.flush().await?;
     client.shutdown().await?;
@@ -224,7 +224,7 @@ async fn mixed_stream() -> Result<(), Box<dyn std::error::Error>> {
             match msg {
                 LightstreamMessage::Table { table, .. } => {
                     table_count += 1;
-                    println!("  Server got table: {} rows", table.n_rows);
+                    println!("  Server got table: {} rows", table.n_rows());
                 }
                 LightstreamMessage::Message { tag, ref payload } => {
                     // tag 0 = "raw", tag 1 = "command"
@@ -270,7 +270,7 @@ async fn mixed_stream() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     client
-        .send_table("metrics", &make_table("mixed", 4))
+        .send_table("metrics", make_table("mixed", 4))
         .await?;
 
     client.send("raw", b"second-raw-message").await?;
@@ -287,7 +287,7 @@ async fn mixed_stream() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     client
-        .send_table("metrics", &make_table("mixed2", 2))
+        .send_table("metrics", make_table("mixed2", 2))
         .await?;
 
     client.flush().await?;

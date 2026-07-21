@@ -109,11 +109,10 @@ fn make_test_table() -> Table {
         }))),
     );
 
-    Table {
-        cols: vec![int_col, float_col, str_col, dict_col],
-        n_rows: 4,
-        name: "test_table".to_string(),
-    }
+    Table::new(
+        "test_table".to_string(),
+        Some(vec![int_col, float_col, str_col, dict_col]),
+    )
 }
 
 fn make_schema(table: &Table) -> Vec<Field> {
@@ -473,7 +472,7 @@ fn make_marked_table(marker: i32) -> Table {
             null_mask: None,
         }))),
     );
-    Table { cols: vec![col], n_rows: 1, name: "marked".to_string() }
+    Table::new("marked".to_string(), Some(vec![col]))
 }
 
 /// Read the marker back out of a table built by `make_marked_table`.

@@ -81,11 +81,10 @@ async fn test_mmap_creates_shared_buffers() {
         float_array,
     );
 
-    let table = Table {
-        name: "mmap_test".to_string(),
-        n_rows,
-        cols: vec![int_field, float_field],
-    };
+    let table = Table::new(
+        "mmap_test".to_string(),
+        Some(vec![int_field, float_field]),
+    );
 
     // Write the table to an Arrow IPC file
     {
@@ -181,11 +180,7 @@ async fn test_mmap_alignment_with_shared_buffers() {
         int_array,
     );
 
-    let table = Table {
-        name: "alignment_test".to_string(),
-        n_rows,
-        cols: vec![int_field],
-    };
+    let table = Table::new("alignment_test".to_string(), Some(vec![int_field]));
 
     // Write the table
     {

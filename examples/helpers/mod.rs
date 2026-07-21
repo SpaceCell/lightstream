@@ -85,7 +85,7 @@ where
         },
     )
     .await?;
-    conn.send_table("metrics", &make_table(label, 4)).await?;
+    conn.send_table("metrics", make_table(label, 4)).await?;
     conn.send("raw", format!("goodbye-{}", label).as_bytes())
         .await?;
     conn.flush().await?;
@@ -112,7 +112,7 @@ where
                 }
             }
             LightstreamMessage::Table { table, .. } => {
-                println!("  [table] {} rows, {} cols", table.n_rows, table.cols.len());
+                println!("  [table] {} rows, {} cols", table.n_rows(), table.cols.len());
             }
         }
     }

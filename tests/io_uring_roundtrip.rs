@@ -130,11 +130,10 @@ fn make_test_table() -> Table {
         }))),
     );
 
-    Table {
-        cols: vec![int_col, float_col, str_col, dict_col],
-        n_rows: 4,
-        name: "test_table".to_string(),
-    }
+    Table::new(
+        "test_table".to_string(),
+        Some(vec![int_col, float_col, str_col, dict_col]),
+    )
 }
 
 /// Create a tokio-uring UnixStream pair using std sockets.

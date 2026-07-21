@@ -392,7 +392,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.into()).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -437,7 +437,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.into()).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -482,7 +482,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl).unwrap();
+        writer.write(&tbl.into()).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();

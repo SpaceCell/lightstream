@@ -544,14 +544,13 @@ async fn test_zstd_dictionary_roundtrip() {
     };
 
     let schema = vec![int_field.clone(), dict_field.clone()];
-    let original_table = Table {
-        name: "dict_compression_test".to_string(),
-        n_rows,
-        cols: vec![
+    let original_table = Table::new(
+        "dict_compression_test".to_string(),
+        Some(vec![
             FieldArray::new(int_field, int_array),
             FieldArray::new(dict_field, dict_array),
-        ],
-    };
+        ]),
+    );
 
     // Write with zstd compression
     {
