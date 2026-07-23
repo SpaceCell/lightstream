@@ -32,6 +32,7 @@ use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table, TableV};
+use tokio_tungstenite::connect_async;
 use tokio::net::TcpListener;
 
 use crate::compression::Compression;

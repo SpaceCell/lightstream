@@ -746,9 +746,9 @@ dependencies = [
 
 [[package]]
 name = "minarrow-pyo3"
-version = "0.16.2"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04715122437a0fe1c467fa6d993ec4a0569d8a0ecfe6acacde282da38c3fb582"
+checksum = "cde6692dbbba1430e1205cb65c56420d3ff2440592ce982d98f2794a14a7b8ef"
 dependencies = [
  "minarrow",
  "pyo3",
@@ -2072,3 +2072,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "minarrow"
+version = "0.16.0"
+source = "git+https://github.com/pbower/minarrow#07b4301c11e3ff0d4d077bd4b13ce850c39157fe"

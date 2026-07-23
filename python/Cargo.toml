@@ -78,6 +78,11 @@ path = "examples/transport/wt/server.rs"
 name = "stdio_server"
 path = "examples/transport/stdio/server.rs"
 
+# Pins minarrow to the repository head, which carries the producer-driven
+# record batch stream export behind `Reader.__arrow_c_stream__`.
+[patch.crates-io]
+minarrow = { git = "https://github.com/pbower/minarrow" }
+
 [build-dependencies]
 pyo3-build-config = { version = "0.29", features = ["resolve-config"] }
 

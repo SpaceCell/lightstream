@@ -87,7 +87,7 @@ Lightstream performed faster than the industry standard alternative in every mea
 
 ![Throughput across levels of core-based streaming parallelism against a variety of tabular workload shapes. Lightstream leads Arrow Flight in every combination.](assets/throughput-vs-parallelism.png)
 
-It's p99 was within 1% of p50 - consistent, low-jitter performance.
+Its p99 was within 1% of p50 - consistent, low-jitter performance.
 
 ![Delivery steadiness. Lightstream's p99 sits within 1% of its p50 on every schema, with a tighter per-batch delivery-time tail than Arrow Flight.](assets/delivery-consistency.png)
 

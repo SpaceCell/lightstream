@@ -4,6 +4,12 @@ Move Arrow tables between processes, services and storage from Python without ad
 
 `lightstream` provides one streaming API across files, memory maps, sockets and network transports. Readers return [`minarrow`](https://github.com/pbower/minarrow) objects and implement the Arrow PyCapsule protocol, allowing PyArrow, Polars, DuckDB and other Arrow-compatible libraries to consume data **straight off the wire** without an intermediate conversion.
 
+## Installation
+
+```bash
+pip install lightstream-io
+```
+
 ## Usage
 
 Everything is `read` or `write`.
