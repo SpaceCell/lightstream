@@ -1,0 +1,384 @@
+[package]
+name = "lightstream"
+version = "0.5.0"
+edition = "2024"
+license = "MPL-2.0"
+keywords = [
+    "arrow",
+    "apache-arrow",
+    "polars",
+    "streaming",
+    "simd",
+]
+categories = [
+    "asynchronous",
+    "data-structures",
+    "encoding",
+    "filesystem",
+    "network-programming",
+]
+description = "Composable, zero-copy Arrow IPC and native data streaming for Rust with SIMD-aligned I/O, async support, and memory-mapping."
+repository = "https://github.com/SpaceCell/lightstream"
+homepage = "https://github.com/SpaceCell/lightstream"
+documentation = "https://docs.rs/lightstream"
+# Deployment infrastructure for the cross-host benchmarks.
+exclude = [
+    "benches/aws/Dockerfile",
+    "benches/aws/run.sh",
+    "benches/aws/terraform/",
+    "benches/ecs/Dockerfile",
+    "benches/ecs/.dockerignore",
+    "benches/ecs/terraform/",
+    "benches/ecs/run.sh",
+    "benches/ecs/run-local-docker.sh",
+    "run-lightstream-industry-bench-local.sh",
+]
+
+[dependencies]
+tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros", "sync"] }
+futures-core = "0.3"
+futures-util = { version = "0.3", features = ["sink"] }
+flatbuffers = "25.12.19"
+libc = { version = "0.2.183", optional = true }
+futures-sink = "0.3.32"
+log = "0.4"
+minarrow = { version = "0.16.2", features = ["chunked", "views", "select", "size"], default-features = false }
+vec64 = { version = "0.4.3" }
+snap = { version = "1.0", optional = true }
+tokio-tungstenite = { version = "0.28", optional = true }
+zstd = { version = "0.13", optional = true }
+quinn = { version = "0.11", optional = true, default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+wtransport = { version = "0.7", optional = true }
+prost = { version = "0.14", optional = true }
+rmp-serde = { version = "1", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
+simd-json = { version = "0.17", optional = true, features = ["known-key"] }
+# memchr is pulled in transitively by simd-json - pinned to the same
+# minor version (2.8) that simd-json 0.17 resolves to, so the JSON
+# decoder uses one copy in the build.
+memchr = { version = "=2.8.0", optional = true }
+# ryu powers the JSON/CSV encoder fast float path. Pinned to match the
+# version simd-json already resolves to so the build keeps a single copy.
+# Integer formatting goes through the vendored `int_ascii` module instead
+# of the `itoa` crate to avoid an extra version-pin coupling.
+ryu = { version = "=1.0.23", optional = true }
+tracing = "0.1.44"
+tokio-uring = { version = "0.5", optional = true }
+# TLS for the TCP and WebSocket transports. ring is selected to match
+# quinn's crypto provider so a build that enables tcp+tls+quic does not
+# pull in a second provider.
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12"] }
+rustls-pki-types = { version = "1", optional = true }
+# HTTP/2 transport. h2 directly (not hyper). bytes and http are
+# already in the transitive tree via tokio/quinn/wtransport.
+h2 = { version = "0.4", optional = true }
+http = { version = "1", optional = true }
+bytes = { version = "1", optional = true }
+arrow = { version = "58", optional = true, default-features = false, features = ["ipc"] }
+# Apache Arrow Flight + tonic - only pulled in by the `bench_arrow_flight`
+# bench feature. Outside that feature these are not in the dependency
+# graph.
+arrow-flight = { version = "58", optional = true }
+tonic = { version = "0.14", optional = true, features = ["transport"] }
+tokio-stream = { version = "0.1", optional = true, features = ["net"] }
+futures = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
+polars = { version = "0.53", optional = true, default-features = false, features = ["ipc"] }
+# CSV fast-path float parser. Versions match what other deps already pull
+# in transitively, so the dependency tree stays the same size. Integer
+# parsing on the decode path goes through the vendored
+# `decoders::int_ascii` module instead of the `atoi` crate.
+fast-float2 = { version = "0.2", optional = true }
+env_logger = { version = "0.11", optional = true }
+
+[dev-dependencies]
+tempfile = "3.26.0"
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
+[[bench]]
+name = "file_throughput"
+path = "benches/file/file_throughput.rs"
+harness = false
+
+[[bench]]
+name = "ipc_throughput"
+path = "benches/transport/ipc_throughput.rs"
+harness = false
+
+[[bench]]
+name = "lightstream_throughput"
+path = "benches/transport/lightstream_throughput.rs"
+harness = false
+required-features = ["protocol", "tcp", "uds"]
+
+[[bench]]
+name = "json_throughput"
+path = "benches/json/json_throughput.rs"
+harness = false
+required-features = ["json"]
+
+[[bench]]
+name = "chunked_throughput"
+path = "benches/file/chunked_throughput.rs"
+harness = false
+
+[[bench]]
+name = "transport_bench_matrix"
+path = "benches/transport/transport_bench_matrix.rs"
+harness = false
+required-features = ["tcp", "uds", "websocket"]
+
+[[bench]]
+name = "arrow_flight_comparison"
+path = "benches/arrow/arrow_flight_comparison.rs"
+harness = false
+required-features = ["bench_arrow_flight", "tcp"]
+
+[[bench]]
+name = "mmap_streaming"
+path = "benches/file/mmap_streaming.rs"
+harness = false
+required-features = ["mmap"]
+
+[features]
+default_categorical_8 = ["minarrow/default_categorical_8"]
+extended_categorical = ["default_categorical_8", "minarrow/extended_categorical"]
+large_string = ["minarrow/large_string"]
+datetime = ["minarrow/datetime"]
+extended_numeric_types = ["minarrow/extended_numeric_types"]
+lbuffer = ["minarrow/lbuffer"]
+# Schema-level Table metadata as key-value pairs
+table_metadata = ["minarrow/table_metadata"]
+mmap = ["dep:libc"]
+
+# Adds parquet IO
+parquet = []
+
+# CSV reader/writer/encoder/decoder. Pulls in itoa+ryu+memchr for 
+# fast formatter and quote scanner, atoi+fast-float2 for SIMD-accelerated
+# integer and float parsing on the decode path. 
+csv = ["dep:ryu", "dep:memchr", "dep:fast-float2"]
+
+# TCP transport
+tcp = ["tokio/net"]
+# WebSocket transport
+websocket = ["tcp", "tokio-tungstenite"]
+# TLS layer for the TCP and WebSocket transports. Pulls in tokio-rustls
+# with the `ring` crypto provider to match quinn. The `?` qualifier on
+# tokio-tungstenite means rustls-tls-webpki-roots is activated only when
+# `websocket` is also enabled; a build with just `tcp + tls` does not
+# drag in tungstenite's TLS glue. No default root store is bundled; the
+# caller supplies one via their `rustls::ClientConfig`.
+tls = [
+    "tcp",
+    "dep:tokio-rustls",
+    "dep:rustls-pki-types",
+    "tokio-tungstenite?/rustls-tls-webpki-roots",
+]
+# HTTP/2 transport. http feature alone enables h2c (plaintext h2);
+# http + tls enables h2 over TLS with ALPN negotiated to "h2".
+# Client-only (GET / POST).
+http = ["tcp", "dep:h2", "dep:http", "dep:bytes"]
+# QUIC transport
+quic = ["tokio/net", "quinn"]
+# WebTransport transport
+webtransport = ["tokio/net", "wtransport"]
+# Unix domain socket transport
+uds = ["tokio/net"]
+# io_uring-based UDS transport (Linux only). Carries the Lightstream
+# protocol payloads via the tokio-uring driver, so pulls in `protocol`.
+io_uring = ["uds", "tokio-uring", "protocol"]
+# Stdin/stdout transport
+stdio = ["tokio/io-std"]
+
+# Lightstream protocol multiplexing
+protocol = []
+# Protobuf support for protocol messages via prost
+protobuf = ["protocol", "prost"]
+# MessagePack support for protocol messages via rmp-serde
+msgpack = ["protocol", "rmp-serde", "serde"]
+
+# Adds snappy compression option
+snappy = ["snap"]
+# Adds zstd compression option
+zstd = ["dep:zstd"]
+
+# Adds JSON IO via simd-json - supports array-of-objects and NDJSON
+json = ["dep:simd-json", "dep:memchr", "dep:ryu"]
+
+# Enable arrow-rs comparison in benchmarks
+bench_arrow = ["arrow"]
+# Enable the Arrow Flight head-to-head benchmark. Pulls in arrow,
+# arrow-flight, and tonic; otherwise those dependencies stay out of
+# the build graph.
+bench_arrow_flight = [
+    "arrow",
+    "dep:arrow-flight",
+    "dep:tonic",
+    "dep:tokio-stream",
+    "dep:futures",
+    "dep:bytes",
+    "minarrow/cast_arrow",
+]
+# Enable polars comparison in benchmarks
+bench_polars = ["polars"]
+# Optional `env_logger` initialiser available for use inside benches.
+bench_logging = ["dep:env_logger"]
+
+# Page-aware allocator path for large `Vec64` buffers. **Linux only.**
+# Tuned for long-lived analytical buffers; workloads dominated by
+# short-lived per-batch allocations may prefer this off. Off by
+# default. Keeps `vec64` and `minarrow` in sync via the matching
+# propagator feature.
+vmap64 = ["vec64/mmap", "minarrow/vmap64"]
+
+# Long-lived shared backing for reader/writer block buffers.
+arena = ["minarrow/arena", "dep:libc"]
+
+default = ["default_categorical_8", "arena", "large_string"]
+
+[[example]]
+name = "lightstream"
+path = "examples/lightstream/protocol.rs"
+required-features = ["protocol", "tcp", "msgpack"]
+
+[[example]]
+name = "protobuf_arrow_lightstream"
+path = "examples/lightstream/protobuf_arrow.rs"
+required-features = ["protocol", "tcp", "protobuf"]
+
+[[example]]
+name = "tcp_lightstream"
+path = "examples/tcp/lightstream.rs"
+required-features = ["protocol", "tcp", "msgpack"]
+
+[[example]]
+name = "tcp_arrow"
+path = "examples/tcp/arrow.rs"
+required-features = ["tcp"]
+
+[[example]]
+name = "bench_sender"
+path = "benches/aws/sender.rs"
+required-features = ["tcp"]
+
+[[example]]
+name = "bench_receiver"
+path = "benches/aws/receiver.rs"
+required-features = ["tcp"]
+
+[[example]]
+name = "bench_ecs_source"
+path = "benches/ecs/source.rs"
+required-features = ["bench_arrow_flight", "protocol", "tcp", "mmap"]
+
+[[example]]
+name = "bench_ecs_sink"
+path = "benches/ecs/sink.rs"
+required-features = ["bench_arrow_flight", "protocol", "tcp", "mmap"]
+
+[[example]]
+name = "tcp_arrow_tls"
+path = "examples/tcp/arrow_tls.rs"
+required-features = ["tcp", "tls"]
+
+[[example]]
+name = "websocket_lightstream"
+path = "examples/websocket/lightstream.rs"
+required-features = ["protocol", "websocket", "msgpack"]
+
+[[example]]
+name = "websocket_arrow"
+path = "examples/websocket/arrow.rs"
+required-features = ["websocket"]
+
+[[example]]
+name = "http_arrow"
+path = "examples/http/arrow.rs"
+required-features = ["http"]
+
+[[example]]
+name = "http_arrow_parallel"
+path = "examples/http/arrow-parallel.rs"
+required-features = ["http"]
+
+[[example]]
+name = "websocket_arrow_tls"
+path = "examples/websocket/arrow_tls.rs"
+required-features = ["websocket", "tls"]
+
+[[example]]
+name = "uds_lightstream"
+path = "examples/uds/lightstream.rs"
+required-features = ["protocol", "uds", "msgpack"]
+
+[[example]]
+name = "uds_arrow"
+path = "examples/uds/arrow.rs"
+required-features = ["uds"]
+
+[[example]]
+name = "quic_lightstream"
+path = "examples/quic/lightstream.rs"
+required-features = ["protocol", "quic", "msgpack"]
+
+[[example]]
+name = "quic_arrow"
+path = "examples/quic/arrow.rs"
+required-features = ["quic"]
+
+[[example]]
+name = "quic_arrow_parallel"
+path = "examples/quic/arrow-parallel.rs"
+required-features = ["quic"]
+
+[[example]]
+name = "webtransport_lightstream"
+path = "examples/webtransport/lightstream.rs"
+required-features = ["protocol", "webtransport", "msgpack"]
+
+[[example]]
+name = "webtransport_arrow"
+path = "examples/webtransport/arrow.rs"
+required-features = ["webtransport"]
+
+[[example]]
+name = "csv_basic"
+path = "examples/csv/basic.rs"
+required-features = ["csv"]
+
+[[example]]
+name = "arrow_ipc_basic"
+path = "examples/arrow/ipc_basic.rs"
+
+[[example]]
+name = "arrow_mmap"
+path = "examples/arrow/mmap.rs"
+
+[[example]]
+name = "arrow_table_reader"
+path = "examples/arrow/table_reader.rs"
+
+[[example]]
+name = "arrow_table_stream_reader"
+path = "examples/arrow/table_stream_reader.rs"
+
+[[example]]
+name = "arrow_table_stream_writer"
+path = "examples/arrow/table_stream_writer.rs"
+
+[[example]]
+name = "arrow_table_writer"
+path = "examples/arrow/table_writer.rs"
+
+[[example]]
+name = "parquet_file_io"
+path = "examples/parquet/file_io.rs"
+
+[[example]]
+name = "tlv_protocol"
+path = "examples/tlv/protocol.rs"

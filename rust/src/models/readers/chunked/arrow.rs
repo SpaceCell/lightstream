@@ -1,0 +1,190 @@
+// Copyright Peter G. Bower 2025-2026.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! # Chunked Arrow IPC reader
+//!
+//! Reads a directory of `<base>-NNNNNNNNNN.arrow` files emitted by
+//! `ChunkedArrowWriter` and presents them as an ordered iterator of
+//! `Table`s. Each chunk file is a complete, independently readable Arrow
+//! IPC file. The reader sorts files by their numeric index so consumers
+//! see batches in write order.
+//!
+//! ## Concurrency model
+//!
+//! The default [`Iterator`] path is sync and serial: each `next()` opens
+//! one chunk, reads the footer + record batches, and closes the file
+//! before the next is opened. There is no benefit to making per-file
+//! reads async - opening and reading a complete Arrow IPC file is
+//! syscall-bound, not concurrency-bound, and `tokio::fs` would only add
+//! `spawn_blocking` overhead with no I/O parallelism in return.
+//!
+//! Across files the picture changes: chunk files are independent, so
+//! parallel reads scale roughly with disk queue depth and core count.
+//! [`ChunkedTableReader::par_load_batched`](crate::traits::chunked_table_reader::ChunkedTableReader::par_load_batched) (inherited from the trait) uses
+//! `std::thread::scope` to fan per-chunk work (open + footer + body +
+//! decode) across worker threads and returns a `SuperTable` with batches
+//! in write order.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use std::sync::Arc;
+
+use minarrow::{Concatenate, SuperTable, Table};
+
+use crate::models::readers::ipc::file_table::FileTableReader;
+use crate::traits::chunked_table_reader::ChunkedTableReader;
+
+/// Iterator over chunk files in a directory written by
+/// `ChunkedArrowWriter`. Yields one `Table` per chunk file in ascending
+/// index order; the previous chunk's reader is dropped before the next
+/// is opened.
+pub struct ChunkedArrowReader {
+    paths: Vec<PathBuf>,
+    cursor: usize,
+}
+
+impl ChunkedTableReader for ChunkedArrowReader {
+    type Error = io::Error;
+    type Options = ();
+
+    fn open<P: AsRef<Path>>(dir: P, base: &str, _options: ()) -> io::Result<Self> {
+        let paths = Self::list_paths(dir, base)?;
+        Ok(Self { paths, cursor: 0 })
+    }
+
+    fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    fn list_paths<P: AsRef<Path>>(dir: P, base: &str) -> io::Result<Vec<PathBuf>> {
+        let prefix = format!("{base}-");
+        let mut indexed: Vec<(u64, PathBuf)> = Vec::new();
+        for entry in fs::read_dir(dir.as_ref())? {
+            let entry = entry?;
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) || !name.ends_with(".arrow") {
+                continue;
+            }
+            let index_str = &name[prefix.len()..name.len() - ".arrow".len()];
+            let Ok(index) = index_str.parse::<u64>() else {
+                continue;
+            };
+            indexed.push((index, path));
+        }
+        indexed.sort_by_key(|(i, _)| *i);
+        Ok(indexed.into_iter().map(|(_, p)| p).collect())
+    }
+
+    fn read_chunk(&self, path: &Path) -> io::Result<Table> {
+        let reader = FileTableReader::open(path)?;
+        let n = reader.num_batches();
+        if n == 0 {
+            return Ok(Table::default());
+        }
+        let mut accumulated: Option<Table> = None;
+        for i in 0..n {
+            let batch = reader.read_batch(i)?;
+            accumulated = Some(match accumulated {
+                None => batch,
+                Some(existing) => existing.concat(batch).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("concat: {e}"))
+                })?,
+            });
+        }
+        Ok(accumulated.unwrap_or_default())
+    }
+
+    fn read_chunk_cols(&self, path: &Path, columns: &[&str]) -> io::Result<Table> {
+        // Push projection into the chunk's IPC decoder via
+        // `FileTableReader::load_table_cols`, which feeds the column
+        // set to `decode_record_batch` so non-selected columns'
+        // buffers are skipped at decode time.
+        FileTableReader::open(path)?.load_table_cols(columns)
+    }
+
+    fn load_batched_cols(self, columns: &[&str]) -> io::Result<SuperTable> {
+        let mut batches: Vec<Arc<Table>> = Vec::new();
+        let mut name: Option<String> = None;
+        for path in &self.paths[self.cursor..] {
+            let table = self.read_chunk_cols(path, columns)?;
+            if name.is_none() {
+                name = Some(table.name.clone());
+            }
+            batches.push(Arc::new(table));
+        }
+        Ok(SuperTable::from_batches(
+            batches,
+            name.or(Some("chunked".into())),
+        ))
+    }
+}
+
+impl Iterator for ChunkedArrowReader {
+    type Item = io::Result<Table>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let path = self.paths.get(self.cursor)?.clone();
+        self.cursor += 1;
+        Some(self.read_chunk(&path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::writers::chunked::arrow::ChunkedArrowWriter;
+    use crate::traits::chunked_table_writer::ChunkedTableWriter;
+    use minarrow::{Table, fa_i32};
+
+    #[test]
+    fn par_load_batched_returns_batches_in_write_order() {
+        let dir = std::env::temp_dir().join("lightstream_chunked_arrow_par_reader");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut w = ChunkedArrowWriter::new(&dir, "part").unwrap();
+        for i in 0..16i32 {
+            w.write_chunk(&Table::new(
+                "b",
+                Some(vec![fa_i32!("n", i, i + 100)]),
+            ))
+            .unwrap();
+        }
+
+        let st = ChunkedArrowReader::par_load_batched(&dir, "part", (), None).unwrap();
+        assert_eq!(st.batches.len(), 16);
+        for (i, batch) in st.batches.iter().enumerate() {
+            assert_eq!(batch.n_rows, 2);
+            // First column's first row should be `i`, confirming write order
+            // round-trips through parallel decode unchanged.
+            let arr = &batch.cols[0].array;
+            let s = format!("{arr:?}");
+            assert!(
+                s.contains(&format!("{i}")),
+                "batch {i} first column did not contain {i}: {s}"
+            );
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn par_load_batched_handles_empty_directory() {
+        let dir = std::env::temp_dir().join("lightstream_chunked_arrow_par_reader_empty");
+        let _ = fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let st = ChunkedArrowReader::par_load_batched(&dir, "part", (), None).unwrap();
+        assert!(st.batches.is_empty());
+        assert_eq!(st.n_rows, 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+}

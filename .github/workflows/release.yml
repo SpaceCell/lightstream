@@ -1,0 +1,199 @@
+name: Release
+
+# Cut a release by pushing a v* tag. The build, wheel and audit jobs run to
+# completion, then each publish job pauses on its own environment approval
+# before shipping. The `crates-io` environment gates the Rust crate and the
+# `pypi` environment gates the Python package, so the two targets are approved
+# independently.
+#
+# workflow_dispatch runs the same build and audit, then offers a crate dry-run
+# and a TestPyPI upload for exercising the pipeline without a real release.
+#
+# Wheels cover Linux (x86_64, aarch64) and macOS (x86_64, aarch64). Windows is
+# not built: the uds and mmap paths are POSIX-only, so a Windows port is tracked
+# separately.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MANIFEST: -m python/Cargo.toml
+
+jobs:
+  test-crate:
+    name: Test the lightstream crate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo test --lib
+
+  wheels-linux:
+    name: Wheels (linux ${{ matrix.target }})
+    # aarch64 builds natively on an arm64 runner. The TLS stack pulls `ring`,
+    # whose assembly does not cross-compile through the manylinux x86 toolchain.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            runner: ubuntu-latest
+          - target: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          # manylinux container for broad Linux compatibility
+          manylinux: auto
+          rust-toolchain: nightly
+          args: --release --out dist ${{ env.MANIFEST }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  wheels-macos:
+    name: Wheels (macos ${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          rust-toolchain: nightly
+          args: --release --out dist ${{ env.MANIFEST }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist ${{ env.MANIFEST }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  audit:
+    name: Binary audit
+    runs-on: ubuntu-latest
+    needs: [wheels-linux]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+      - name: Scan the compiled extension for leaked source paths
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl | head -1)
+          tmp=$(mktemp -d)
+          unzip -q "$wheel" -d "$tmp"
+          so=$(find "$tmp" -name '*.so' | head -1)
+          echo "Auditing $so"
+          if strings "$so" | grep -nE '/home/|/Users/|/root/'; then
+            echo "::error::real source/build paths leaked into the binary"
+            exit 1
+          fi
+          echo "binary audit passed"
+
+  # Tag push -> crates.io, gated by the `crates-io` environment approval.
+  publish-crate:
+    name: Publish crate to crates.io
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [test-crate]
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/lightstream
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Authenticate to crates.io via OIDC
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  # Tag push -> PyPI, gated by the `pypi` environment approval.
+  publish-pypi:
+    name: Publish lightstream-io to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [wheels-linux, wheels-macos, sdist, audit]
+    environment:
+      name: pypi
+      url: https://pypi.org/project/lightstream-io/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  # Manual run -> crate dry-run, no publish.
+  crate-dry-run:
+    name: Crate publish dry-run
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: [test-crate]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo publish --dry-run
+
+  # Manual run -> TestPyPI, gated by the `testpypi` environment approval.
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: [wheels-linux, wheels-macos, sdist, audit]
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/lightstream-io/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true

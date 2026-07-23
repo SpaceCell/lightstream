@@ -1,0 +1,8 @@
+# lightstream (through minarrow and vec64) uses allocator_api and portable_simd,
+# which are only available on the nightly toolchain. cargo selects it
+# automatically here, so local builds, CI, and source installs all use the
+# right channel.
+#
+# Note that lightstream and minarrow will move off mandatory nightly in future
+[toolchain]
+channel = "nightly"

@@ -1,0 +1,7 @@
+target/
+.git/
+.github/
+.idea/
+*.swp
+*.swo
+.DS_Store
