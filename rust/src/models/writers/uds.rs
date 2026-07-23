@@ -21,7 +21,7 @@ use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table, TableV};
-use tokio::net::{UnixStream,UnixListener};
+use tokio::net::UnixListener;
 use tokio::net::unix::OwnedWriteHalf;
 
 use crate::compression::Compression;

@@ -212,7 +212,7 @@ json = ["dep:simd-json", "dep:memchr", "dep:ryu"]
 
 # Enable arrow-rs comparison in benchmarks
 bench_arrow = ["arrow"]
-# Enable the Arrow Flight head-to-head benchmark. Pulls in arrow,
+# Enable the Arrow Flight benchmark. Pulls in arrow,
 # arrow-flight, and tonic; otherwise those dependencies stay out of
 # the build graph.
 bench_arrow_flight = [
@@ -230,10 +230,9 @@ bench_polars = ["polars"]
 bench_logging = ["dep:env_logger"]
 
 # Page-aware allocator path for large `Vec64` buffers. **Linux only.**
-# Tuned for long-lived analytical buffers; workloads dominated by
+# Tuned for long-lived analytical buffers. Workloads dominated by
 # short-lived per-batch allocations may prefer this off. Off by
-# default. Keeps `vec64` and `minarrow` in sync via the matching
-# propagator feature.
+# default.
 vmap64 = ["vec64/mmap", "minarrow/vmap64"]
 
 # Long-lived shared backing for reader/writer block buffers.

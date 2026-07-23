@@ -1,6 +1,6 @@
 # Contributing to Lightstream
 
-Thank you for your interest in contributing to Lightstream! We welcome contributions from the community and appreciate your help!
+Thank you for your interest in contributing to Lightstream! We welcome contributions from the community and appreciate it!
 
 ## Contributor Licence Agreement
 
