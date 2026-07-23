@@ -15,6 +15,9 @@ jobs:
   build-test:
     name: build & test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +56,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: cargo build
         run: |
           if [ -z "${{ matrix.features }}" ]; then
@@ -71,20 +76,30 @@ jobs:
   test-default-features:
     name: test (default features)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: cargo test --lib
         run: cargo test --lib
 
   test-all-targets:
     name: test (all targets, full features)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       # io_uring is excluded because completion-queue support varies across
       # hosted CI kernels. The build-test matrix covers its lib tests.
       - name: cargo test --all-targets
@@ -93,10 +108,15 @@ jobs:
   doc:
     name: cargo doc
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: cargo doc
         run: cargo doc --no-deps --all-features
         env:
@@ -105,9 +125,14 @@ jobs:
   package:
     name: cargo package (smoke)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: cargo package
         run: cargo package --allow-dirty

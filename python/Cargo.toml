@@ -1,0 +1,103 @@
+cargo-features = ["trim-paths"]
+
+[package]
+name = "lightstream-py"
+version = "0.5.0"
+edition = "2024"
+authors = ["Peter G. Bower"]
+license = "MPL-2.0"
+repository = "https://github.com/SpaceCell/lightstream"
+homepage = "https://github.com/SpaceCell/lightstream"
+readme = "README.md"
+keywords = ["arrow", "streaming", "minarrow", "ipc", "parquet"]
+description = "Streaming Arrow I/O for Python - files, sockets, and network transports with zero-copy minarrow interop."
+
+[workspace]
+
+[lib]
+name = "lightstream_py"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lightstream = { version = "0.5", path = "../rust", features = ["csv", "datetime", "extended_categorical", "extended_numeric_types", "json", "mmap", "http", "parquet", "protocol", "quic", "snappy", "stdio", "tcp", "tls", "uds", "webtransport", "websocket", "zstd"] }
+# The categorical and numeric feature set mirrors the minarrow-py build.
+# minarrow-pyo3's dictionary-index conversion needs the extended features,
+# and they flow through lightstream's flags so its match arms gate in step
+# with minarrow's variants.
+minarrow = { version = "0.16", features = ["chunked"] }
+minarrow-pyo3 = { version = "0.16", features = ["extended_categorical", "extended_numeric_types"] }
+futures-core = "0.3"
+pyo3 = { version = "0.29", features = ["abi3-py39"] }
+# The QUIC and WebTransport dependency pins mirror lightstream's, so
+# the binding names the same connection and configuration types its
+# transports hand out.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+tokio = { version = "1", features = ["fs", "io-std", "net", "rt-multi-thread", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+wtransport = "0.7"
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[[example]]
+name = "tcp_server"
+path = "examples/transport/tcp/server.rs"
+
+[[example]]
+name = "uds_server"
+path = "examples/transport/uds/server.rs"
+
+[[example]]
+name = "ws_server"
+path = "examples/transport/ws/server.rs"
+
+[[example]]
+name = "wss_server"
+path = "examples/transport/wss/server.rs"
+
+[[example]]
+name = "http_server"
+path = "examples/transport/http/server.rs"
+
+[[example]]
+name = "https_server"
+path = "examples/transport/https/server.rs"
+
+[[example]]
+name = "quic_server"
+path = "examples/transport/quic/server.rs"
+
+[[example]]
+name = "wt_server"
+path = "examples/transport/wt/server.rs"
+
+[[example]]
+name = "stdio_server"
+path = "examples/transport/stdio/server.rs"
+
+# Pins minarrow to the repository head, which carries the producer-driven
+# record batch stream export behind `Reader.__arrow_c_stream__`.
+[patch.crates-io]
+minarrow = { git = "https://github.com/pbower/minarrow" }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.29", features = ["resolve-config"] }
+
+# Release profile is optimised, stripped, and carries no debug info.
+#
+# Panic stays at the default unwind so pyo3 converts Rust panics into Python exceptions
+# rather than aborting the interpreter.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+debug = false
+overflow-checks = false
+incremental = false
+# Remap every embedded path - local crate, dependencies, and std - to a
+# sanitised form, so no build-machine paths land in the binary.
+trim-paths = "all"

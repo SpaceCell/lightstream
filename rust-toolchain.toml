@@ -1,6 +1,0 @@
-# Lightstream builds on nightly: the minarrow and vec64 dependencies use
-# `allocator_api` and `portable_simd`, both nightly-only features.
-# 
-# Changes supporting a stable version are planned.
-[toolchain]
-channel = "nightly"

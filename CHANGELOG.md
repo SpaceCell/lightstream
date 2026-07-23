@@ -1,7 +1,7 @@
 # Changelog
 
-Notable changes are recorded from 0.4.2 onward.
+Notable changes are recorded from 0.5.0 onward.
 
-## 0.4.2
+## 0.5.0
 
 Initial public release.
