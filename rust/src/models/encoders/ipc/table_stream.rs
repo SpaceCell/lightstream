@@ -294,7 +294,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.clone().into()).unwrap();
+        writer.write(tbl.clone()).unwrap();
         writer.finish().unwrap();
 
         let mut file = StdFile::create(&path).unwrap();
@@ -343,7 +343,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.clone().into()).unwrap();
+        writer.write(tbl.clone()).unwrap();
         writer.finish().unwrap();
 
         let mut file = StdFile::create(&path).unwrap();
@@ -392,7 +392,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.into()).unwrap();
+        writer.write(tbl).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -437,7 +437,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.into()).unwrap();
+        writer.write(tbl).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -482,7 +482,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.into()).unwrap();
+        writer.write(tbl).unwrap();
         writer.finish().unwrap();
 
         let mut buf = Vec::new();
@@ -527,7 +527,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.clone().into()).unwrap();
+        writer.write(tbl.clone()).unwrap();
         writer.finish().unwrap();
 
         // Write to temp file
@@ -591,7 +591,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.clone().into()).unwrap();
+        writer.write(tbl.clone()).unwrap();
         writer.finish().unwrap();
 
         let mut file = StdFile::create(&path).unwrap();
@@ -654,7 +654,7 @@ mod tests {
             4,
         );
 
-        writer.write(&tbl.clone().into()).unwrap();
+        writer.write(tbl.clone()).unwrap();
         writer.finish().unwrap();
 
         // Write to temp file

@@ -131,7 +131,7 @@ fn encode_table_to_bytes(table: &Table, schema: &[Field]) -> Vec<u8> {
         vec!["red".to_string(), "green".to_string(), "blue".to_string()],
     );
 
-    writer.write(&table.clone().into()).unwrap();
+    writer.write(table.clone()).unwrap();
     writer.finish().unwrap();
 
     let mut all_bytes = Vec::new();
@@ -155,7 +155,7 @@ fn encode_tables_to_bytes(tables: &[&Table], schema: &[Field]) -> Vec<u8> {
     );
 
     for table in tables {
-        writer.write(&(*table).clone().into()).unwrap();
+        writer.write((*table).clone()).unwrap();
     }
     writer.finish().unwrap();
 

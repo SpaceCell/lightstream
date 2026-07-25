@@ -158,9 +158,9 @@ mmap = ["dep:libc"]
 # Adds parquet IO
 parquet = []
 
-# CSV reader/writer/encoder/decoder. Pulls in itoa+ryu+memchr for 
+# CSV reader/writer/encoder/decoder. Pulls in itoa+ryu+memchr for
 # fast formatter and quote scanner, atoi+fast-float2 for SIMD-accelerated
-# integer and float parsing on the decode path. 
+# integer and float parsing on the decode path.
 csv = ["dep:ryu", "dep:memchr", "dep:fast-float2"]
 
 # TCP transport

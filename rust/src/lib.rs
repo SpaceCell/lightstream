@@ -130,10 +130,6 @@ pub mod models {
 
         /// TLV sink for simple type-length-value framing
         pub mod tlv_sink;
-
-        /// Live LBuffer-backed table sink for decoded records
-        #[cfg(all(feature = "lbuffer", feature = "json"))]
-        pub mod live_table_sink;
     }
 
     /// Encoders for Arrow IPC, TLV, CSV, and optionally Parquet

@@ -23,7 +23,7 @@
 //! ```ignore
 //! let mut writer: TableStreamWriter = TableStreamWriter::new(schema, IPCMessageProtocol::Stream, None);
 //! writer.register_dictionary(0, vec!["A".into(), "B".into()]);
-//! writer.write(&table.clone().into())?;
+//! writer.write(table.clone())?;
 //! writer.finish()?;
 //! while let Some(frame) = writer.next_frame() {
 //!     let buf = frame?;
@@ -60,7 +60,7 @@ use crate::utils::dict_values;
 /// ```ignore
 /// let mut writer: TableStreamWriter = TableStreamWriter::new(schema, IPCMessageProtocol::Stream, None);
 /// writer.register_dictionary(0, vec!["A".into(), "B".into()]);
-/// writer.write(&table.clone().into())?;
+/// writer.write(table.clone())?;
 /// writer.finish()?;
 /// while let Some(frame) = writer.next_frame() {
 ///     let buf = frame?;
@@ -119,9 +119,14 @@ where
         self.encoder.register_dictionary(dict_id, values);
     }
 
-    /// Write a single table view as a record batch frame.
-    /// Emits schema and any required dictionaries as needed.
-    pub fn write(&mut self, view: &TableV) -> io::Result<()> {
+    /// Write a single table as a record batch frame, emitting the schema and
+    /// any required dictionaries as needed.
+    ///
+    /// The parameter accepts an owned `Table` as well as a `TableV` window
+    /// over one, so a caller holding a whole table passes it as it stands.
+    /// Either conversion shares the source buffers, so no column data moves.
+    pub fn write(&mut self, table: impl Into<TableV>) -> io::Result<()> {
+        let view = table.into();
         if self.encoder.state == WriterState::Closed {
             return Err(io::Error::other(
                 "writer already finished",
@@ -152,7 +157,7 @@ where
         }
 
         // Encode and emit the record batch
-        let (meta, body) = self.encoder.encode_record_batch(view)?;
+        let (meta, body) = self.encoder.encode_record_batch(&view)?;
         self.emit_frame(meta, body, fbm::MessageHeader::RecordBatch);
         Ok(())
     }
@@ -307,7 +312,7 @@ where
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&TableV::from_table(table.clone(), 0, table.n_rows))?;
+        writer.write(table.clone())?;
     }
     writer.finish()?;
 
@@ -343,7 +348,7 @@ where
             writer.register_dictionary(col_idx as i64, values);
         }
     }
-    writer.write(&TableV::from_table(table.clone(), 0, table.n_rows))?;
+    writer.write(table.clone())?;
     writer.finish()?;
 
     while let Some(frame) = writer.next_frame() {
@@ -394,7 +399,7 @@ mod tests {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
 
         let frames = writer.drain_all_frames();
@@ -424,8 +429,8 @@ mod tests {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&table1.clone().into()).unwrap();
-        writer.write(&table2.clone().into()).unwrap();
+        writer.write(table1.clone()).unwrap();
+        writer.write(table2.clone()).unwrap();
         writer.finish().unwrap();
 
         let frames = writer.drain_all_frames();
@@ -451,7 +456,7 @@ mod tests {
         let mut bad_table = test_table();
         bad_table.cols.pop(); // Now schema and columns mismatch
         let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema, IPCMessageProtocol::Stream, None);
-        let err = writer.write(&bad_table.clone().into()).unwrap_err();
+        let err = writer.write(bad_table.clone()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
@@ -467,7 +472,7 @@ mod tests {
     //     let mut writer = TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
     //     // Register dictionary explicitly
     //     writer.register_dictionary((table.cols.len() - 1) as i64, dict_col.array.as_dict_values().unwrap());
-    //     writer.write(&table.clone().into()).unwrap();
+    //     writer.write(table.clone()).unwrap();
     //     writer.finish().unwrap();
 
     //     let frames = writer.drain_all_frames();
@@ -486,7 +491,7 @@ mod tests {
                 writer.register_dictionary(col_idx as i64, values);
             }
         }
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
 
         let mut pin_writer = Box::pin(writer);

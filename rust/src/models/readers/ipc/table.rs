@@ -273,8 +273,8 @@ mod tests {
         let mut writer =
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
-        writer.write(&table.clone().into()).unwrap();
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 
@@ -305,9 +305,9 @@ mod tests {
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
         // three batches
-        writer.write(&table.clone().into()).unwrap();
-        writer.write(&table.clone().into()).unwrap();
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
+        writer.write(table.clone()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 
@@ -332,8 +332,8 @@ mod tests {
         let mut writer =
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
-        writer.write(&table.clone().into()).unwrap();
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 
@@ -363,8 +363,8 @@ mod tests {
         let mut writer =
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
-        writer.write(&table.clone().into()).unwrap();
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 
@@ -392,7 +392,7 @@ mod tests {
         let mut writer =
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 
@@ -435,8 +435,8 @@ mod tests {
         let mut writer =
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
-        writer.write(&table.clone().into()).unwrap();
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 
@@ -465,7 +465,7 @@ mod tests {
         let mut writer =
             TableStreamWriter::<Vec64<u8>>::new(schema.clone(), IPCMessageProtocol::Stream, None);
         register_dictionaries_for_table(&mut writer, &table);
-        writer.write(&table.clone().into()).unwrap();
+        writer.write(table.clone()).unwrap();
         writer.finish().unwrap();
         let frames = writer.drain_all_frames();
 

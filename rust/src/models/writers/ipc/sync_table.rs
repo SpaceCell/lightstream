@@ -99,7 +99,7 @@ where
                 self.inner.register_dictionary(col_idx as i64, values);
             }
         }
-        self.inner.write(&view)?;
+        self.inner.write(view)?;
         self.drain_frames()
     }
 

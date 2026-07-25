@@ -110,7 +110,7 @@ where
     /// `custom_metadata` to its record batch message.
     pub(crate) fn encode_frame(
         &mut self,
-        view: &TableV,
+        view: TableV,
         custom_metadata: Option<&[(String, String)]>,
     ) -> io::Result<()> {
         if self.protocol == IPCMessageProtocol::Stream {
@@ -122,7 +122,7 @@ where
                 buf.drain(0..len);
             }
             self.codec
-                .encode_stream_batch(view, &mut buf, 0, custom_metadata)?;
+                .encode_stream_batch(&view, &mut buf, 0, custom_metadata)?;
             self.frame_buf = Some(buf);
             self.frame_pos = 0;
         } else if let Some(writer) = &mut self.file_writer {
@@ -146,7 +146,7 @@ where
     }
 
     fn start_send(self: Pin<&mut Self>, view: TableV) -> Result<(), Self::Error> {
-        self.get_mut().encode_frame(&view, None)
+        self.get_mut().encode_frame(view, None)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

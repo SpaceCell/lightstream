@@ -173,7 +173,7 @@ impl HttpTableWriter {
         table: impl Into<TableV> + Send,
         metadata: Vec<(String, String)>,
     ) -> io::Result<()> {
-        self.sink.encode_frame(&table.into(), Some(metadata.as_slice()))?;
+        self.sink.encode_frame(table.into(), Some(metadata.as_slice()))?;
         SinkExt::flush(&mut self.sink).await?;
         Ok(())
     }
