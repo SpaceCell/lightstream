@@ -20,8 +20,7 @@ certificate. stdio pipes the server's stdout into the client.
 
 The folders under pipes/ demonstrate composition instead: sed and jq
 rewrite text-streamed batches in flight, claude watches a feed for
-bad data, sql runs rolling DuckDB aggregates over a live wire, and
-debug tails any feed with pretty printing.
+bad data, and sql runs rolling DuckDB aggregates over a live wire.
 """
 
 import argparse
@@ -38,7 +37,7 @@ EXAMPLES_DIR = Path(__file__).resolve().parent
 MANIFEST = EXAMPLES_DIR.parent / "Cargo.toml"
 
 TRANSPORTS = ["tcp", "uds", "ws", "wss", "http", "https", "quic", "wt", "stdio"]
-PIPES = ["sed", "claude", "jq", "sql", "debug"]
+PIPES = ["sed", "claude", "jq", "sql"]
 TLS_TRANSPORTS = {"wss", "https", "quic", "wt"}
 
 
@@ -226,14 +225,6 @@ def run_sql():
     run_feed_and(EXAMPLES_DIR / "pipes" / "sql" / "query.py", "sql")
 
 
-def run_debug():
-    tail = EXAMPLES_DIR / "pipes" / "debug" / "tail.py"
-    print("tail -f for Arrow feeds, over any transport:\n")
-    print(f"  {sys.executable} {tail} <uri> [--accept] [--protocol lightstream]\n")
-    print("Tailing a demo TCP feed now:\n", flush=True)
-    run_feed_and(tail, "debug", extra_args=["{uri}"])
-
-
 def main():
     parser = argparse.ArgumentParser(description="Fetch the demo table over a transport.")
     parser.add_argument("transport", choices=TRANSPORTS + PIPES)
@@ -252,7 +243,6 @@ def main():
             "jq": run_jq,
             "claude": run_claude,
             "sql": run_sql,
-            "debug": run_debug,
         }[args.transport]()
         return
 

@@ -141,7 +141,11 @@ where
 {
     type Error = io::Error;
 
-    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    /// Admit a new table once the pending frame has reached the sink.
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.frame_buf.is_some() {
+            return self.as_mut().poll_flush(cx);
+        }
         Poll::Ready(Ok(()))
     }
 
@@ -231,5 +235,78 @@ where
         Pin::new(&mut self.destination)
             .poll_shutdown(cx)
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::SinkExt;
+    use minarrow::Table;
+
+    use super::*;
+    use crate::models::decoders::ipc::table_stream_decoder::TableStreamDecoder;
+    use crate::test_helpers::{int32_col, int64_col};
+
+    fn test_table() -> Table {
+        Table::new("t".to_string(), vec![int32_col(), int64_col()].into())
+    }
+
+    fn schema_of(table: &Table) -> Vec<Field> {
+        table
+            .cols
+            .iter()
+            .map(|fa| fa.field.as_ref().clone())
+            .collect()
+    }
+
+    async fn decoded_batches(bytes: Vec<u8>) -> usize {
+        let mut decoder = TableStreamDecoder::<Vec64<u8>>::new(
+            std::io::Cursor::new(bytes),
+            64 * 1024,
+            IPCMessageProtocol::Stream,
+            None,
+        );
+        let mut count = 0;
+        while let Some(item) = decoder.read_keyed().await {
+            item.expect("stream decoded cleanly");
+            count += 1;
+        }
+        count
+    }
+
+    /// `feed` admits an item without flushing, so a caller may queue several
+    /// tables against a single flush. Every one of them must still reach the
+    /// wire, and the stream must stay decodable.
+    #[tokio::test]
+    async fn feed_without_flush_keeps_every_table() {
+        let table = test_table();
+        let mut sink =
+            TableSink64::new(Vec::new(), schema_of(&table), IPCMessageProtocol::Stream, None)
+                .unwrap();
+
+        sink.feed(table.clone().into()).await.unwrap();
+        sink.feed(table.clone().into()).await.unwrap();
+        sink.feed(table.clone().into()).await.unwrap();
+        SinkExt::flush(&mut sink).await.unwrap();
+        SinkExt::close(&mut sink).await.unwrap();
+
+        let bytes = std::mem::take(&mut sink.destination);
+        assert_eq!(decoded_batches(bytes).await, 3);
+    }
+
+    /// `send` flushes per item, the path the transport writers take.
+    #[tokio::test]
+    async fn send_per_item_keeps_every_table() {
+        let table = test_table();
+        let mut sink =
+            TableSink64::new(Vec::new(), schema_of(&table), IPCMessageProtocol::Stream, None)
+                .unwrap();
+
+        SinkExt::send(&mut sink, table.clone().into()).await.unwrap();
+        SinkExt::send(&mut sink, table.clone().into()).await.unwrap();
+        SinkExt::close(&mut sink).await.unwrap();
+
+        let bytes = std::mem::take(&mut sink.destination);
+        assert_eq!(decoded_batches(bytes).await, 2);
     }
 }

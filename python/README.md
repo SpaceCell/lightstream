@@ -166,7 +166,6 @@ python examples/run-example.py sed
 python examples/run-example.py jq
 python examples/run-example.py claude
 python examples/run-example.py sql
-python examples/run-example.py debug
 ```
 
 The pipeline examples demonstrate:
@@ -175,7 +174,6 @@ The pipeline examples demonstrate:
 * `jq` filtering NDJSON and returning CSV
 * an agent diagnosing invalid batches
 * rolling DuckDB SQL over a live stream
-* `tail -f`-style table inspection and pretty-printing
 
 ## Transport examples
 

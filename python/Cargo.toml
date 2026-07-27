@@ -2,7 +2,7 @@ cargo-features = ["trim-paths"]
 
 [package]
 name = "lightstream-py"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Peter G. Bower"]
 license = "MPL-2.0"
@@ -19,7 +19,7 @@ name = "lightstream_py"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-lightstream = { version = "0.5", path = "../rust", features = ["csv", "datetime", "extended_categorical", "extended_numeric_types", "json", "mmap", "http", "parquet", "protocol", "quic", "snappy", "stdio", "tcp", "tls", "uds", "webtransport", "websocket", "zstd"] }
+lightstream = { version = "0.6", path = "../rust", features = ["csv", "datetime", "extended_categorical", "extended_numeric_types", "json", "mmap", "http", "parquet", "protocol", "quic", "snappy", "stdio", "tcp", "tls", "uds", "webtransport", "websocket", "zstd"] }
 # The categorical and numeric feature set mirrors the minarrow-py build.
 # minarrow-pyo3's dictionary-index conversion needs the extended features,
 # and they flow through lightstream's flags so its match arms gate in step
@@ -77,11 +77,6 @@ path = "examples/transport/wt/server.rs"
 [[example]]
 name = "stdio_server"
 path = "examples/transport/stdio/server.rs"
-
-# Pins minarrow to the repository head, which carries the producer-driven
-# record batch stream export behind `Reader.__arrow_c_stream__`.
-[patch.crates-io]
-minarrow = { git = "https://github.com/pbower/minarrow" }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.29", features = ["resolve-config"] }

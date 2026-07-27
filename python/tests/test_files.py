@@ -169,9 +169,9 @@ def test_parallel_on_file_raises(tmp_path):
         ls.read(str(tmp_path / "quotes.arrow"), parallel=True)
 
 
-def test_out_of_core_with_mmap_false_raises():
+def test_out_of_core_with_mmap_true_raises():
     with pytest.raises(ValueError, match="out_of_core"):
-        ls.read("quotes.arrow", mmap=False, out_of_core=True)
+        ls.read("quotes.arrow", mmap=True, out_of_core=True)
 
 
 def test_closed_reader_raises(tmp_path):
