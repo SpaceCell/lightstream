@@ -19,7 +19,7 @@ use std::io;
 use std::pin::Pin;
 
 use futures_util::sink::SinkExt;
-use minarrow::{Field, Table, TableV};
+use minarrow::{Field, TableV};
 
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
@@ -85,7 +85,10 @@ impl IPCTransportWriter for QuicTableWriter {
     }
 
     /// Write all tables and close.
-    async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
+    async fn write_all_tables(
+        &mut self,
+        tables: Vec<impl Into<TableV> + Send>,
+    ) -> io::Result<()> {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
             SinkExt::send(&mut sink, table.into()).await?;

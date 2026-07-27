@@ -18,7 +18,7 @@
 use std::io;
 
 use http::{Method, Request, Uri};
-use minarrow::{Field, Table, TableV};
+use minarrow::{Field, TableV};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -165,7 +165,10 @@ impl ParallelTransportWriter for HttpParallelTableWriter {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream task closed"))
     }
 
-    async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
+    async fn write_all_tables(
+        &mut self,
+        tables: Vec<impl Into<TableV> + Send>,
+    ) -> io::Result<()> {
         for table in tables {
             self.write_table(table).await?;
         }

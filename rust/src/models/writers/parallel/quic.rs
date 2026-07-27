@@ -17,7 +17,7 @@
 
 use std::io;
 
-use minarrow::{Field, Table, TableV};
+use minarrow::{Field, TableV};
 use quinn::Connection;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -132,7 +132,10 @@ impl ParallelTransportWriter for QuicParallelTableWriter {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC stream task closed"))
     }
 
-    async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
+    async fn write_all_tables(
+        &mut self,
+        tables: Vec<impl Into<TableV> + Send>,
+    ) -> io::Result<()> {
         for table in tables {
             self.write_table(table).await?;
         }

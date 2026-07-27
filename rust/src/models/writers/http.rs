@@ -27,7 +27,7 @@ use std::pin::Pin;
 use bytes::Bytes;
 use futures_util::sink::SinkExt;
 use http::{Method, Request, Uri};
-use minarrow::{Field, Table, TableV};
+use minarrow::{Field, TableV};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::compression::Compression;
@@ -194,7 +194,10 @@ impl IPCTransportWriter for HttpTableWriter {
         Ok(())
     }
 
-    async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
+    async fn write_all_tables(
+        &mut self,
+        tables: Vec<impl Into<TableV> + Send>,
+    ) -> io::Result<()> {
         let mut sink = Pin::new(&mut self.sink);
         for table in tables {
             SinkExt::send(&mut sink, table.into()).await?;

@@ -20,7 +20,7 @@
 use std::io;
 use std::net::SocketAddr;
 
-use minarrow::{Field, Table, TableV};
+use minarrow::{Field, TableV};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -136,7 +136,10 @@ impl ParallelTransportWriter for TcpParallelTableWriter {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "TCP connection task closed"))
     }
 
-    async fn write_all_tables(&mut self, tables: Vec<Table>) -> io::Result<()> {
+    async fn write_all_tables(
+        &mut self,
+        tables: Vec<impl Into<TableV> + Send>,
+    ) -> io::Result<()> {
         for table in tables {
             self.write_table(table).await?;
         }

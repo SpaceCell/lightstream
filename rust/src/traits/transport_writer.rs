@@ -18,7 +18,7 @@
 use std::future::Future;
 use std::io;
 
-use minarrow::{Field, Table, TableV};
+use minarrow::{Field, TableV};
 
 /// Shared writing interface for all transport-level Arrow IPC writers.
 pub trait IPCTransportWriter {
@@ -37,7 +37,7 @@ pub trait IPCTransportWriter {
     /// Write all tables and close.
     fn write_all_tables(
         &mut self,
-        tables: Vec<Table>,
+        tables: Vec<impl Into<TableV> + Send>,
     ) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Finalise the stream. Must be called after writing all tables.
