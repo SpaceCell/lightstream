@@ -89,15 +89,9 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
         n: Option<usize>,
     ) -> io::Result<SuperTable> {
         let mut batches = Vec::new();
-        let mut schema: Option<Vec<std::sync::Arc<Field>>> = None;
-        let mut n_rows = 0usize;
         let mut count = 0usize;
         while let Some(batch) = self.next().await {
             let batch = batch?;
-            if schema.is_none() {
-                schema = Some(batch.cols.iter().map(|f| f.field.clone()).collect());
-            }
-            n_rows += batch.n_rows;
             batches.push(Arc::new(batch));
             count += 1;
             if let Some(max) = n
@@ -105,12 +99,11 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
                     break;
                 }
         }
-        Ok(SuperTable {
-            batches,
-            schema: schema.unwrap_or_default(),
-            n_rows,
-            name: name.unwrap_or_else(|| "SuperTable".to_string()),
-        })
+        let name = name.unwrap_or_else(|| "SuperTable".to_string());
+        if batches.is_empty() {
+            return Ok(SuperTable::new(name));
+        }
+        Ok(SuperTable::from_batches(batches, Some(name)))
     }
 
     /// Read all batches and concatenate into a single `Table` row-wise.

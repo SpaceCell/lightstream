@@ -167,7 +167,7 @@ mod tests {
         use crate::models::readers::parquet::load_parquet_table;
         use crate::models::writers::parquet::write_parquet_table;
         use minarrow::{
-            Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, TextArray,
+            Array, ArrowType, Bitmask, CategoricalArray, Field, FieldArray, TextArray,
             Vec64, ffi::arrow_dtype::CategoricalIndexType,
         };
         use std::sync::Arc;
@@ -185,11 +185,7 @@ mod tests {
             let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
             (
                 ArrowType::Dictionary(CategoricalIndexType::UInt8),
-                Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-                    data: Buffer::from(indices),
-                    unique_values,
-                    null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-                }))),
+                Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::from_parts(indices, unique_values, Some(Bitmask::new_set_all(n_rows, true)))))),
             )
         };
         #[cfg(not(feature = "default_categorical_8"))]
@@ -197,11 +193,7 @@ mod tests {
             let indices: Vec64<u32> = (0..n_rows).map(|i| (i % 3) as u32).collect();
             (
                 ArrowType::Dictionary(CategoricalIndexType::UInt32),
-                Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-                    data: Buffer::from(indices),
-                    unique_values,
-                    null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-                }))),
+                Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::from_parts(indices, unique_values, Some(Bitmask::new_set_all(n_rows, true)))))),
             )
         };
         let dict_col = FieldArray::new(

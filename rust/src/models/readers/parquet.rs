@@ -501,11 +501,7 @@ fn build_cat32(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> 
         .map(|b| String::from_utf8(b.clone()).unwrap())
         .collect::<Vec64<_>>()
         .into();
-    Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-        data: idx.into(),
-        unique_values: dict,
-        null_mask: mask,
-    })))
+    Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::from_parts(idx, dict, mask))))
 }
 
 #[cfg(feature = "default_categorical_8")]
@@ -515,11 +511,9 @@ fn build_cat8(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> A
         .map(|b| String::from_utf8(b.clone()).unwrap())
         .collect::<Vec64<_>>();
     let idx8: Vec64<u8> = idx.iter().map(|&v| v as u8).collect();
-    Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-        data: idx8.into(),
-        unique_values: dict,
-        null_mask: mask,
-    })))
+    Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::from_parts(
+        idx8, dict, mask,
+    ))))
 }
 
 #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
@@ -529,11 +523,7 @@ fn build_cat64(idx: Vec64<u64>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> 
         .map(|b| String::from_utf8(b.clone()).unwrap())
         .collect::<Vec64<_>>()
         .into();
-    Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray {
-        data: idx.into(),
-        unique_values: dict,
-        null_mask: mask,
-    })))
+    Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray::from_parts(idx, dict, mask))))
 }
 
 // RLE/bit-packed Hybrid decoder
@@ -1332,7 +1322,7 @@ mod tests {
         match array {
             Array::TextArray(TextArray::Categorical32(cat)) => {
                 assert_eq!(cat.data.as_slice(), idx.as_slice());
-                let uniq: Vec<_> = cat.unique_values.iter().collect();
+                let uniq: Vec<_> = cat.unique_values().iter().collect();
                 assert_eq!(uniq, vec!["foo", "bar"]);
             }
             _ => panic!("unexpected array variant {:?}", array),
@@ -1362,7 +1352,7 @@ mod tests {
         match array {
             Array::TextArray(TextArray::Categorical8(cat)) => {
                 assert_eq!(cat.data.as_slice(), &[0u8, 1, 1, 0]);
-                let uniq: Vec<_> = cat.unique_values.iter().collect();
+                let uniq: Vec<_> = cat.unique_values().iter().collect();
                 assert_eq!(uniq, vec!["foo", "bar"]);
             }
             _ => panic!("unexpected array variant {:?}", array),

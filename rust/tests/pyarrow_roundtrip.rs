@@ -162,7 +162,7 @@ mod pyarrow_roundtrip_tests {
                         i
                     );
                     assert_eq!(
-                        exp.unique_values, act.unique_values,
+                        exp.unique_values(), act.unique_values(),
                         "Categorical32 values mismatch in column {}",
                         i
                     );
@@ -179,7 +179,7 @@ mod pyarrow_roundtrip_tests {
                         i
                     );
                     assert_eq!(
-                        exp.unique_values, act.unique_values,
+                        exp.unique_values(), act.unique_values(),
                         "Categorical8 values mismatch in column {}",
                         i
                     );

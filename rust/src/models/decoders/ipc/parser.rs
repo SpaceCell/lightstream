@@ -1446,41 +1446,47 @@ fn make_categorical_array(
     null_mask: Option<Bitmask>,
 ) -> io::Result<Array> {
     let unique_values = Vec64::from(dict_values.to_vec());
+    // The index buffer stays shared with the IPC frame. Under `shared_dict` the
+    // dictionary is a fresh sharing group built from the frame's values.
+    macro_rules! categorical {
+        ($ty:ty) => {{
+            #[cfg(feature = "shared_dict")]
+            {
+                CategoricalArray::<$ty>::new_existing_dict(
+                    minarrow::Buffer::from_shared(idx_data),
+                    Dictionary::from(unique_values),
+                    null_mask,
+                )
+            }
+            #[cfg(not(feature = "shared_dict"))]
+            {
+                CategoricalArray::<$ty> {
+                    data: minarrow::Buffer::from_shared(idx_data),
+                    unique_values,
+                    null_mask,
+                }
+            }
+        }};
+    }
     let array = match idx_ty {
         #[cfg(any(
             not(feature = "default_categorical_8"),
             feature = "extended_categorical"
         ))]
         CategoricalIndexType::UInt32 => {
-            Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
-                unique_values,
-                null_mask,
-            })))
+            Array::TextArray(TextArray::Categorical32(Arc::new(categorical!(u32))))
         }
         #[cfg(feature = "default_categorical_8")]
         CategoricalIndexType::UInt8 => {
-            Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
-                unique_values,
-                null_mask,
-            })))
+            Array::TextArray(TextArray::Categorical8(Arc::new(categorical!(u8))))
         }
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt16 => {
-            Array::TextArray(TextArray::Categorical16(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
-                unique_values,
-                null_mask,
-            })))
+            Array::TextArray(TextArray::Categorical16(Arc::new(categorical!(u16))))
         }
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt64 => {
-            Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
-                unique_values,
-                null_mask,
-            })))
+            Array::TextArray(TextArray::Categorical64(Arc::new(categorical!(u64))))
         }
         #[allow(unreachable_patterns)]
         _ => {

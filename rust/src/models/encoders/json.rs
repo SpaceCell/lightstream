@@ -240,19 +240,19 @@ fn collect_cat_maps(table: &Table) -> Vec<Option<&[String]>> {
                 feature = "extended_categorical"
             ))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
+                cat_maps.push(Some(arr.unique_values()))
             }
             #[cfg(feature = "default_categorical_8")]
             Array::TextArray(TextArray::Categorical8(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
+                cat_maps.push(Some(arr.unique_values()))
             }
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical16(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
+                cat_maps.push(Some(arr.unique_values()))
             }
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical64(arr)) => {
-                cat_maps.push(Some(&arr.unique_values))
+                cat_maps.push(Some(arr.unique_values()))
             }
             _ => cat_maps.push(None),
         }

@@ -263,19 +263,19 @@ mod integration {
                     feature = "extended_categorical"
                 ))]
                 Array::TextArray(TextArray::Categorical32(arr)) => {
-                    Some((i as i64, arr.unique_values.clone()))
+                    Some((i as i64, Vec64::from_slice_clone(arr.unique_values())))
                 }
                 #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(arr)) => {
-                    Some((i as i64, arr.unique_values.clone()))
+                    Some((i as i64, Vec64::from_slice_clone(arr.unique_values())))
                 }
                 #[cfg(feature = "extended_categorical")]
                 Array::TextArray(TextArray::Categorical16(arr)) => {
-                    Some((i as i64, arr.unique_values.clone()))
+                    Some((i as i64, Vec64::from_slice_clone(arr.unique_values())))
                 }
                 #[cfg(feature = "extended_categorical")]
                 Array::TextArray(TextArray::Categorical64(arr)) => {
-                    Some((i as i64, arr.unique_values.clone()))
+                    Some((i as i64, Vec64::from_slice_clone(arr.unique_values())))
                 }
                 _ => None,
             })
@@ -737,14 +737,22 @@ mod integration {
                         &mut table_with_dict.cols[3].array
                     {
                         let cat_arr = Arc::make_mut(cat_arr);
-                        cat_arr.unique_values = Vec64::from(uniqs);
+                        *cat_arr = CategoricalArray::from_parts(
+                            Vec64::from_slice(cat_arr.data.as_slice()),
+                            Vec64::from(uniqs),
+                            cat_arr.null_mask.clone(),
+                        );
                     }
                     #[cfg(feature = "default_categorical_8")]
                     if let Array::TextArray(TextArray::Categorical8(cat_arr)) =
                         &mut table_with_dict.cols[3].array
                     {
                         let cat_arr = Arc::make_mut(cat_arr);
-                        cat_arr.unique_values = Vec64::from(uniqs);
+                        *cat_arr = CategoricalArray::from_parts(
+                            Vec64::from_slice(cat_arr.data.as_slice()),
+                            Vec64::from(uniqs),
+                            cat_arr.null_mask.clone(),
+                        );
                     }
                     write_stream_tables_to_file(&path, &[table_with_dict], &schema)
                         .await

@@ -913,11 +913,7 @@ fn build_categorical_col_inline(
         codes[r] = code;
     }
     Ok(Array::TextArray(TextArray::Categorical32(
-        minarrow::CategoricalArray {
-            data: Buffer::from(codes),
-            unique_values: uniques.into(),
-            null_mask: Some(mask_to_bitmask(null_bools)),
-        }
+        CategoricalArray::from_parts(codes, uniques.into(), Some(mask_to_bitmask(null_bools)))
         .into(),
     )))
 }
@@ -961,11 +957,11 @@ fn build_categorical_col_inline(
         codes[r] = code;
     }
     Ok(Array::TextArray(TextArray::Categorical8(
-        minarrow::CategoricalArray {
-            data: Buffer::from(codes),
-            unique_values: uniques.into(),
-            null_mask: Some(mask_to_bitmask(null_bools)),
-        }
+        minarrow::CategoricalArray::from_parts(
+            codes,
+            uniques.into(),
+            Some(mask_to_bitmask(null_bools)),
+        )
         .into(),
     )))
 }

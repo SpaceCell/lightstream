@@ -218,11 +218,7 @@ mod tests {
 
     #[cfg(not(feature = "default_categorical_8"))]
     fn make_table() -> Table {
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u32, 0, 2, 1])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, false, true, true])),
-        };
+        let arr = CategoricalArray::from_parts(Vec64::from_slice(&[1u32, 0, 2, 1]), Vec64::from(dict_strs()), Some(make_bitmask(&[true, false, true, true])));
         Table {
             cols: vec![FieldArray::new(
                 Field {
@@ -242,11 +238,7 @@ mod tests {
 
     #[cfg(feature = "default_categorical_8")]
     fn make_table() -> Table {
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, false, true, true])),
-        };
+        let arr = CategoricalArray::from_parts(Vec64::from_slice(&[1u8, 0, 2, 1]), Vec64::from(dict_strs()), Some(make_bitmask(&[true, false, true, true])));
         Table {
             cols: vec![FieldArray::new(
                 Field {

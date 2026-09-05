@@ -518,11 +518,7 @@ async fn test_zstd_dictionary_roundtrip() {
             nullable: false,
             metadata: Default::default(),
         };
-        let array = Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-            data: Buffer::from(indices),
-            unique_values: Vec64::from(dict_values.clone()),
-            null_mask: None,
-        })));
+        let array = Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::from_parts(indices, Vec64::from(dict_values.clone()), None))));
         (field, array)
     };
 
@@ -535,11 +531,7 @@ async fn test_zstd_dictionary_roundtrip() {
             nullable: false,
             metadata: Default::default(),
         };
-        let array = Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-            data: Buffer::from(indices),
-            unique_values: Vec64::from(dict_values.clone()),
-            null_mask: None,
-        })));
+        let array = Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::from_parts(indices, Vec64::from(dict_values.clone()), None))));
         (field, array)
     };
 
@@ -594,7 +586,7 @@ async fn test_zstd_dictionary_roundtrip() {
     #[cfg(not(feature = "default_categorical_8"))]
     if let Array::TextArray(TextArray::Categorical32(arr)) = &rt.cols[1].array {
         assert_eq!(
-            arr.unique_values.as_slice(),
+            arr.unique_values(),
             &["alpha", "beta", "gamma"],
             "Dictionary values should match"
         );
@@ -613,7 +605,7 @@ async fn test_zstd_dictionary_roundtrip() {
     #[cfg(feature = "default_categorical_8")]
     if let Array::TextArray(TextArray::Categorical8(arr)) = &rt.cols[1].array {
         assert_eq!(
-            arr.unique_values.as_slice(),
+            arr.unique_values(),
             &["alpha", "beta", "gamma"],
             "Dictionary values should match"
         );

@@ -80,15 +80,11 @@ fn make_test_table() -> Table {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[0u32, 1, 2, 0])),
-            unique_values: Vec64::from(vec![
+        Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[0u32, 1, 2, 0]), Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
                 "blue".to_string(),
-            ]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+            ]), Some(Bitmask::new_set_all(4, true)))))),
     );
     #[cfg(feature = "default_categorical_8")]
     let dict_col = FieldArray::new(
@@ -98,15 +94,11 @@ fn make_test_table() -> Table {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 2, 0])),
-            unique_values: Vec64::from(vec![
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[0u8, 1, 2, 0]), Vec64::from(vec![
                 "red".to_string(),
                 "green".to_string(),
                 "blue".to_string(),
-            ]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+            ]), Some(Bitmask::new_set_all(4, true)))))),
     );
 
     Table::new(
@@ -491,13 +483,13 @@ fn category_labels(table: &Table) -> Vec<String> {
         Array::TextArray(TextArray::Categorical8(arr)) => arr
             .data
             .iter()
-            .map(|&i| arr.unique_values[i as usize].clone())
+            .map(|&i| arr.unique_values()[i as usize].clone())
             .collect(),
         #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         Array::TextArray(TextArray::Categorical32(arr)) => arr
             .data
             .iter()
-            .map(|&i| arr.unique_values[i as usize].clone())
+            .map(|&i| arr.unique_values()[i as usize].clone())
             .collect(),
         other => panic!("expected a categorical column, found {other:?}"),
     }

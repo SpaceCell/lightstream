@@ -179,15 +179,11 @@ pub(crate) fn dict32_col() -> FieldArray {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u32, 0, 2, 1])),
-            unique_values: Vec64::from(vec![
+        Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[1u32, 0, 2, 1]), Vec64::from(vec![
                 "apple".to_string(),
                 "banana".to_string(),
                 "pear".to_string(),
-            ]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+            ]), Some(Bitmask::new_set_all(4, true)))))),
     )
 }
 
@@ -201,15 +197,11 @@ pub(crate) fn dict8_default_col() -> FieldArray {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
-            unique_values: Vec64::from(vec![
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[1u8, 0, 2, 1]), Vec64::from(vec![
                 "apple".to_string(),
                 "banana".to_string(),
                 "pear".to_string(),
-            ]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+            ]), Some(Bitmask::new_set_all(4, true)))))),
     )
 }
 
@@ -280,11 +272,7 @@ pub(crate) fn dict8_extended_col() -> FieldArray {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
-            unique_values: Vec64::from(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+        Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[1u8, 0, 2, 1]), Vec64::from(vec!["a".to_string(), "b".to_string(), "c".to_string()]), Some(Bitmask::new_set_all(4, true)))))),
     )
 }
 
@@ -299,11 +287,7 @@ pub(crate) fn dict16_col() -> FieldArray {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical16(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u16, 0, 2, 1])),
-            unique_values: Vec64::from(vec!["x".to_string(), "y".to_string(), "z".to_string()]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+        Array::TextArray(TextArray::Categorical16(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[1u16, 0, 2, 1]), Vec64::from(vec!["x".to_string(), "y".to_string(), "z".to_string()]), Some(Bitmask::new_set_all(4, true)))))),
     )
 }
 
@@ -318,11 +302,7 @@ pub(crate) fn dict64_col() -> FieldArray {
             nullable: true,
             metadata: Default::default(),
         },
-        Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u64, 0, 2, 1])),
-            unique_values: Vec64::from(vec!["long".to_string(), "lo".to_string(), "l".to_string()]),
-            null_mask: Some(Bitmask::new_set_all(4, true)),
-        }))),
+        Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray::from_parts(Vec64::from_slice(&[1u64, 0, 2, 1]), Vec64::from(vec!["long".to_string(), "lo".to_string(), "l".to_string()]), Some(Bitmask::new_set_all(4, true)))))),
     )
 }
 

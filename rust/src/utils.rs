@@ -99,19 +99,19 @@ pub(crate) fn dict_values(array: &minarrow::Array) -> Option<Vec<String>> {
             feature = "extended_categorical"
         ))]
         minarrow::Array::TextArray(Categorical32(arr)) => {
-            Some(arr.unique_values.iter().cloned().collect())
+            Some(arr.unique_values().iter().cloned().collect())
         }
         #[cfg(feature = "default_categorical_8")]
         minarrow::Array::TextArray(Categorical8(arr)) => {
-            Some(arr.unique_values.iter().cloned().collect())
+            Some(arr.unique_values().iter().cloned().collect())
         }
         #[cfg(feature = "extended_categorical")]
         minarrow::Array::TextArray(Categorical16(arr)) => {
-            Some(arr.unique_values.iter().cloned().collect())
+            Some(arr.unique_values().iter().cloned().collect())
         }
         #[cfg(feature = "extended_categorical")]
         minarrow::Array::TextArray(Categorical64(arr)) => {
-            Some(arr.unique_values.iter().cloned().collect())
+            Some(arr.unique_values().iter().cloned().collect())
         }
         _ => None,
     }

@@ -196,10 +196,21 @@ fn window_categorical<T: Integer>(
     offset: usize,
     len: usize,
 ) -> CategoricalArray<T> {
-    CategoricalArray {
-        data: window_buffer(&arr.data, offset, len),
-        unique_values: arr.unique_values.clone(),
-        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+    #[cfg(feature = "shared_dict")]
+    {
+        CategoricalArray::new_existing_dict(
+            window_buffer(&arr.data, offset, len),
+            arr.dictionary.clone(),
+            window_mask(arr.null_mask.as_ref(), offset, len),
+        )
+    }
+    #[cfg(not(feature = "shared_dict"))]
+    {
+        CategoricalArray {
+            data: window_buffer(&arr.data, offset, len),
+            unique_values: arr.unique_values.clone(),
+            null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+        }
     }
 }
 

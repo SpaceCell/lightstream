@@ -149,6 +149,9 @@ default_categorical_8 = ["minarrow/default_categorical_8"]
 extended_categorical = ["default_categorical_8", "minarrow/extended_categorical"]
 large_string = ["minarrow/large_string"]
 datetime = ["minarrow/datetime"]
+# Shared categorical dictionaries: each categorical array carries a `Dictionary`
+# handle in place of its own value list.
+shared_dict = ["minarrow/shared_dict"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
 lbuffer = ["minarrow/lbuffer"]
 # Schema-level Table metadata as key-value pairs
