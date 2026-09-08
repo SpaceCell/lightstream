@@ -224,6 +224,18 @@ pub(crate) fn compute_body_layout<'a, B: StreamBuffer>(
                     NumericArray::UInt16(arr) => {
                         (as_bytes(&arr.data.as_slice()[offset..offset + len]), arr.null_mask.as_ref())
                     }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal32(arr) => {
+                        (as_bytes(&arr.data.as_slice()[offset..offset + len]), arr.null_mask.as_ref())
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal64(arr) => {
+                        (as_bytes(&arr.data.as_slice()[offset..offset + len]), arr.null_mask.as_ref())
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal128(arr) => {
+                        (as_bytes(&arr.data.as_slice()[offset..offset + len]), arr.null_mask.as_ref())
+                    }
                     _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,

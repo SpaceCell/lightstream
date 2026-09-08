@@ -317,6 +317,42 @@ fn build_flatbuf_field<'fbb>(
             let duration = fbm::Duration::create(fbb, &fbm::DurationArgs { unit });
             (fbm::Type::Duration, Some(duration.as_union_value()), None)
         }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(p, s) => {
+            let dec = fbm::Decimal::create(
+                fbb,
+                &fbm::DecimalArgs {
+                    precision: *p as i32,
+                    scale: *s as i32,
+                    bitWidth: 32,
+                },
+            );
+            (fbm::Type::Decimal, Some(dec.as_union_value()), None)
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(p, s) => {
+            let dec = fbm::Decimal::create(
+                fbb,
+                &fbm::DecimalArgs {
+                    precision: *p as i32,
+                    scale: *s as i32,
+                    bitWidth: 64,
+                },
+            );
+            (fbm::Type::Decimal, Some(dec.as_union_value()), None)
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(p, s) => {
+            let dec = fbm::Decimal::create(
+                fbb,
+                &fbm::DecimalArgs {
+                    precision: *p as i32,
+                    scale: *s as i32,
+                    bitWidth: 128,
+                },
+            );
+            (fbm::Type::Decimal, Some(dec.as_union_value()), None)
+        }
         ArrowType::Dictionary(idx_ty) => {
             // Build index type for dictionary
             let idx_width = match idx_ty {
@@ -809,6 +845,42 @@ fn build_flatbuf_field_file<'fbb>(
             };
             let duration = fbf::Duration::create(fbb, &fbf::DurationArgs { unit });
             (fbf::Type::Duration, Some(duration.as_union_value()), None)
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(p, s) => {
+            let dec = fbf::Decimal::create(
+                fbb,
+                &fbf::DecimalArgs {
+                    precision: *p as i32,
+                    scale: *s as i32,
+                    bitWidth: 32,
+                },
+            );
+            (fbf::Type::Decimal, Some(dec.as_union_value()), None)
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(p, s) => {
+            let dec = fbf::Decimal::create(
+                fbb,
+                &fbf::DecimalArgs {
+                    precision: *p as i32,
+                    scale: *s as i32,
+                    bitWidth: 64,
+                },
+            );
+            (fbf::Type::Decimal, Some(dec.as_union_value()), None)
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(p, s) => {
+            let dec = fbf::Decimal::create(
+                fbb,
+                &fbf::DecimalArgs {
+                    precision: *p as i32,
+                    scale: *s as i32,
+                    bitWidth: 128,
+                },
+            );
+            (fbf::Type::Decimal, Some(dec.as_union_value()), None)
         }
         ArrowType::Dictionary(idx_ty) => {
             let idx_width = match idx_ty {
