@@ -472,6 +472,52 @@ impl RecordBatchParser {
                     }
                 }
 
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal32(p, s) => {
+                    let (slice, _) = Self::extract_buffer_slice(
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        arrow_buf,
+                        &field.name,
+                        corrections,
+                    )?;
+                    let data =
+                        unsafe { Self::buffer_from_slice::<i32>(slice, field_len, &arc_opt) };
+                    Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                        DecimalArray { data, null_mask, precision: *p, scale: *s },
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal64(p, s) => {
+                    let (slice, _) = Self::extract_buffer_slice(
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        arrow_buf,
+                        &field.name,
+                        corrections,
+                    )?;
+                    let data =
+                        unsafe { Self::buffer_from_slice::<i64>(slice, field_len, &arc_opt) };
+                    Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                        DecimalArray { data, null_mask, precision: *p, scale: *s },
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal128(p, s) => {
+                    let (slice, _) = Self::extract_buffer_slice(
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        arrow_buf,
+                        &field.name,
+                        corrections,
+                    )?;
+                    let data =
+                        unsafe { Self::buffer_from_slice::<i128>(slice, field_len, &arc_opt) };
+                    Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                        DecimalArray { data, null_mask, precision: *p, scale: *s },
+                    )))
+                }
+
                 other => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1135,6 +1181,61 @@ pub fn decode_record_batch(
                 )?
             }
 
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => {
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let data = shared.slice(off..off + len);
+                Array::NumericArray(NumericArray::Decimal32(Arc::new(DecimalArray {
+                    data: minarrow::Buffer::from_shared(data),
+                    null_mask,
+                    precision: *p,
+                    scale: *s,
+                })))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => {
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let data = shared.slice(off..off + len);
+                Array::NumericArray(NumericArray::Decimal64(Arc::new(DecimalArray {
+                    data: minarrow::Buffer::from_shared(data),
+                    null_mask,
+                    precision: *p,
+                    scale: *s,
+                })))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => {
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let data = shared.slice(off..off + len);
+                Array::NumericArray(NumericArray::Decimal128(Arc::new(DecimalArray {
+                    data: minarrow::Buffer::from_shared(data),
+                    null_mask,
+                    precision: *p,
+                    scale: *s,
+                })))
+            }
+
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1762,6 +1863,23 @@ fn extract_base_type(fb_field: &fb::Field) -> io::Result<ArrowType> {
             Ok(ArrowType::Duration64(convert_time_unit_fb(d.unit())?))
         }
         fb::Type::Bool => Ok(ArrowType::Boolean),
+        #[cfg(feature = "decimal")]
+        fb::Type::Decimal => {
+            let d = fb_field.type__as_decimal().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing Decimal type")
+            })?;
+            let precision = d.precision() as u8;
+            let scale = d.scale() as i8;
+            match d.bitWidth() {
+                32 => Ok(ArrowType::Decimal32(precision, scale)),
+                64 => Ok(ArrowType::Decimal64(precision, scale)),
+                128 => Ok(ArrowType::Decimal128(precision, scale)),
+                w => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported Decimal bit width {w}"),
+                )),
+            }
+        }
         other => {
             if let Some(dict) = fb_field.dictionary() {
                 let idx_ty = extract_categorical_index_type(dict.indexType().as_ref())?;
@@ -1962,6 +2080,25 @@ pub fn convert_fb_field_to_arrow(
                     io::Error::new(io::ErrorKind::InvalidData, "missing Duration type")
                 })?;
                 ArrowType::Duration64(convert_time_unit_fbf(d.unit())?)
+            }
+            #[cfg(feature = "decimal")]
+            fbf::Type::Decimal => {
+                let d = fbf_field.type__as_decimal().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing Decimal type")
+                })?;
+                let precision = d.precision() as u8;
+                let scale = d.scale() as i8;
+                match d.bitWidth() {
+                    32 => ArrowType::Decimal32(precision, scale),
+                    64 => ArrowType::Decimal64(precision, scale),
+                    128 => ArrowType::Decimal128(precision, scale),
+                    w => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unsupported Decimal bit width {w}"),
+                        ));
+                    }
+                }
             }
             other => {
                 return Err(io::Error::new(
