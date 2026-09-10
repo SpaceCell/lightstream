@@ -2,17 +2,18 @@
 
 Notable changes are recorded from 0.5.0 onward.
 
-## 0.6.2
+## 0.7.0
 
 ### Changed
 
 - Minarrow upgraded to 0.18.1 and vec64 0.5.1.
 - New `decimal` feature forwarding minarrow's `decimal` feature. Decimal32, Decimal64 and Decimal128 columns are supported in Arrow IPC and in Parquet, where they map to the DECIMAL logical type over INT32, INT64 and FIXED_LEN_BYTE_ARRAY.
 - The Python package pins minarrow and minarrow-pyo3 at 0.18.1.
-- The Parquet writer follows the Parquet value layout for nullable columns. Value sections hold non-null values only and DataPageV2 headers count every row in `num_values`, so files with nulls now read in pyarrow and other Parquet readers. Files with nulls written by earlier releases do not read back under this release.
-- Parquet column types follow the schema element. Categorical columns are UTF8 string columns with dictionary-encoded pages and read back as strings. Date64 is stored as DATE days, seconds-unit timestamps and times as milliseconds, and TIME columns take the INT32 or INT64 width their unit requires. UTF8 columns read as `String` and widen to `LargeString` only when the data exceeds 32-bit offsets.
-- The `LogicalType` schema annotation is written and read, so nanosecond timestamps and times round-trip and pyarrow nanosecond timestamps no longer read as Int64.
-- Duration and Interval columns are reported as `UnsupportedType` by the Parquet writer instead of panicking, and INT96 columns are reported by name on read.
+- Parquet writer improvements:
+  - The Parquet writer follows the Parquet value layout for nullable columns.
+  - Several improvements in categorical, time, and date roundtripping.
+  - Files with nulls written by earlier releases do not read back under this release.
+  - Replaced packing for Duration and Interval columns with `UnsupportedType`
 
 ### Fixed
 
