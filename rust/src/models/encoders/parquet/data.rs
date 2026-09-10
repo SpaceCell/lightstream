@@ -18,6 +18,7 @@
 use minarrow::Bitmask;
 
 use crate::error::IoError;
+use crate::models::types::parquet::ParquetPhysicalType;
 
 /// Encode `i32` values using Parquet plain little-endian format, appending to `out`.
 pub fn encode_int32_plain(data: &[i32], out: &mut Vec<u8>) {
@@ -164,6 +165,50 @@ pub fn encode_large_string_plain(
         }
         out.extend_from_slice(&(s_len as u32).to_le_bytes());
         out.extend_from_slice(&values[start..end]);
+    }
+    Ok(())
+}
+
+// Temporal values
+
+/// Plain-encode temporal values in the unit of the column's Parquet
+/// annotation.
+///
+/// `mul` and `div` come from `temporal_unit_scale` and carry each value
+/// from its Arrow unit into the Parquet unit. `physical` selects the
+/// storage width: INT32 for DATE and TIME(MILLIS), INT64 for the other
+/// units. A value outside the INT32 range is an `InputDataError`.
+pub(crate) fn encode_temporal_plain<T: Copy + Into<i64>>(
+    data: &[T],
+    mul: i64,
+    div: i64,
+    physical: ParquetPhysicalType,
+    out: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    match physical {
+        ParquetPhysicalType::Int32 => {
+            out.reserve(data.len() * 4);
+            for &v in data {
+                let scaled = v.into() * mul / div;
+                let narrowed = i32::try_from(scaled).map_err(|_| {
+                    IoError::InputDataError(format!(
+                        "temporal value {scaled} does not fit the INT32 storage of its Parquet type"
+                    ))
+                })?;
+                out.extend_from_slice(&narrowed.to_le_bytes());
+            }
+        }
+        ParquetPhysicalType::Int64 => {
+            out.reserve(data.len() * 8);
+            for &v in data {
+                out.extend_from_slice(&(v.into() * mul / div).to_le_bytes());
+            }
+        }
+        other => {
+            return Err(IoError::Internal(format!(
+                "temporal column mapped to physical type {other:?}"
+            )));
+        }
     }
     Ok(())
 }

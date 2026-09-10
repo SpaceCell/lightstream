@@ -19,10 +19,23 @@ mod pyarrow_parquet_tests {
 
     use lightstream::models::readers::parquet::{load_parquet_table, load_parquet_table_cols};
     use minarrow::{Array, ArrowType, MaskedArray, NumericArray, Table, TextArray};
+    #[cfg(all(feature = "datetime", feature = "decimal", feature = "snappy"))]
+    use minarrow::{TemporalArray, TimeUnit};
 
     fn open(name: &str) -> BufReader<File> {
         let path = format!("{}/pyarrow-roundtrip/{name}", env!("CARGO_MANIFEST_DIR"));
         BufReader::new(File::open(&path).unwrap_or_else(|e| panic!("open {path}: {e}")))
+    }
+
+    fn column_dtype(table: &Table, name: &str) -> ArrowType {
+        table
+            .cols
+            .iter()
+            .find(|c| c.field.name == name)
+            .unwrap_or_else(|| panic!("column {name} missing"))
+            .field
+            .dtype
+            .clone()
     }
 
     fn column<'a>(table: &'a Table, name: &str) -> &'a Array {
@@ -73,18 +86,12 @@ mod pyarrow_parquet_tests {
         }
     }
 
-    /// UTF-8 columns map to `String`, or to `LargeString` when the
-    /// `large_string` feature is on.
     fn string_values(table: &Table, name: &str) -> Vec<Option<String>> {
         match column(table, name) {
             Array::TextArray(TextArray::String32(a)) => {
                 (0..a.len()).map(|i| a.get(i).map(str::to_owned)).collect()
             }
-            #[cfg(feature = "large_string")]
-            Array::TextArray(TextArray::String64(a)) => {
-                (0..a.len()).map(|i| a.get(i).map(str::to_owned)).collect()
-            }
-            other => panic!("{name}: expected a UTF-8 column, got {other:?}"),
+            other => panic!("{name}: expected String, got {other:?}"),
         }
     }
 
@@ -147,10 +154,7 @@ mod pyarrow_parquet_tests {
         assert_eq!(table.n_rows, 5);
         assert_eq!(table.cols.len(), 3);
         assert_eq!(table.cols[0].field.dtype, ArrowType::Int64);
-        #[cfg(not(feature = "large_string"))]
         assert_eq!(table.cols[1].field.dtype, ArrowType::String);
-        #[cfg(feature = "large_string")]
-        assert_eq!(table.cols[1].field.dtype, ArrowType::LargeString);
         assert_eq!(table.cols[2].field.dtype, ArrowType::Float64);
 
         assert_eq!(
@@ -193,6 +197,107 @@ mod pyarrow_parquet_tests {
     fn reads_pyarrow_dictionary_data_page_v2() {
         let table = load_parquet_table(open("pyarrow_dictionary_v2.parquet")).expect("read");
         assert_nullable_table(&table);
+    }
+
+    /// Temporal and decimal columns written with pyarrow's defaults. The
+    /// nanosecond timestamp exists only through the `LogicalType`
+    /// annotation, and pyarrow stores every decimal as a
+    /// FIXED_LEN_BYTE_ARRAY sized to its precision.
+    #[cfg(all(feature = "datetime", feature = "decimal", feature = "snappy"))]
+    #[test]
+    fn reads_pyarrow_temporal_and_decimal_columns() {
+        let table = load_parquet_table(open("pyarrow_temporal_decimal.parquet")).expect("read");
+        assert_eq!(table.n_rows, 5);
+
+        fn temporal32(table: &Table, name: &str, unit: TimeUnit) -> Vec<Option<i32>> {
+            match column(table, name) {
+                Array::TemporalArray(TemporalArray::Datetime32(a)) => {
+                    assert_eq!(a.time_unit, unit, "{name} unit");
+                    (0..a.len()).map(|i| a.get(i)).collect()
+                }
+                other => panic!("{name}: expected Datetime32, got {other:?}"),
+            }
+        }
+        fn temporal64(table: &Table, name: &str, unit: TimeUnit) -> Vec<Option<i64>> {
+            match column(table, name) {
+                Array::TemporalArray(TemporalArray::Datetime64(a)) => {
+                    assert_eq!(a.time_unit, unit, "{name} unit");
+                    (0..a.len()).map(|i| a.get(i)).collect()
+                }
+                other => panic!("{name}: expected Datetime64, got {other:?}"),
+            }
+        }
+
+        assert_eq!(column_dtype(&table, "date"), ArrowType::Date32);
+        assert_eq!(
+            temporal32(&table, "date", TimeUnit::Days),
+            [Some(0), Some(1), None, Some(19_000), Some(-5)]
+        );
+        assert_eq!(column_dtype(&table, "time_ms"), ArrowType::Time32(TimeUnit::Milliseconds));
+        assert_eq!(
+            temporal32(&table, "time_ms", TimeUnit::Milliseconds),
+            [Some(0), Some(1_000), None, Some(43_200_000), Some(86_399_999)]
+        );
+        assert_eq!(column_dtype(&table, "time_us"), ArrowType::Time64(TimeUnit::Microseconds));
+        assert_eq!(
+            temporal64(&table, "time_us", TimeUnit::Microseconds),
+            [Some(0), None, Some(2_000_000), Some(43_200_000_000), Some(86_399_999_999)]
+        );
+        assert_eq!(
+            column_dtype(&table, "ts_ms"),
+            ArrowType::Timestamp(TimeUnit::Milliseconds, None)
+        );
+        assert_eq!(
+            temporal64(&table, "ts_ms", TimeUnit::Milliseconds),
+            [Some(0), Some(1_700_000_000_000), None, Some(-1), Some(86_400_000)]
+        );
+        assert_eq!(
+            column_dtype(&table, "ts_us"),
+            ArrowType::Timestamp(TimeUnit::Microseconds, None)
+        );
+        assert_eq!(
+            temporal64(&table, "ts_us", TimeUnit::Microseconds),
+            [Some(0), Some(1_700_000_000_000_000), None, Some(-1), Some(1)]
+        );
+        assert_eq!(
+            column_dtype(&table, "ts_ns"),
+            ArrowType::Timestamp(TimeUnit::Nanoseconds, None)
+        );
+        assert_eq!(
+            temporal64(&table, "ts_ns", TimeUnit::Nanoseconds),
+            [Some(0), Some(1_700_000_000_000_000_000), None, Some(-1), Some(1)]
+        );
+
+        assert_eq!(column_dtype(&table, "dec32"), ArrowType::Decimal32(7, 2));
+        match column(&table, "dec32") {
+            Array::NumericArray(NumericArray::Decimal32(a)) => assert_eq!(
+                (0..a.len()).map(|i| a.get(i)).collect::<Vec<_>>(),
+                [Some(125), None, Some(-350), Some(1), Some(9_999_999)]
+            ),
+            other => panic!("dec32: {other:?}"),
+        }
+        assert_eq!(column_dtype(&table, "dec64"), ArrowType::Decimal64(18, 4));
+        match column(&table, "dec64") {
+            Array::NumericArray(NumericArray::Decimal64(a)) => assert_eq!(
+                (0..a.len()).map(|i| a.get(i)).collect::<Vec<_>>(),
+                [Some(12_345), Some(-10_000), None, Some(1), Some(123_456_789_012_345_678)]
+            ),
+            other => panic!("dec64: {other:?}"),
+        }
+        assert_eq!(column_dtype(&table, "dec128"), ArrowType::Decimal128(38, 6));
+        match column(&table, "dec128") {
+            Array::NumericArray(NumericArray::Decimal128(a)) => assert_eq!(
+                (0..a.len()).map(|i| a.get(i)).collect::<Vec<_>>(),
+                [
+                    Some(1_000_001),
+                    None,
+                    Some(-1_000_001),
+                    Some(0),
+                    Some(12_345_678_901_234_567_890_123_456_789_012_123_456i128)
+                ]
+            ),
+            other => panic!("dec128: {other:?}"),
+        }
     }
 
     /// Column projection over a pyarrow file selects by name and keeps

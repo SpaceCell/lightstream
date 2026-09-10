@@ -46,6 +46,8 @@ use std::io::{Seek, Write};
 
 #[cfg(feature = "datetime")]
 use minarrow::TemporalArray;
+#[cfg(feature = "datetime")]
+use minarrow::ArrowType;
 use minarrow::{Array, NumericArray, Table, TextArray};
 
 use crate::compression::{Compression, compress};
@@ -55,15 +57,17 @@ use crate::error::IoError;
 use crate::models::encoders::parquet::data::encode_large_string_plain;
 use crate::models::encoders::parquet::data::{
     encode_bool_bitpacked, encode_float32_plain, encode_float64_plain, encode_int32_plain,
-    encode_int64_plain, encode_string_plain, encode_uint32_as_int32_plain,
-    encode_uint64_as_int64_plain,
+    encode_int64_plain, encode_string_plain, encode_temporal_plain,
+    encode_uint32_as_int32_plain, encode_uint64_as_int64_plain,
 };
 use crate::models::encoders::parquet::metadata::{
     ColumnChunkMeta, ColumnMetadata, DataPageHeaderV2, DictionaryPageHeader, FileMetaData,
     PageHeader, PageType, RowGroupMeta, SchemaElement, Statistics,
 };
 use crate::models::types::parquet::ParquetLogicalType::{self};
-use crate::models::types::parquet::{ParquetEncoding, ParquetPhysicalType, arrow_type_to_parquet};
+use crate::models::types::parquet::{
+    ParquetEncoding, ParquetPhysicalType, arrow_type_to_parquet, temporal_unit_scale,
+};
 
 // Chunk size for page splitting
 pub const PARQUET_PAGE_CHUNK_SIZE: usize = 32_768;
@@ -110,6 +114,7 @@ pub fn write_parquet_table<W: Write + Seek>(
         scale: None,
         field_id: None,
         num_children: Some(table.cols.len() as i32),
+        logical_type: None,
     });
     for (i, c) in table.cols.iter().enumerate() {
         let (physical, logical) = arrow_type_to_parquet(&c.field.dtype).unwrap();
@@ -119,6 +124,7 @@ pub fn write_parquet_table<W: Write + Seek>(
             repetition_type: if c.field.nullable { 1 } else { 0 }, // OPTIONAL / REQUIRED
             type_: Some(physical),
             converted_type: logical_to_converted(&logical),
+            logical_type: Some(logical),
             type_length,
             precision,
             scale,
@@ -137,6 +143,27 @@ pub fn write_parquet_table<W: Write + Seek>(
 
     // Column loop, multi-page support
     for col in &table.cols {
+        // Temporal columns are stored in the unit and width of their Parquet
+        // annotation, so their values may need scaling or narrowing on the
+        // way out. Every other type is stored as-is.
+        let (phys, _) = arrow_type_to_parquet(&col.field.dtype)?;
+        let temporal = match &col.field.dtype {
+            #[cfg(feature = "datetime")]
+            ArrowType::Date32
+            | ArrowType::Date64
+            | ArrowType::Timestamp(_, _)
+            | ArrowType::Time32(_)
+            | ArrowType::Time64(_) => true,
+            _ => false,
+        };
+        let (unit_mul, unit_div) = temporal_unit_scale(&col.field.dtype);
+        let encode_temporal32 = |data: &[i32], out: &mut Vec<u8>| {
+            encode_temporal_plain(data, unit_mul, unit_div, phys, out)
+        };
+        let encode_temporal64 = |data: &[i64], out: &mut Vec<u8>| {
+            encode_temporal_plain(data, unit_mul, unit_div, phys, out)
+        };
+
         let mut dictionary_page_offset = None;
         let mut encodings = vec![ParquetEncoding::Plain];
 
@@ -224,11 +251,17 @@ pub fn write_parquet_table<W: Write + Seek>(
             // encode the raw values for this slice
             match &col.array {
                 Array::NumericArray(n) => match n {
+                    NumericArray::Int32(a) if temporal => {
+                        encode_valid!(encode_temporal32, &a.data[start..end])?
+                    }
                     NumericArray::Int32(a) => {
                         encode_valid!(encode_int32_plain, &a.data[start..end])
                     }
                     NumericArray::UInt32(a) => {
                         encode_valid!(encode_uint32_as_int32_plain, &a.data[start..end])
+                    }
+                    NumericArray::Int64(a) if temporal => {
+                        encode_valid!(encode_temporal64, &a.data[start..end])?
                     }
                     NumericArray::Int64(a) => {
                         encode_valid!(encode_int64_plain, &a.data[start..end])
@@ -301,15 +334,11 @@ pub fn write_parquet_table<W: Write + Seek>(
                 )?,
                 #[cfg(feature = "datetime")]
                 Array::TemporalArray(TemporalArray::Datetime32(a)) => {
-                    use crate::models::encoders::parquet::data::encode_datetime32_plain;
-
-                    encode_valid!(encode_datetime32_plain, &a.data[start..end])
+                    encode_valid!(encode_temporal32, &a.data[start..end])?
                 }
                 #[cfg(feature = "datetime")]
                 Array::TemporalArray(TemporalArray::Datetime64(a)) => {
-                    use crate::models::encoders::parquet::data::encode_datetime64_plain;
-
-                    encode_valid!(encode_datetime64_plain, &a.data[start..end])
+                    encode_valid!(encode_temporal64, &a.data[start..end])?
                 }
                 #[cfg(any(
                     not(feature = "default_categorical_8"),
@@ -422,7 +451,6 @@ pub fn write_parquet_table<W: Write + Seek>(
 
         // column-chunk metadata
         let first_data = recorded_data_page_offset.expect("at least one data page must be emitted");
-        let (phys, _) = arrow_type_to_parquet(&col.field.dtype)?;
         columns_meta.push(ColumnChunkMeta {
             file_offset: first_data,
             meta_data: ColumnMetadata {
@@ -631,8 +659,6 @@ fn logical_to_converted(log: &ParquetLogicalType) -> Option<i32> {
         ParquetLogicalType::Utf8 => 0,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::Date32 => 6,
-        #[cfg(feature = "datetime")]
-        ParquetLogicalType::Date64 => return None,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::TimestampMillis => 9,
         #[cfg(feature = "datetime")]

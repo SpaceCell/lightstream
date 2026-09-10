@@ -13,6 +13,9 @@ lightstream's own encoder:
     encoding off, DataPageV2 and no compression
   - pyarrow_dictionary_v2.parquet: the same nullable data with dictionary
     encoding on, DataPageV2 and Snappy
+  - pyarrow_temporal_decimal.parquet: date, time, timestamp and decimal
+    columns with nulls, written with pyarrow's defaults. Nanosecond units
+    and decimals exercise the LogicalType annotation
 
 The fixtures are committed alongside this script. Run from rust/ to
 regenerate them:
@@ -21,6 +24,7 @@ regenerate them:
 """
 
 import os
+from decimal import Decimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -53,6 +57,33 @@ def nullable_table() -> pa.Table:
     )
 
 
+def temporal_decimal_table() -> pa.Table:
+    """Five rows of temporal and decimal types, matching the expectations in
+    reads_pyarrow_temporal_and_decimal_columns in Rust."""
+    return pa.table(
+        {
+            "date": pa.array([0, 1, None, 19_000, -5], type=pa.date32()),
+            "time_ms": pa.array([0, 1_000, None, 43_200_000, 86_399_999], type=pa.time32("ms")),
+            "time_us": pa.array([0, None, 2_000_000, 43_200_000_000, 86_399_999_999], type=pa.time64("us")),
+            "ts_ms": pa.array([0, 1_700_000_000_000, None, -1, 86_400_000], type=pa.timestamp("ms")),
+            "ts_us": pa.array([0, 1_700_000_000_000_000, None, -1, 1], type=pa.timestamp("us")),
+            "ts_ns": pa.array([0, 1_700_000_000_000_000_000, None, -1, 1], type=pa.timestamp("ns")),
+            "dec32": pa.array(
+                [Decimal("1.25"), None, Decimal("-3.50"), Decimal("0.01"), Decimal("99999.99")],
+                type=pa.decimal32(7, 2),
+            ),
+            "dec64": pa.array(
+                [Decimal("1.2345"), Decimal("-1.0000"), None, Decimal("0.0001"), Decimal("12345678901234.5678")],
+                type=pa.decimal64(18, 4),
+            ),
+            "dec128": pa.array(
+                [Decimal("1.000001"), None, Decimal("-1.000001"), Decimal("0.000000"), Decimal("12345678901234567890123456789012.123456")],
+                type=pa.decimal128(38, 6),
+            ),
+        }
+    )
+
+
 def main() -> None:
     simple = simple_table()
     pq.write_table(simple, os.path.join(OUT_DIR, "pyarrow_simple.parquet"))
@@ -75,6 +106,10 @@ def main() -> None:
         os.path.join(OUT_DIR, "pyarrow_dictionary_v2.parquet"),
         data_page_version="2.0",
         compression="snappy",
+    )
+    pq.write_table(
+        temporal_decimal_table(),
+        os.path.join(OUT_DIR, "pyarrow_temporal_decimal.parquet"),
     )
     for name in sorted(os.listdir(OUT_DIR)):
         if name.startswith("pyarrow_") and name.endswith(".parquet"):

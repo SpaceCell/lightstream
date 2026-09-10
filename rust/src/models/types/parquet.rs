@@ -13,7 +13,7 @@
 use crate::error::IoError;
 #[cfg(feature = "datetime")]
 use minarrow::TimeUnit;
-use minarrow::{ArrowType, ffi::arrow_dtype::CategoricalIndexType};
+use minarrow::ArrowType;
 
 /// Parquet physical types as defined in `parquet.thrift`.
 ///
@@ -70,12 +70,9 @@ pub(crate) enum ParquetLogicalType {
     NoneType,
     /// UTF-8 encoded string.
     Utf8,
-    /// 32-bit date - days since epoch
+    /// DATE - days since the Unix epoch, stored as INT32.
     #[cfg(feature = "datetime")]
     Date32,
-    /// 64-bit date - milliseconds since epoch
-    #[cfg(feature = "datetime")]
-    Date64,
     /// 64-bit timestamp - milliseconds since epoch
     #[cfg(feature = "datetime")]
     TimestampMillis,
@@ -298,17 +295,9 @@ pub(crate) fn arrow_type_to_parquet(
                 is_signed: false,
             },
         )),
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
-        ArrowType::Dictionary(CategoricalIndexType::UInt32) => {
-            Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8))
-        }
-        #[cfg(feature = "default_categorical_8")]
-        ArrowType::Dictionary(CategoricalIndexType::UInt8) => {
-            Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8))
-        }
+        // Parquet has no dictionary type. A categorical column is a UTF8
+        // string column whose pages the writer dictionary-encodes.
+        ArrowType::Dictionary(_) => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
         #[cfg(feature = "decimal")]
         ArrowType::Decimal32(p, s) => Ok((
             ParquetPhysicalType::Int32,
@@ -332,11 +321,15 @@ pub(crate) fn arrow_type_to_parquet(
         ArrowType::Utf8View => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
         #[cfg(feature = "datetime")]
         ArrowType::Date32 => Ok((ParquetPhysicalType::Int32, ParquetLogicalType::Date32)),
+        // Parquet DATE is a 32-bit day count, so Date64 milliseconds are
+        // carried into days on write. See `temporal_unit_scale`.
         #[cfg(feature = "datetime")]
-        ArrowType::Date64 => Ok((ParquetPhysicalType::Int64, ParquetLogicalType::Date64)),
+        ArrowType::Date64 => Ok((ParquetPhysicalType::Int32, ParquetLogicalType::Date32)),
         #[cfg(feature = "datetime")]
         ArrowType::Timestamp(unit, _) => match unit {
-            TimeUnit::Milliseconds => Ok((
+            // Parquet has no seconds unit, so seconds are scaled to
+            // milliseconds on write.
+            TimeUnit::Seconds | TimeUnit::Milliseconds => Ok((
                 ParquetPhysicalType::Int64,
                 ParquetLogicalType::TimestampMillis,
             )),
@@ -348,30 +341,16 @@ pub(crate) fn arrow_type_to_parquet(
                 ParquetPhysicalType::Int64,
                 ParquetLogicalType::TimestampNanos,
             )),
-            TimeUnit::Seconds => Ok((
-                ParquetPhysicalType::Int64,
-                ParquetLogicalType::TimestampMillis,
-            )), // best-effort
-            TimeUnit::Days => Ok((ParquetPhysicalType::Int64, ParquetLogicalType::Date64)),
-        },
-        #[cfg(feature = "datetime")]
-        ArrowType::Time32(unit) => match unit {
-            TimeUnit::Milliseconds => {
-                Ok((ParquetPhysicalType::Int32, ParquetLogicalType::TimeMillis))
-            }
-            TimeUnit::Microseconds => {
-                Ok((ParquetPhysicalType::Int32, ParquetLogicalType::TimeMicros))
-            }
-            TimeUnit::Nanoseconds => {
-                Ok((ParquetPhysicalType::Int32, ParquetLogicalType::TimeNanos))
-            }
-            TimeUnit::Seconds => Ok((ParquetPhysicalType::Int32, ParquetLogicalType::TimeMillis)), /* best-effort */
+            // A timestamp counted in days is a date.
             TimeUnit::Days => Ok((ParquetPhysicalType::Int32, ParquetLogicalType::Date32)),
         },
+        // Parquet fixes the storage width by unit: TIME(MILLIS) is INT32,
+        // TIME(MICROS) and TIME(NANOS) are INT64, whatever width the Arrow
+        // column uses. Seconds are scaled to milliseconds on write.
         #[cfg(feature = "datetime")]
-        ArrowType::Time64(unit) => match unit {
-            TimeUnit::Milliseconds => {
-                Ok((ParquetPhysicalType::Int64, ParquetLogicalType::TimeMillis))
+        ArrowType::Time32(unit) | ArrowType::Time64(unit) => match unit {
+            TimeUnit::Seconds | TimeUnit::Milliseconds => {
+                Ok((ParquetPhysicalType::Int32, ParquetLogicalType::TimeMillis))
             }
             TimeUnit::Microseconds => {
                 Ok((ParquetPhysicalType::Int64, ParquetLogicalType::TimeMicros))
@@ -379,25 +358,39 @@ pub(crate) fn arrow_type_to_parquet(
             TimeUnit::Nanoseconds => {
                 Ok((ParquetPhysicalType::Int64, ParquetLogicalType::TimeNanos))
             }
-            TimeUnit::Seconds => Ok((ParquetPhysicalType::Int64, ParquetLogicalType::TimeMillis)), /* best-effort */
-            TimeUnit::Days => Ok((ParquetPhysicalType::Int64, ParquetLogicalType::Date64)),
+            TimeUnit::Days => Err(IoError::UnsupportedType(
+                "time of day counted in days has no Parquet type".into(),
+            )),
         },
         ArrowType::Null => Err(IoError::UnsupportedType(
             "Null type is not supported".into(),
         )),
         #[cfg(feature = "datetime")]
-        ArrowType::Duration32(_) => panic!("Duration does not map to a parquet type."),
+        ArrowType::Duration32(_) | ArrowType::Duration64(_) => Err(IoError::UnsupportedType(
+            "Duration has no Parquet logical type".into(),
+        )),
         #[cfg(feature = "datetime")]
-        ArrowType::Duration64(_) => panic!("Duration does not map to a parquet type."),
+        ArrowType::Interval(_) => Err(IoError::UnsupportedType(
+            "Interval is not supported".into(),
+        )),
+    }
+}
+
+/// Multiplier and divisor that carry an Arrow temporal value into the unit
+/// of its Parquet annotation from [`arrow_type_to_parquet`].
+///
+/// Most units match and scale by one. Seconds become milliseconds because
+/// Parquet has no seconds unit, and Date64 milliseconds become the day
+/// count that Parquet DATE stores.
+pub(crate) fn temporal_unit_scale(ty: &ArrowType) -> (i64, i64) {
+    match ty {
         #[cfg(feature = "datetime")]
-        ArrowType::Interval(_) => panic!("Interval does not map to a parquet type."),
-        #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
-        &minarrow::ArrowType::Dictionary(
-            minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt16,
-        )
-        | &minarrow::ArrowType::Dictionary(
-            minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt64,
-        ) => panic!(),
+        ArrowType::Date64 => (1, 86_400_000),
+        #[cfg(feature = "datetime")]
+        ArrowType::Timestamp(TimeUnit::Seconds, _)
+        | ArrowType::Time32(TimeUnit::Seconds)
+        | ArrowType::Time64(TimeUnit::Seconds) => (1000, 1),
+        _ => (1, 1),
     }
 }
 
@@ -480,8 +473,6 @@ pub(crate) fn parquet_to_arrow_type(
         #[cfg(feature = "datetime")]
         (ParquetPhysicalType::Int32, Some(ParquetLogicalType::Date32)) => Ok(ArrowType::Date32),
         #[cfg(feature = "datetime")]
-        (ParquetPhysicalType::Int64, Some(ParquetLogicalType::Date64)) => Ok(ArrowType::Date64),
-        #[cfg(feature = "datetime")]
         (ParquetPhysicalType::Int64, Some(ParquetLogicalType::TimestampMillis)) => {
             Ok(ArrowType::Timestamp(TimeUnit::Milliseconds, None))
         }
@@ -529,23 +520,25 @@ pub(crate) fn parquet_to_arrow_type(
             ParquetPhysicalType::Int64,
             Some(ParquetLogicalType::Decimal { precision, scale }),
         ) => Ok(ArrowType::Decimal64(precision, scale)),
+        // A fixed-length decimal may hold any precision. The narrowest
+        // Arrow decimal that fits the precision is used, matching the
+        // INT32 and INT64 forms above.
         #[cfg(feature = "decimal")]
         (
             ParquetPhysicalType::FixedLenByteArray,
             Some(ParquetLogicalType::Decimal { precision, scale }),
-        ) => Ok(ArrowType::Decimal128(precision, scale)),
+        ) => Ok(match precision {
+            0..=9 => ArrowType::Decimal32(precision, scale),
+            10..=18 => ArrowType::Decimal64(precision, scale),
+            _ => ArrowType::Decimal128(precision, scale),
+        }),
 
         // Floats
         (ParquetPhysicalType::Float, _) => Ok(ArrowType::Float32),
         (ParquetPhysicalType::Double, _) => Ok(ArrowType::Float64),
 
         // Strings - always logical UTF8/Utf8
-        #[cfg(not(feature = "large_string"))]
         (ParquetPhysicalType::ByteArray, Some(ParquetLogicalType::Utf8)) => Ok(ArrowType::String),
-        #[cfg(feature = "large_string")]
-        (ParquetPhysicalType::ByteArray, Some(ParquetLogicalType::Utf8)) => {
-            Ok(ArrowType::LargeString)
-        }
 
         // Fallback -- treat byte array without logical utf8 as unsupported
         (ParquetPhysicalType::ByteArray, None) => {

@@ -10,6 +10,11 @@
 //! every page boundary, so the value sections hold non-null entries only
 //! and the reader has to scatter them back against the definition levels
 //! page by page.
+//!
+//! The types that come back are the ones the Parquet schema names, which
+//! is not always the Arrow type that went in: categoricals are UTF8
+//! strings, Date64 is a DATE day count, seconds become milliseconds, and
+//! TIME columns take the storage width their unit requires.
 
 #[cfg(feature = "parquet")]
 mod parquet_nullable_roundtrip_tests {
@@ -24,7 +29,9 @@ mod parquet_nullable_roundtrip_tests {
         IntegerArray, MaskedArray, NumericArray, StringArray, Table, TextArray, Vec64,
     };
     #[cfg(feature = "datetime")]
-    use minarrow::{DatetimeArray, TemporalArray};
+    use minarrow::{DatetimeArray, TemporalArray, TimeUnit};
+    #[cfg(feature = "decimal")]
+    use minarrow::DecimalArray;
 
     /// Rows per column: two full pages plus a partial third page.
     const N_ROWS: usize = 2 * PARQUET_PAGE_CHUNK_SIZE + 13;
@@ -83,9 +90,61 @@ mod parquet_nullable_roundtrip_tests {
     fn date32_value(i: usize) -> i32 {
         i as i32 * 3
     }
+    /// Milliseconds with a sub-day remainder, so the DATE day count is the
+    /// truncated quotient.
+    #[cfg(feature = "datetime")]
+    fn date64_value(i: usize) -> i64 {
+        i as i64 * 86_400_000 + 12_345
+    }
+    #[cfg(feature = "datetime")]
+    fn timestamp_value(i: usize) -> i64 {
+        1_700_000_000_000 + i as i64 * 1_001
+    }
+    #[cfg(feature = "datetime")]
+    fn time_value(i: usize) -> i64 {
+        (i % 86_400) as i64 * 7
+    }
+    #[cfg(feature = "decimal")]
+    fn decimal32_value(i: usize) -> i32 {
+        i as i32 * 125 - 50_000
+    }
+    #[cfg(feature = "decimal")]
+    fn decimal64_value(i: usize) -> i64 {
+        i as i64 * 1_000_003 - 7
+    }
+    #[cfg(feature = "decimal")]
+    fn decimal128_value(i: usize) -> i128 {
+        (i as i128 - 5) * 1_000_000_000_000_000_000_000
+    }
 
     fn column(name: &str, dtype: ArrowType, array: Array) -> FieldArray {
         FieldArray::new(Field::new(name, dtype, true, None), array)
+    }
+
+    #[cfg(feature = "datetime")]
+    fn temporal32(name: &str, dtype: ArrowType, unit: TimeUnit, value: fn(usize) -> i32) -> FieldArray {
+        column(
+            name,
+            dtype,
+            Array::from_datetime_i32(DatetimeArray::from_vec64(
+                (0..N_ROWS).map(value).collect::<Vec64<_>>(),
+                Some(null_mask()),
+                Some(unit),
+            )),
+        )
+    }
+
+    #[cfg(feature = "datetime")]
+    fn temporal64(name: &str, dtype: ArrowType, unit: TimeUnit, value: fn(usize) -> i64) -> FieldArray {
+        column(
+            name,
+            dtype,
+            Array::from_datetime_i64(DatetimeArray::from_vec64(
+                (0..N_ROWS).map(value).collect::<Vec64<_>>(),
+                Some(null_mask()),
+                Some(unit),
+            )),
+        )
     }
 
     fn all_types_table() -> Table {
@@ -181,15 +240,88 @@ mod parquet_nullable_roundtrip_tests {
 
         #[cfg(feature = "datetime")]
         {
-            // Date64 is left out: Parquet has no 64-bit DATE annotation, so
-            // the type mapping stores it as a plain INT64.
+            cols.push(temporal32("date32", ArrowType::Date32, TimeUnit::Days, date32_value));
+            cols.push(temporal64("date64", ArrowType::Date64, TimeUnit::Milliseconds, date64_value));
+            cols.push(temporal64(
+                "ts_s",
+                ArrowType::Timestamp(TimeUnit::Seconds, None),
+                TimeUnit::Seconds,
+                timestamp_value,
+            ));
+            cols.push(temporal64(
+                "ts_ms",
+                ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+                TimeUnit::Milliseconds,
+                timestamp_value,
+            ));
+            cols.push(temporal64(
+                "ts_us",
+                ArrowType::Timestamp(TimeUnit::Microseconds, None),
+                TimeUnit::Microseconds,
+                timestamp_value,
+            ));
+            cols.push(temporal64(
+                "ts_ns",
+                ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+                TimeUnit::Nanoseconds,
+                timestamp_value,
+            ));
+            cols.push(temporal32(
+                "time32_ms",
+                ArrowType::Time32(TimeUnit::Milliseconds),
+                TimeUnit::Milliseconds,
+                |i| time_value(i) as i32,
+            ));
+            cols.push(temporal32(
+                "time32_us",
+                ArrowType::Time32(TimeUnit::Microseconds),
+                TimeUnit::Microseconds,
+                |i| time_value(i) as i32,
+            ));
+            cols.push(temporal64(
+                "time64_ms",
+                ArrowType::Time64(TimeUnit::Milliseconds),
+                TimeUnit::Milliseconds,
+                time_value,
+            ));
+            cols.push(temporal64(
+                "time64_ns",
+                ArrowType::Time64(TimeUnit::Nanoseconds),
+                TimeUnit::Nanoseconds,
+                time_value,
+            ));
+        }
+
+        #[cfg(feature = "decimal")]
+        {
             cols.push(column(
-                "date32",
-                ArrowType::Date32,
-                Array::from_datetime_i32(DatetimeArray::from_vec64(
-                    (0..N_ROWS).map(date32_value).collect::<Vec64<_>>(),
+                "dec32",
+                ArrowType::Decimal32(7, 2),
+                Array::from_decimal32(DecimalArray::from_vec64(
+                    (0..N_ROWS).map(decimal32_value).collect::<Vec64<_>>(),
                     Some(mask.clone()),
-                    None,
+                    7,
+                    2,
+                )),
+            ));
+            cols.push(column(
+                "dec64",
+                ArrowType::Decimal64(18, 4),
+                Array::from_decimal64(DecimalArray::from_vec64(
+                    (0..N_ROWS).map(decimal64_value).collect::<Vec64<_>>(),
+                    Some(mask.clone()),
+                    18,
+                    4,
+                )),
+            ));
+            cols.push(column(
+                "dec128",
+                ArrowType::Decimal128(38, 6),
+                Array::from_decimal128(DecimalArray::from_vec64(
+                    (0..N_ROWS).map(decimal128_value).collect::<Vec64<_>>(),
+                    Some(mask.clone()),
+                    38,
+                    6,
                 )),
             ));
         }
@@ -210,6 +342,30 @@ mod parquet_nullable_roundtrip_tests {
             .iter()
             .find(|c| c.field.name == name)
             .unwrap_or_else(|| panic!("column {name} missing"))
+    }
+
+    #[cfg(feature = "datetime")]
+    fn assert_temporal32(out: &Table, name: &str, dtype: ArrowType, unit: TimeUnit, value: impl Fn(usize) -> i32) {
+        assert_eq!(col(out, name).field.dtype, dtype, "{name} dtype");
+        match &col(out, name).array {
+            Array::TemporalArray(TemporalArray::Datetime32(a)) => {
+                assert_eq!(a.time_unit, unit, "{name} unit");
+                assert_eq!((0..N_ROWS).map(|i| a.get(i)).collect::<Vec<_>>(), expected(value), "{name}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "datetime")]
+    fn assert_temporal64(out: &Table, name: &str, dtype: ArrowType, unit: TimeUnit, value: impl Fn(usize) -> i64) {
+        assert_eq!(col(out, name).field.dtype, dtype, "{name} dtype");
+        match &col(out, name).array {
+            Array::TemporalArray(TemporalArray::Datetime64(a)) => {
+                assert_eq!(a.time_unit, unit, "{name} unit");
+                assert_eq!((0..N_ROWS).map(|i| a.get(i)).collect::<Vec<_>>(), expected(value), "{name}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
     }
 
     fn assert_all_types(out: &Table) {
@@ -263,40 +419,119 @@ mod parquet_nullable_roundtrip_tests {
             }
             other => panic!("bool: {other:?}"),
         }
-        let strings: Vec<Option<String>> = match &col(out, "string").array {
-            Array::TextArray(TextArray::String32(a)) => {
-                (0..N_ROWS).map(|i| a.get(i).map(str::to_owned)).collect()
-            }
-            #[cfg(feature = "large_string")]
-            Array::TextArray(TextArray::String64(a)) => {
-                (0..N_ROWS).map(|i| a.get(i).map(str::to_owned)).collect()
-            }
+        assert_eq!(col(out, "string").field.dtype, ArrowType::String);
+        match &col(out, "string").array {
+            Array::TextArray(TextArray::String32(a)) => assert_eq!(
+                (0..N_ROWS).map(|i| a.get(i).map(str::to_owned)).collect::<Vec<_>>(),
+                expected(string_value)
+            ),
             other => panic!("string: {other:?}"),
-        };
-        assert_eq!(strings, expected(string_value));
+        }
 
-        let categories: Vec<Option<String>> = match &col(out, "category").array {
-            #[cfg(feature = "default_categorical_8")]
-            Array::TextArray(TextArray::Categorical8(a)) => {
-                (0..N_ROWS).map(|i| a.get(i).map(str::to_owned)).collect()
-            }
-            #[cfg(not(feature = "default_categorical_8"))]
-            Array::TextArray(TextArray::Categorical32(a)) => {
-                (0..N_ROWS).map(|i| a.get(i).map(str::to_owned)).collect()
-            }
+        // A categorical column is a UTF8 string column in Parquet, so it
+        // reads back as one.
+        assert_eq!(col(out, "category").field.dtype, ArrowType::String);
+        match &col(out, "category").array {
+            Array::TextArray(TextArray::String32(a)) => assert_eq!(
+                (0..N_ROWS).map(|i| a.get(i).map(str::to_owned)).collect::<Vec<_>>(),
+                expected(|i| category_value(i).to_owned())
+            ),
             other => panic!("category: {other:?}"),
-        };
-        assert_eq!(categories, expected(|i| category_value(i).to_owned()));
+        }
 
         #[cfg(feature = "datetime")]
         {
-            assert_eq!(col(out, "date32").field.dtype, ArrowType::Date32);
-            match &col(out, "date32").array {
-                Array::TemporalArray(TemporalArray::Datetime32(a)) => assert_eq!(
-                    (0..N_ROWS).map(|i| a.get(i)).collect::<Vec<_>>(),
-                    expected(date32_value)
-                ),
-                other => panic!("date32: {other:?}"),
+            assert_temporal32(out, "date32", ArrowType::Date32, TimeUnit::Days, date32_value);
+            // DATE stores days, so Date64 milliseconds come back as Date32.
+            assert_temporal32(out, "date64", ArrowType::Date32, TimeUnit::Days, |i| {
+                (date64_value(i) / 86_400_000) as i32
+            });
+            // Parquet has no seconds unit, so seconds come back as milliseconds.
+            assert_temporal64(
+                out,
+                "ts_s",
+                ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+                TimeUnit::Milliseconds,
+                |i| timestamp_value(i) * 1000,
+            );
+            assert_temporal64(
+                out,
+                "ts_ms",
+                ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+                TimeUnit::Milliseconds,
+                timestamp_value,
+            );
+            assert_temporal64(
+                out,
+                "ts_us",
+                ArrowType::Timestamp(TimeUnit::Microseconds, None),
+                TimeUnit::Microseconds,
+                timestamp_value,
+            );
+            assert_temporal64(
+                out,
+                "ts_ns",
+                ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+                TimeUnit::Nanoseconds,
+                timestamp_value,
+            );
+            assert_temporal32(
+                out,
+                "time32_ms",
+                ArrowType::Time32(TimeUnit::Milliseconds),
+                TimeUnit::Milliseconds,
+                |i| time_value(i) as i32,
+            );
+            // TIME(MICROS) is INT64 in Parquet, so Time32 microseconds widen.
+            assert_temporal64(
+                out,
+                "time32_us",
+                ArrowType::Time64(TimeUnit::Microseconds),
+                TimeUnit::Microseconds,
+                time_value,
+            );
+            // TIME(MILLIS) is INT32 in Parquet, so Time64 milliseconds narrow.
+            assert_temporal32(
+                out,
+                "time64_ms",
+                ArrowType::Time32(TimeUnit::Milliseconds),
+                TimeUnit::Milliseconds,
+                |i| time_value(i) as i32,
+            );
+            assert_temporal64(
+                out,
+                "time64_ns",
+                ArrowType::Time64(TimeUnit::Nanoseconds),
+                TimeUnit::Nanoseconds,
+                time_value,
+            );
+        }
+
+        #[cfg(feature = "decimal")]
+        {
+            assert_eq!(col(out, "dec32").field.dtype, ArrowType::Decimal32(7, 2));
+            match &col(out, "dec32").array {
+                Array::NumericArray(NumericArray::Decimal32(a)) => {
+                    assert_eq!((a.precision, a.scale), (7, 2));
+                    assert_eq!((0..N_ROWS).map(|i| a.get(i)).collect::<Vec<_>>(), expected(decimal32_value));
+                }
+                other => panic!("dec32: {other:?}"),
+            }
+            assert_eq!(col(out, "dec64").field.dtype, ArrowType::Decimal64(18, 4));
+            match &col(out, "dec64").array {
+                Array::NumericArray(NumericArray::Decimal64(a)) => {
+                    assert_eq!((a.precision, a.scale), (18, 4));
+                    assert_eq!((0..N_ROWS).map(|i| a.get(i)).collect::<Vec<_>>(), expected(decimal64_value));
+                }
+                other => panic!("dec64: {other:?}"),
+            }
+            assert_eq!(col(out, "dec128").field.dtype, ArrowType::Decimal128(38, 6));
+            match &col(out, "dec128").array {
+                Array::NumericArray(NumericArray::Decimal128(a)) => {
+                    assert_eq!((a.precision, a.scale), (38, 6));
+                    assert_eq!((0..N_ROWS).map(|i| a.get(i)).collect::<Vec<_>>(), expected(decimal128_value));
+                }
+                other => panic!("dec128: {other:?}"),
             }
         }
     }
