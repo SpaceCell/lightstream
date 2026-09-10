@@ -91,6 +91,33 @@ fn window_array(array: &Array, offset: usize, len: usize) -> io::Result<Array> {
                 NumericArray::Int16(arr) => win_int!(Int16, arr),
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt16(arr) => win_int!(UInt16, arr),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    NumericArray::Decimal32(Arc::new(minarrow::DecimalArray {
+                        data: window_buffer(&arr.data, offset, len),
+                        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+                        precision: arr.precision,
+                        scale: arr.scale,
+                    }))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    NumericArray::Decimal64(Arc::new(minarrow::DecimalArray {
+                        data: window_buffer(&arr.data, offset, len),
+                        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+                        precision: arr.precision,
+                        scale: arr.scale,
+                    }))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    NumericArray::Decimal128(Arc::new(minarrow::DecimalArray {
+                        data: window_buffer(&arr.data, offset, len),
+                        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
+                        precision: arr.precision,
+                        scale: arr.scale,
+                    }))
+                }
                 NumericArray::Null => NumericArray::Null,
             })
         }

@@ -362,6 +362,12 @@ pub(crate) fn arrow_type_to_parquet(
         ArrowType::Duration64(_) => panic!("Duration does not map to a parquet type."),
         #[cfg(feature = "datetime")]
         ArrowType::Interval(_) => panic!("Interval does not map to a parquet type."),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(_, _)
+        | ArrowType::Decimal64(_, _)
+        | ArrowType::Decimal128(_, _) => {
+            Err(IoError::UnsupportedType(format!("{ty:?}")))
+        }
         #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
         &minarrow::ArrowType::Dictionary(
             minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt16,
