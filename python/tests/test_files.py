@@ -15,6 +15,7 @@ import gc
 import lightstream as ls
 import minarrow
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 
@@ -222,6 +223,39 @@ def test_parquet_multi_write_consolidates(tmp_path):
 
     result = pa.table(ls.read(path).read_all())
     assert result.num_rows == 6
+
+
+def nullable_table():
+    return pa.table(
+        {
+            "id": pa.array([1, None, 3, 4, None], type=pa.int64()),
+            "small": pa.array([None, -2, 3, -4, 5], type=pa.int32()),
+            "count": pa.array([1, 2, None, 4, 5], type=pa.uint32()),
+            "name": pa.array(["a", "b", None, "a", "c"], type=pa.string()),
+            "score": pa.array([1.5, None, 3.5, 4.5, 5.5], type=pa.float64()),
+            "ratio": pa.array([0.5, 1.5, 2.5, None, 4.5], type=pa.float32()),
+            "flag": pa.array([True, False, None, True, False], type=pa.bool_()),
+            "day": pa.array([1, None, 3, 4, 5], type=pa.date32()),
+        }
+    )
+
+
+def test_parquet_reads_pyarrow_file_with_nulls(tmp_path):
+    path = str(tmp_path / "pyarrow.parquet")
+    original = nullable_table()
+    pq.write_table(original, path)
+
+    result = pa.table(ls.read(path).read_all())
+    assert result.to_pydict() == original.to_pydict()
+
+
+def test_parquet_written_with_nulls_reads_in_pyarrow(tmp_path):
+    path = str(tmp_path / "lightstream.parquet")
+    original = nullable_table()
+    with ls.write(path) as w:
+        w.write(original)
+
+    assert pq.read_table(path).to_pydict() == original.to_pydict()
 
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])

@@ -106,8 +106,6 @@ pub(crate) struct ColumnMetadata {
     pub dictionary_page_offset: Option<i64>,
     /// Optional per-column statistics.
     pub statistics: Option<Statistics>,
-    /// Definition level (REQUIRED/OPTIONAL/REPEATED encoded level).
-    pub definition_level: i32,
 }
 
 /// Parquet statistics for a column (min/max, null/unique counts).

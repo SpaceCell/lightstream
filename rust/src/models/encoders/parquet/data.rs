@@ -81,20 +81,23 @@ pub fn encode_float64_plain(data: &[f64], out: &mut Vec<u8>) {
 //
 // We only support RLE encoding for Categorical types at the present time.
 
-/// Encode a boolean column bit-packed (LSB-first), respecting `null_mask`, appending to `out`.
+/// Encode a boolean column bit-packed (LSB-first), appending to `out`.
+///
+/// Null slots are omitted, so the output holds one bit per non-null value
+/// as the Parquet value section requires.
 pub fn encode_bool_bitpacked(
     values: &Bitmask,
     null_mask: Option<&Bitmask>,
     len: usize,
     out: &mut Vec<u8>,
 ) {
-    //out.clear();
     let mut byte = 0u8;
     let mut bit = 0;
     for i in 0..len {
-        let valid = null_mask.is_none_or(|m| m.get(i));
-        let v = if valid { values.get(i) } else { false };
-        if v {
+        if !null_mask.is_none_or(|m| m.get(i)) {
+            continue;
+        }
+        if values.get(i) {
             byte |= 1 << bit;
         }
         bit += 1;
@@ -111,9 +114,10 @@ pub fn encode_bool_bitpacked(
 
 // UTF-8 strings
 
-/// Encode String32 (UTF-8) using length-prefix (u32 LE) per row
+/// Encode String32 (UTF-8) using length-prefix (u32 LE) per value
 ///
-/// Nulls emit zero length.
+/// Null slots are omitted, so the output holds one entry per non-null
+/// value as the Parquet value section requires.
 pub fn encode_string_plain(
     offsets: &[u32],
     values: &[u8],
@@ -122,23 +126,21 @@ pub fn encode_string_plain(
     out: &mut Vec<u8>,
 ) -> Result<(), IoError> {
     for i in 0..len {
-        // always emit a 4-byte length prefix
-        let valid = null_mask.is_none_or(|m| m.get(i));
+        if !null_mask.is_none_or(|m| m.get(i)) {
+            continue;
+        }
         let start = offsets[i] as usize;
         let end = offsets[i + 1] as usize;
-        let s_len = if valid { end - start } else { 0 };
-        out.extend_from_slice(&(s_len as u32).to_le_bytes());
-        // only write the bytes for non-null
-        if valid {
-            out.extend_from_slice(&values[start..end]);
-        }
+        out.extend_from_slice(&((end - start) as u32).to_le_bytes());
+        out.extend_from_slice(&values[start..end]);
     }
     Ok(())
 }
 
 /// Encode LargeString (i.e., UTF-8, 64-bit offsets) as length-prefix (u32 LE)
 ///
-/// Nulls emit zero length.
+/// Null slots are omitted, so the output holds one entry per non-null
+/// value as the Parquet value section requires.
 #[cfg(feature = "large_string")]
 pub fn encode_large_string_plain(
     offsets: &[u64],
@@ -148,22 +150,20 @@ pub fn encode_large_string_plain(
     out: &mut Vec<u8>,
 ) -> Result<(), IoError> {
     for i in 0..len {
-        let valid = null_mask.is_none_or(|m| m.get(i));
+        if !null_mask.is_none_or(|m| m.get(i)) {
+            continue;
+        }
         let start = offsets[i] as usize;
         let end = offsets[i + 1] as usize;
-        let s_len = if valid { end - start } else { 0 };
-        if valid && s_len > u32::MAX as usize {
+        let s_len = end - start;
+        if s_len > u32::MAX as usize {
             return Err(IoError::InputDataError(format!(
                 "string >4 GiB ({} bytes)",
                 s_len
             )));
         }
-        // length prefix for every row
         out.extend_from_slice(&(s_len as u32).to_le_bytes());
-        // actual bytes only if non-null
-        if valid {
-            out.extend_from_slice(&values[start..end]);
-        }
+        out.extend_from_slice(&values[start..end]);
     }
     Ok(())
 }
@@ -388,8 +388,8 @@ mod tests {
 
     #[test]
     fn test_encode_bool_bitpacked_with_nulls() {
-        // same values but pretend positions 1 and 3 are null ⇒ should be written as false
-        let values = vec64![true, true, true, false];
+        // positions 1 and 3 are null, so only positions 0, 2 and 4 are packed
+        let values = vec64![true, true, false, false, true];
         let mut nulls = Bitmask::new_set_all(values.len(), true);
         nulls.set_false(1);
         nulls.set_false(3);
@@ -401,12 +401,32 @@ mod tests {
             &mut buf,
         );
 
-        // check that bits at 1 and 3 are 0:
-        let byte = buf[0];
-        assert_eq!((byte >> 0) & 1, 1); // idx0 valid, true
-        assert_eq!((byte >> 1) & 1, 0); // idx1 null -> treated as false
-        assert_eq!((byte >> 2) & 1, 1); // idx2
-        assert_eq!((byte >> 3) & 1, 0); // idx3 null
+        // three packed bits: idx0 true, idx2 false, idx4 true
+        assert_eq!(buf, vec![0b101]);
+    }
+
+    #[test]
+    fn test_encode_string_plain_omits_nulls() {
+        let slices = ["foo", "", "rust"];
+        let mut offsets = Vec::with_capacity(slices.len() + 1);
+        offsets.push(0);
+        let mut values = Vec::new();
+        for s in &slices {
+            values.extend_from_slice(s.as_bytes());
+            offsets.push(values.len() as u32);
+        }
+        let mut nulls = Bitmask::new_set_all(slices.len(), true);
+        nulls.set_false(1);
+        let mut buf = Vec::new();
+        encode_string_plain(&offsets, &values, Some(&nulls), slices.len(), &mut buf).unwrap();
+
+        // two entries: "foo" and "rust", the null slot has no length prefix
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&3u32.to_le_bytes());
+        expected.extend_from_slice(b"foo");
+        expected.extend_from_slice(&4u32.to_le_bytes());
+        expected.extend_from_slice(b"rust");
+        assert_eq!(buf, expected);
     }
 
     #[test]
