@@ -2,7 +2,7 @@
 
 Notable changes are recorded from 0.5.0 onward.
 
-## 0.7.0
+## 0.7.0 (Unreleased)
 
 ### Changed
 
