@@ -632,13 +632,14 @@ pub const ENUM_MIN_TYPE: u8 = 0;
 pub const ENUM_MAX_TYPE: u8 = 23;
 #[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_TYPE: [Type; 13] = [
+pub const ENUM_VALUES_TYPE: [Type; 14] = [
   Type::NONE,
   Type::Null,
   Type::Int,
   Type::FloatingPoint,
   Type::Utf8,
   Type::Bool,
+  Type::Decimal,
   Type::Date,
   Type::Time,
   Type::Timestamp,
@@ -666,6 +667,7 @@ impl Type {
   pub const FloatingPoint: Self = Self(3);
   pub const Utf8: Self = Self(5);
   pub const Bool: Self = Self(6);
+  pub const Decimal: Self = Self(7);
   pub const Date: Self = Self(8);
   pub const Time: Self = Self(9);
   pub const Timestamp: Self = Self(10);
@@ -683,6 +685,7 @@ impl Type {
     Self::FloatingPoint,
     Self::Utf8,
     Self::Bool,
+    Self::Decimal,
     Self::Date,
     Self::Time,
     Self::Timestamp,
@@ -700,6 +703,7 @@ impl Type {
       Self::FloatingPoint => Some("FloatingPoint"),
       Self::Utf8 => Some("Utf8"),
       Self::Bool => Some("Bool"),
+      Self::Decimal => Some("Decimal"),
       Self::Date => Some("Date"),
       Self::Time => Some("Time"),
       Self::Timestamp => Some("Timestamp"),
@@ -1681,6 +1685,137 @@ impl core::fmt::Debug for Int<'_> {
     let mut ds = f.debug_struct("Int");
       ds.field("bitWidth", &self.bitWidth());
       ds.field("is_signed", &self.is_signed());
+      ds.finish()
+  }
+}
+pub enum DecimalOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct Decimal<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for Decimal<'a> {
+  type Inner = Decimal<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> Decimal<'a> {
+  pub const VT_PRECISION: flatbuffers::VOffsetT = 4;
+  pub const VT_SCALE: flatbuffers::VOffsetT = 6;
+  pub const VT_BITWIDTH: flatbuffers::VOffsetT = 8;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    Decimal { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr>,
+    args: &'args DecimalArgs
+  ) -> flatbuffers::WIPOffset<Decimal<'bldr>> {
+    let mut builder = DecimalBuilder::new(_fbb);
+    builder.add_bitWidth(args.bitWidth);
+    builder.add_scale(args.scale);
+    builder.add_precision(args.precision);
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn precision(&self) -> i32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i32>(Decimal::VT_PRECISION, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn scale(&self) -> i32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i32>(Decimal::VT_SCALE, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn bitWidth(&self) -> i32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i32>(Decimal::VT_BITWIDTH, Some(128)).unwrap()}
+  }
+}
+
+impl flatbuffers::Verifiable for Decimal<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<i32>("precision", Self::VT_PRECISION, false)?
+     .visit_field::<i32>("scale", Self::VT_SCALE, false)?
+     .visit_field::<i32>("bitWidth", Self::VT_BITWIDTH, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct DecimalArgs {
+    pub precision: i32,
+    pub scale: i32,
+    pub bitWidth: i32,
+}
+impl<'a> Default for DecimalArgs {
+  #[inline]
+  fn default() -> Self {
+    DecimalArgs {
+      precision: 0,
+      scale: 0,
+      bitWidth: 128,
+    }
+  }
+}
+
+pub struct DecimalBuilder<'a: 'b, 'b> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b> DecimalBuilder<'a, 'b> {
+  #[inline]
+  pub fn add_precision(&mut self, precision: i32) {
+    self.fbb_.push_slot::<i32>(Decimal::VT_PRECISION, precision, 0);
+  }
+  #[inline]
+  pub fn add_scale(&mut self, scale: i32) {
+    self.fbb_.push_slot::<i32>(Decimal::VT_SCALE, scale, 0);
+  }
+  #[inline]
+  pub fn add_bitWidth(&mut self, bitWidth: i32) {
+    self.fbb_.push_slot::<i32>(Decimal::VT_BITWIDTH, bitWidth, 128);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a>) -> DecimalBuilder<'a, 'b> {
+    let start = _fbb.start_table();
+    DecimalBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<Decimal<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for Decimal<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("Decimal");
+      ds.field("precision", &self.precision());
+      ds.field("scale", &self.scale());
+      ds.field("bitWidth", &self.bitWidth());
       ds.finish()
   }
 }
@@ -3219,6 +3354,21 @@ impl<'a> Field<'a> {
 
   #[inline]
   #[allow(non_snake_case)]
+  pub fn type__as_decimal(&self) -> Option<Decimal<'a>> {
+    if self.type_type() == Type::Decimal {
+      self.type_().map(|t| {
+       // Safety:
+       // Created from a valid Table for this object
+       // Which contains a valid union in this slot
+       unsafe { Decimal::init_from_table(t) }
+     })
+    } else {
+      None
+    }
+  }
+
+  #[inline]
+  #[allow(non_snake_case)]
   pub fn type__as_date(&self) -> Option<Date<'a>> {
     if self.type_type() == Type::Date {
       self.type_().map(|t| {
@@ -3340,6 +3490,7 @@ impl flatbuffers::Verifiable for Field<'_> {
           Type::FloatingPoint => v.verify_union_variant::<flatbuffers::ForwardsUOffset<FloatingPoint>>("Type::FloatingPoint", pos),
           Type::Utf8 => v.verify_union_variant::<flatbuffers::ForwardsUOffset<Utf8>>("Type::Utf8", pos),
           Type::Bool => v.verify_union_variant::<flatbuffers::ForwardsUOffset<Bool>>("Type::Bool", pos),
+          Type::Decimal => v.verify_union_variant::<flatbuffers::ForwardsUOffset<Decimal>>("Type::Decimal", pos),
           Type::Date => v.verify_union_variant::<flatbuffers::ForwardsUOffset<Date>>("Type::Date", pos),
           Type::Time => v.verify_union_variant::<flatbuffers::ForwardsUOffset<Time>>("Type::Time", pos),
           Type::Timestamp => v.verify_union_variant::<flatbuffers::ForwardsUOffset<Timestamp>>("Type::Timestamp", pos),
@@ -3466,6 +3617,13 @@ impl core::fmt::Debug for Field<'_> {
         },
         Type::Bool => {
           if let Some(x) = self.type__as_bool() {
+            ds.field("type_", &x)
+          } else {
+            ds.field("type_", &"InvalidFlatbuffer: Union discriminant does not match value.")
+          }
+        },
+        Type::Decimal => {
+          if let Some(x) = self.type__as_decimal() {
             ds.field("type_", &x)
           } else {
             ds.field("type_", &"InvalidFlatbuffer: Union discriminant does not match value.")

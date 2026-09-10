@@ -6,10 +6,15 @@
 
 //! # Parquet table reader - *reads into `minarrow::Table`*
 //!
+//! Reads flat-schema Parquet files written by lightstream or by other
+//! writers such as parquet-cpp (pyarrow) into a fully materialised Table.
+//!
 //! ## Features
-//! - Supports DataPageV2 plus the legacy V1 Parquet layout
-//! - Decodes hybrid RLE/bit-packed definition levels and dictionary indices
-//! - Handles `PLAIN` and `RLE_DICTIONARY` value encodings
+//! - DataPageV1 and DataPageV2 page layouts, across any number of row groups
+//! - Hybrid RLE/bit-packed definition levels and dictionary indices
+//! - `PLAIN`, `RLE_DICTIONARY` and `PLAIN_DICTIONARY` value encodings, plus
+//!   `RLE` booleans. Dictionary-encoded columns of any physical type are
+//!   expanded on read.
 //! - Optional feature-gated Snappy / Zstd compression
 //! - Type maps to Arrow/Minarrow - {i32, i64, u32, u64, f32, f64, bool, utf8
 //!   dictionary<u32/u64, and date32/date64 via `datetime` feature}
@@ -17,17 +22,26 @@
 //! - Works with any `Read + Seek`
 //! - Reads into memory - no mmap zero-copy like IPC at the present time.
 //!
+//! ## Categorical columns
+//! Parquet has no dictionary logical type. lightstream writes a categorical
+//! column as a BYTE_ARRAY UTF8 leaf whose pages are all dictionary-encoded
+//! and marks the file with [`PARQUET_CREATED_BY`](crate::constants::PARQUET_CREATED_BY).
+//! Only files carrying that marker read such columns back as
+//! `ArrowType::Dictionary`. Dictionary pages in other files are a storage
+//! encoding and expand to the schema type, so a pyarrow string column reads
+//! as a string column whether or not pyarrow dictionary-encoded it.
+//!
 //! ## Outputs
 //! On success returns a fully materialised `Table`; otherwise yields an `IOError`
 //! for malformed footers/headers, unsupported encodings, or truncated pages.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::convert::TryInto;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use crate::compression::{Compression, decompress};
-use crate::constants::PARQUET_MAGIC;
+use crate::constants::{PARQUET_CREATED_BY, PARQUET_MAGIC};
 use crate::error::IoError;
 #[cfg(feature = "datetime")]
 use crate::models::decoders::parquet::{decode_datetime32_plain, decode_datetime64_plain};
@@ -48,8 +62,37 @@ use minarrow::{
     Array, ArrowType, Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64, vec64,
 };
+#[cfg(feature = "decimal")]
+use minarrow::DecimalArray;
 #[cfg(feature = "datetime")]
 use minarrow::{DatetimeArray, TemporalArray};
+
+/// Build the logical type for a schema element, incorporating precision
+/// and scale for DECIMAL columns where `from_converted_type` returns `None`.
+fn logical_type_from_schema(se: &SchemaElement) -> Option<ParquetLogicalType> {
+    #[cfg(feature = "decimal")]
+    if se.converted_type == Some(5) {
+        let precision = se.precision.unwrap_or(0) as u8;
+        let scale = se.scale.unwrap_or(0) as i8;
+        return Some(ParquetLogicalType::DecimalType { precision, scale });
+    }
+    ParquetLogicalType::from_converted_type(se.converted_type)
+}
+
+/// Decode a FIXED_LEN_BYTE_ARRAY Decimal128 buffer (16 big-endian bytes per
+/// value) into a `Vec64<i128>`.
+#[cfg(feature = "decimal")]
+fn decode_decimal128_plain(buf: &[u8]) -> Result<Vec64<i128>, IoError> {
+    if buf.len() % 16 != 0 {
+        return Err(IoError::Format(
+            "decode_decimal128_plain: buffer len % 16 != 0".into(),
+        ));
+    }
+    Ok(buf
+        .chunks_exact(16)
+        .map(|c| i128::from_be_bytes(c.try_into().unwrap()))
+        .collect())
+}
 
 /// Read an entire in-memory Table from a Parquet v2 file.
 ///
@@ -96,17 +139,36 @@ pub fn load_parquet_table_cols<R: Read + Seek>(
     r: R,
     columns: &[&str],
 ) -> Result<Table, IoError> {
-    let projection: std::collections::HashSet<String> =
+    let projection: HashSet<String> =
         columns.iter().map(|s| s.to_string()).collect();
     read_parquet_impl(r, Some(projection))
 }
 
 /// Shared implementation for full and projected Parquet reads.
-/// When `projection` is `Some`, only columns whose names appear in the set
-/// are read. Skipped columns never hit disk.
+///
+/// Every row group contributes its column chunks to the same output
+/// columns, so a file with several row groups reads as one Table. When
+/// `projection` is `Some`, only columns whose names appear in the set are
+/// read. Skipped columns never hit disk.
+///
+/// ## Behaviour
+/// - Values arrive in the Parquet layout, where a page's value section
+///   holds non-null entries only. Each page is decoded to PLAIN entries and
+///   scattered against its definition levels, so [`decode_column`] always
+///   receives one entry per row.
+/// - Dictionary-encoded pages of any physical type are expanded through
+///   the row group's dictionary, so dictionary encoding stays a storage
+///   detail of the writer.
+/// - A BYTE_ARRAY UTF8 leaf with a dictionary page in a file carrying
+///   [`PARQUET_CREATED_BY`](crate::constants::PARQUET_CREATED_BY) is the
+///   lightstream categorical convention and reads back as
+///   `ArrowType::Dictionary`. Dictionaries from several row groups merge
+///   into one set of unique values.
+/// - Repeated (nested) columns and unknown compression codecs are
+///   reported as errors rather than decoded.
 fn read_parquet_impl<R: Read + Seek>(
     mut r: R,
-    projection: Option<std::collections::HashSet<String>>,
+    projection: Option<HashSet<String>>,
 ) -> Result<Table, IoError> {
     // read the 8-byte footer
     r.seek(SeekFrom::End(-8))?;
@@ -121,13 +183,22 @@ fn read_parquet_impl<R: Read + Seek>(
     r.seek(SeekFrom::End(-8 - footer_len as i64))?;
     let mut footer = vec![0u8; footer_len as usize];
     r.read_exact(&mut footer)?;
-    let mut cur = std::io::Cursor::new(&footer);
+    let mut cur = Cursor::new(&footer);
     let meta = parse_file_metadata(&mut cur)?;
+
+    // Leaf schema elements carry a physical type and the root group element
+    // does not. Leaves sit in schema order, which is also the order of the
+    // column chunks inside every row group.
+    let leaves: Vec<(&SchemaElement, ParquetPhysicalType)> = meta
+        .schema
+        .iter()
+        .filter_map(|se| se.type_.map(|ty| (se, ty)))
+        .collect();
 
     // Validate projection names against schema before reading any data
     if let Some(ref proj) = projection {
         for name in proj {
-            if !meta.schema.iter().any(|se| se.name == *name) {
+            if !leaves.iter().any(|(se, _)| se.name == *name) {
                 return Err(IoError::Format(format!(
                     "column '{}' not found in schema",
                     name
@@ -136,117 +207,226 @@ fn read_parquet_impl<R: Read + Seek>(
         }
     }
 
-    // map Parquet schema -> Arrow types. The schema list opens with a root
-    // group element carrying no physical type; leaf column elements follow.
-    // Map only the leaves, in schema order, so indices line up with the row
-    // group's column chunks.
-    let arrow_types: Vec<_> = meta
-        .schema
+    if meta.row_groups.is_empty() {
+        return Err(IoError::Format("file has no row groups".into()));
+    }
+    if let Some(rg) = meta
+        .row_groups
         .iter()
-        .filter_map(|se| se.type_.map(|ty| (ty, se.converted_type)))
-        .map(|(ty, converted)| {
-            parquet_to_arrow_type(ty, ParquetLogicalType::from_converted_type(converted))
-        })
-        .collect::<Result<_, _>>()?;
+        .find(|rg| rg.columns.len() != leaves.len())
+    {
+        return Err(IoError::Format(format!(
+            "row group has {} column chunks for {} schema leaves",
+            rg.columns.len(),
+            leaves.len()
+        )));
+    }
 
-    // single row-group, flat schema only
-    let rg = &meta.row_groups[0];
-    let mut columns = Vec::with_capacity(rg.columns.len());
+    // The categorical convention only applies to lightstream's own files.
+    // Other writers dictionary-encode any column type as a storage detail.
+    let lightstream_written = meta.created_by.as_deref() == Some(PARQUET_CREATED_BY);
 
-    for (col_idx, chunk) in rg.columns.iter().enumerate() {
-        let cmeta = &chunk.meta_data;
-        let col_name = &cmeta.path_in_schema[0];
+    let mut columns = Vec::with_capacity(leaves.len());
 
+    for (col_idx, &(leaf, physical)) in leaves.iter().enumerate() {
         // Skip columns not in the projection
         if let Some(ref proj) = projection
-            && !proj.contains(col_name)
+            && !proj.contains(&leaf.name)
         {
             continue;
         }
 
-        // The Parquet schema has no slot to record that a column was
-        // originally a Dictionary - the writer maps Dictionary(_) to a
-        // physical Int32 with no logical type. Recover the Arrow shape
-        // from the column metadata: a column carrying a dictionary page
-        // is decoded as Dictionary using the build's default index
-        // width (UInt8 when `default_categorical_8` is on, UInt32
-        // otherwise). Round-trip across feature flags isn't supported.
-        let schema_ty = &arrow_types[col_idx];
-        let dictionary_ty = if cmeta.dictionary_page_offset.is_some() {
-            Some(ArrowType::Dictionary(default_categorical_index_type()))
-        } else {
-            None
-        };
-        let ty: &ArrowType = dictionary_ty.as_ref().unwrap_or(schema_ty);
-
-        // read the DICTIONARY_PAGE if present
-        let dict = if let Some(dict_off) = cmeta.dictionary_page_offset {
-            r.seek(SeekFrom::Start(dict_off as u64))?;
-            let ph = parse_page_header(&mut r)?;
-            if ph.type_ != PageType::DictionaryPage {
-                return Err(IoError::Format("expected DICTIONARY_PAGE".into()));
+        // OPTIONAL leaves carry one definition level per row. REQUIRED
+        // leaves carry none. REPEATED leaves describe nested data.
+        let max_def_level: u8 = match leaf.repetition_type {
+            0 => 0,
+            1 => 1,
+            other => {
+                return Err(IoError::UnsupportedType(format!(
+                    "repeated column '{}' (repetition_type {other})",
+                    leaf.name
+                )));
             }
-            let mut compr = vec![0u8; ph.compressed_page_size as usize];
-            r.read_exact(&mut compr)?;
-            match map_codec(cmeta.codec) {
-                Some(c) => parse_dictionary_values(&decompress(&compr, c)?)?,
-                None => parse_dictionary_values(&compr)?,
-            }
-        } else {
-            Vec::new()
         };
 
-        // walk all the DATA_PAGE_V2s in a row
-        let total_vals = cmeta.num_values as usize;
-        let mut def_levels = Vec::with_capacity(total_vals);
-        let mut values_buf = Vec::new();
-        let mut pages_read = 0;
-        let mut page_encoding = ParquetEncoding::Plain;
+        let logical = logical_type_from_schema(leaf);
+        let schema_ty = parquet_to_arrow_type(physical, logical)?;
+        let has_dictionary = meta
+            .row_groups
+            .iter()
+            .any(|rg| rg.columns[col_idx].meta_data.dictionary_page_offset.is_some());
+        let categorical =
+            lightstream_written && physical == ParquetPhysicalType::ByteArray && has_dictionary;
+        let ty = if categorical {
+            ArrowType::Dictionary(default_categorical_index_type())
+        } else {
+            schema_ty
+        };
+        // Categorical columns accumulate their dictionary indices as PLAIN
+        // u32 entries. Every other column accumulates its physical values.
+        let layout = if categorical {
+            ValueLayout::Fixed(4)
+        } else {
+            ValueLayout::of(physical, leaf.type_length)?
+        };
 
-        // seek once to the first data page
-        r.seek(SeekFrom::Start(cmeta.data_page_offset as u64))?;
+        let mut def_levels: Vec<bool> = Vec::new();
+        let mut values: Vec<u8> = Vec::new();
+        // Merged categorical dictionary across row groups, with the lookup
+        // used to remap each row group's local indices onto it.
+        let mut unique_values: Vec<Vec<u8>> = Vec::new();
+        let mut unique_index: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-        while pages_read < total_vals {
-            // parse the next page header
-            let ph = parse_page_header(&mut r)?;
-            let (page_defs, enc, page_vals) = match ph.type_ {
-                PageType::DataPageV2 => read_data_page_v2(&mut r, &ph, cmeta)?,
-                PageType::DataPage => read_data_page_v1(&mut r, &ph, cmeta)?,
-                t => return Err(IoError::Format(format!("unsupported page type {:?}", t))),
-            };
-            if pages_read == 0 {
-                page_encoding = enc;
+        for rg in &meta.row_groups {
+            let cmeta = &rg.columns[col_idx].meta_data;
+            let codec = map_codec(cmeta.codec)?;
+
+            // The row group's dictionary entries without their PLAIN length
+            // prefix, plus the remap onto the merged categorical dictionary.
+            let mut dict_entries: Vec<Vec<u8>> = Vec::new();
+            let mut dict_remap: Vec<u32> = Vec::new();
+            if let Some(dict_off) = cmeta.dictionary_page_offset {
+                r.seek(SeekFrom::Start(dict_off as u64))?;
+                let ph = parse_page_header(&mut r)?;
+                if ph.type_ != PageType::DictionaryPage {
+                    return Err(IoError::Format("expected DICTIONARY_PAGE".into()));
+                }
+                let mut body = vec![0u8; ph.compressed_page_size as usize];
+                r.read_exact(&mut body)?;
+                let body = match codec {
+                    Some(c) => decompress(&body, c)?,
+                    None => body,
+                };
+                if categorical {
+                    for entry in parse_dictionary_values(&body)? {
+                        let merged = match unique_index.get(&entry) {
+                            Some(&idx) => idx,
+                            None => {
+                                let idx = unique_values.len() as u32;
+                                unique_index.insert(entry.clone(), idx);
+                                unique_values.push(entry);
+                                idx
+                            }
+                        };
+                        dict_remap.push(merged);
+                    }
+                } else {
+                    dict_entries = match layout {
+                        ValueLayout::LengthPrefixed => parse_dictionary_values(&body)?,
+                        ValueLayout::Fixed(width) => {
+                            if body.len() % width != 0 {
+                                return Err(IoError::Format(format!(
+                                    "dictionary page of {} bytes is not a multiple of the {width}-byte value width",
+                                    body.len()
+                                )));
+                            }
+                            body.chunks_exact(width).map(<[u8]>::to_vec).collect()
+                        }
+                    };
+                }
             }
 
-            // accumulate `page_defs.len()` logical rows
-            let this_count = page_defs.len().min(total_vals - pages_read);
-            def_levels.extend_from_slice(&page_defs[..this_count]);
-            values_buf.extend_from_slice(&page_vals);
-            pages_read += this_count;
+            // Walk the chunk's data pages. num_values counts every row of
+            // the chunk, nulls included, which is the definition level
+            // count.
+            r.seek(SeekFrom::Start(cmeta.data_page_offset as u64))?;
+            let chunk_levels = cmeta.num_values as usize;
+            let mut levels_read = 0usize;
 
-            // cursor is at the start of the next page header
+            while levels_read < chunk_levels {
+                let ph = parse_page_header(&mut r)?;
+                let (page_defs, encoding, page_values) = match ph.type_ {
+                    PageType::DataPage => read_data_page_v1(&mut r, &ph, codec, max_def_level)?,
+                    PageType::DataPageV2 => {
+                        read_data_page_v2(&mut r, &ph, codec, max_def_level)?
+                    }
+                    t => return Err(IoError::Format(format!("unsupported page type {:?}", t))),
+                };
+                let n_valid = page_defs.iter().filter(|&&v| v).count();
+
+                // PLAIN entries for the page's non-null values. Boolean pages
+                // unpack to one byte per value here so every physical type
+                // scatters through the same fixed or length-prefixed layout.
+                let plain: Vec<u8> = match (encoding, physical) {
+                    (ParquetEncoding::Plain, ParquetPhysicalType::Boolean) => {
+                        if page_values.len() * 8 < n_valid {
+                            return Err(IoError::Format("truncated boolean page".into()));
+                        }
+                        (0..n_valid)
+                            .map(|i| (page_values[i / 8] >> (i % 8)) & 1)
+                            .collect()
+                    }
+                    (ParquetEncoding::Rle, ParquetPhysicalType::Boolean) => {
+                        // RLE booleans carry a 4-byte run length ahead of
+                        // the hybrid run, like V1 levels.
+                        let run = length_prefixed_run(&page_values)?;
+                        decode_hybrid(run, 1, n_valid)?
+                            .iter()
+                            .map(|&v| v as u8)
+                            .collect()
+                    }
+                    (ParquetEncoding::Plain, _) => page_values,
+                    (ParquetEncoding::RleDictionary | ParquetEncoding::PlainDictionary, _) => {
+                        let indices = if n_valid == 0 {
+                            Vec64::new()
+                        } else {
+                            decode_dictionary_indices_rle(&page_values, n_valid)?
+                        };
+                        let mut plain = Vec::new();
+                        for &idx in indices.iter() {
+                            if categorical {
+                                let merged = dict_remap.get(idx as usize).ok_or_else(|| {
+                                    IoError::Format(format!("dictionary index {idx} out of range"))
+                                })?;
+                                plain.extend_from_slice(&merged.to_le_bytes());
+                                continue;
+                            }
+                            let entry = dict_entries.get(idx as usize).ok_or_else(|| {
+                                IoError::Format(format!("dictionary index {idx} out of range"))
+                            })?;
+                            if layout == ValueLayout::LengthPrefixed {
+                                plain.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+                            }
+                            plain.extend_from_slice(entry);
+                        }
+                        plain
+                    }
+                    (enc, _) => {
+                        return Err(IoError::UnsupportedEncoding(format!(
+                            "{enc:?} for column '{}'",
+                            leaf.name
+                        )));
+                    }
+                };
+
+                scatter_by_definition_levels(&mut values, &plain, &page_defs, layout)?;
+                levels_read += page_defs.len();
+                def_levels.extend(page_defs);
+            }
         }
 
-        // decode the column array
-        let array = decode_column(
-            ty,
-            page_encoding,
-            &dict,
-            &values_buf,
-            total_vals,
-            def_levels.clone(),
-        )?;
+        if def_levels.len() != meta.num_rows as usize {
+            return Err(IoError::Format(format!(
+                "column '{}' holds {} rows, file metadata says {}",
+                leaf.name,
+                def_levels.len(),
+                meta.num_rows
+            )));
+        }
+
+        let null_count = def_levels.iter().filter(|&&b| !b).count();
+        let array = decode_column(&ty, &unique_values, &values, def_levels.len(), def_levels)?;
 
         columns.push(FieldArray {
             field: Field {
-                name: col_name.clone(),
-                dtype: ty.clone(),
-                nullable: chunk.meta_data.definition_level >= 1 || def_levels.iter().any(|&b| !b),
+                name: leaf.name.clone(),
+                dtype: ty,
+                nullable: max_def_level > 0,
                 metadata: Default::default(),
             }
             .into(),
             array,
-            null_count: def_levels.iter().filter(|&&b| !b).count(),
+            null_count,
         });
     }
 
@@ -258,24 +438,165 @@ fn read_parquet_impl<R: Read + Seek>(
     })
 }
 
-/// DataPageV2 reader: read exactly `compressed_page_size` bytes, split into
-/// rep / def, decompress the remainder, decode def‐levels, return the raw
-/// values and the page encoding.
+/// Byte layout of one value inside a PLAIN value section.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ValueLayout {
+    /// Every value occupies the given number of bytes.
+    Fixed(usize),
+    /// A 4-byte little-endian length precedes each value's bytes.
+    LengthPrefixed,
+}
+
+impl ValueLayout {
+    /// Layout of the physical type once a page has been decoded to PLAIN
+    /// entries. Booleans count as one byte per value because the page
+    /// readers unpack them before scattering. `type_length` is the schema
+    /// element's width for FIXED_LEN_BYTE_ARRAY leaves.
+    fn of(physical: ParquetPhysicalType, type_length: Option<i32>) -> Result<Self, IoError> {
+        Ok(match physical {
+            ParquetPhysicalType::Boolean => ValueLayout::Fixed(1),
+            ParquetPhysicalType::Int32 | ParquetPhysicalType::Float => ValueLayout::Fixed(4),
+            ParquetPhysicalType::Int64 | ParquetPhysicalType::Double => ValueLayout::Fixed(8),
+            ParquetPhysicalType::ByteArray => ValueLayout::LengthPrefixed,
+            ParquetPhysicalType::FixedLenByteArray => match type_length {
+                Some(width) if width > 0 => ValueLayout::Fixed(width as usize),
+                _ => {
+                    return Err(IoError::Format(
+                        "FIXED_LEN_BYTE_ARRAY leaf without a type_length".into(),
+                    ));
+                }
+            },
+        })
+    }
+}
+
+/// Append a page's PLAIN entries to `out` with a zero entry at every null
+/// row, so the column buffer holds one entry per row.
+///
+/// Parquet value sections hold non-null values only, while the PLAIN
+/// decoders behind [`decode_column`] expect one entry per row with the null
+/// mask applied afterwards. A null row becomes zero bytes for a fixed-width
+/// value or a zero length for a length-prefixed value.
+fn scatter_by_definition_levels(
+    out: &mut Vec<u8>,
+    plain: &[u8],
+    def_levels: &[bool],
+    layout: ValueLayout,
+) -> Result<(), IoError> {
+    if def_levels.iter().all(|&v| v) {
+        out.extend_from_slice(plain);
+        return Ok(());
+    }
+    let mut pos = 0usize;
+    for &valid in def_levels {
+        if !valid {
+            match layout {
+                ValueLayout::Fixed(width) => out.extend(std::iter::repeat_n(0u8, width)),
+                ValueLayout::LengthPrefixed => out.extend_from_slice(&[0u8; 4]),
+            }
+            continue;
+        }
+        let width = match layout {
+            ValueLayout::Fixed(width) => width,
+            ValueLayout::LengthPrefixed => {
+                let len = plain
+                    .get(pos..pos + 4)
+                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+                    .ok_or_else(|| {
+                        IoError::Format("value section shorter than its definition levels".into())
+                    })?;
+                4 + len
+            }
+        };
+        let entry = plain.get(pos..pos + width).ok_or_else(|| {
+            IoError::Format("value section shorter than its definition levels".into())
+        })?;
+        out.extend_from_slice(entry);
+        pos += width;
+    }
+    Ok(())
+}
+
+/// Split a 4-byte little-endian length off the front of a level or RLE
+/// boolean stream and return the run it introduces.
+fn length_prefixed_run(buf: &[u8]) -> Result<&[u8], IoError> {
+    let len = buf
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .ok_or_else(|| IoError::Format("truncated length-prefixed run".into()))?;
+    buf.get(4..4 + len)
+        .ok_or_else(|| IoError::Format("truncated length-prefixed run".into()))
+}
+
+/// DataPageV1 reader.
+///
+/// The whole page body is compressed as one unit. Inside it, repetition
+/// levels (absent for a flat schema) and definition levels (absent for a
+/// REQUIRED column) each lead with a 4-byte length, and the values follow.
+/// Returns the definition levels, the value encoding and the raw values.
+fn read_data_page_v1<R: Read>(
+    r: &mut R,
+    ph: &PageHeader,
+    codec: Option<Compression>,
+    max_def_level: u8,
+) -> Result<(Vec<bool>, ParquetEncoding, Vec<u8>), IoError> {
+    let h = ph
+        .data_page_header
+        .as_ref()
+        .ok_or_else(|| IoError::Format("missing DataPageHeader".into()))?;
+
+    let mut body = vec![0u8; ph.compressed_page_size as usize];
+    r.read_exact(&mut body)?;
+    let body = match codec {
+        Some(c) => decompress(&body, c)?,
+        None => body,
+    };
+
+    let n = h.num_values as usize;
+    let mut pos = 0usize;
+    let def_levels = if max_def_level == 0 {
+        vec![true; n]
+    } else {
+        if h.definition_level_encoding != ParquetEncoding::Rle {
+            return Err(IoError::UnsupportedEncoding(format!(
+                "{:?} definition levels",
+                h.definition_level_encoding
+            )));
+        }
+        let run = length_prefixed_run(&body[pos..])?;
+        pos += 4 + run.len();
+        decode_hybrid(run, max_def_level, n)?
+            .into_iter()
+            .map(|v| v == max_def_level as u32)
+            .collect()
+    };
+
+    Ok((def_levels, h.encoding, body[pos..].to_vec()))
+}
+
+/// DataPageV2 reader.
+///
+/// Repetition and definition levels sit uncompressed at the front of the
+/// page with their byte lengths in the header. The value section that
+/// follows is compressed only when the header says so. Returns the
+/// definition levels, the value encoding and the raw values.
 fn read_data_page_v2<R: Read>(
     r: &mut R,
     ph: &PageHeader,
-    cmeta: &ColumnMetadata,
+    codec: Option<Compression>,
+    max_def_level: u8,
 ) -> Result<(Vec<bool>, ParquetEncoding, Vec<u8>), IoError> {
     let h = ph
         .data_page_header_v2
         .as_ref()
         .ok_or_else(|| IoError::Format("missing DataPageHeaderV2".into()))?;
 
-    // 1) consume repetition‐levels bytes
+    // 1) consume repetition-levels bytes. A flat schema has no repetition
+    //    levels, though a writer may still emit a run for them.
     let mut rep = vec![0u8; h.repetition_levels_byte_length as usize];
     r.read_exact(&mut rep)?;
 
-    // 2) consume definition‐levels bytes
+    // 2) consume definition-levels bytes
     let mut def = vec![0u8; h.definition_levels_byte_length as usize];
     r.read_exact(&mut def)?;
 
@@ -287,54 +608,35 @@ fn read_data_page_v2<R: Read>(
     r.read_exact(&mut vs)?;
 
     // 4) decompress if needed
-    let values_raw = match (h.is_compressed, map_codec(cmeta.codec)) {
+    let values_raw = match (h.is_compressed, codec) {
         (true, Some(c)) => decompress(&vs, c)?,
         _ => vs,
     };
 
-    // 5) decode definition‐levels (we ignore repetition entirely)
-    let def_levels = if cmeta.definition_level == 0 && def.is_empty() {
-        vec![true; h.num_rows as usize]
+    // 5) decode definition levels. num_values counts every row of the
+    //    page, nulls included, which is the definition level count.
+    let n = h.num_values as usize;
+    let def_levels = if max_def_level == 0 || def.is_empty() {
+        vec![true; n]
     } else {
-        decode_hybrid(&def, 1, h.num_rows as usize)?
+        decode_hybrid(&def, max_def_level, n)?
             .into_iter()
-            .map(|v| v != 0)
+            .map(|v| v == max_def_level as u32)
             .collect()
     };
 
     Ok((def_levels, h.encoding, values_raw))
 }
 
-/// DataPageV1 reader
-fn read_data_page_v1<R: Read>(
-    r: &mut R,
-    _ph: &PageHeader,
-    cmeta: &ColumnMetadata,
-) -> Result<(Vec<bool>, ParquetEncoding, Vec<u8>), IoError> {
-    // read the 4-byte prefix of the def‐levels stream
-    let def = read_len_prefixed(r)?;
-    // read  the remaining compressed values for this page,
-    // which in V1 is “to the end of this page” - as V1 only writes one page
-    let mut vs = Vec::new();
-    r.read_to_end(&mut vs)?;
-
-    let num_vals = (cmeta.num_values as usize).max(def_levels_count(&def, 1));
-    let def_levels = if cmeta.definition_level == 0 && def.is_empty() {
-        vec![true; num_vals]
-    } else {
-        decode_hybrid(&def, 1, num_vals)?
-            .into_iter()
-            .map(|v| v != 0)
-            .collect()
-    };
-    Ok((def_levels, ParquetEncoding::Plain, vs))
-}
-
 // Column-value decoder
 
+/// Build the column array from PLAIN entries, one per row.
+///
+/// `buf` holds one entry per row in the layout the PLAIN decoders expect,
+/// with a zero entry under each null. Categorical columns pass their
+/// merged dictionary in `dict` and hold u32 indices in `buf`.
 fn decode_column(
     ty: &ArrowType,
-    enc: ParquetEncoding,
     dict: &[Vec<u8>],
     buf: &[u8],
     len: usize,
@@ -344,50 +646,33 @@ fn decode_column(
 
     Ok(match ty {
         // numerics
-        ArrowType::Int32 if enc == ParquetEncoding::Plain => {
-            Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray::from_vec64(
-                decode_int32_plain(buf)?,
-                mask,
-            ))))
-        }
-        ArrowType::UInt32 if enc == ParquetEncoding::Plain => {
-            Array::NumericArray(NumericArray::UInt32(Arc::new(IntegerArray::from_vec64(
-                decode_uint32_as_int32_plain(buf)?,
-                mask,
-            ))))
-        }
-        ArrowType::Int64 if enc == ParquetEncoding::Plain => {
-            Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray::from_vec64(
-                decode_int64_plain(buf)?,
-                mask,
-            ))))
-        }
-        ArrowType::UInt64 if enc == ParquetEncoding::Plain => {
-            Array::NumericArray(NumericArray::UInt64(Arc::new(IntegerArray::from_vec64(
-                decode_uint64_as_int64_plain(buf)?,
-                mask,
-            ))))
-        }
-        ArrowType::Float32 if enc == ParquetEncoding::Plain => {
-            Array::NumericArray(NumericArray::Float32(Arc::new(FloatArray::from_vec64(
-                decode_float32_plain(buf)?,
-                mask,
-            ))))
-        }
-        ArrowType::Float64 if enc == ParquetEncoding::Plain => {
-            Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray::from_vec64(
-                decode_float64_plain(buf)?,
-                mask,
-            ))))
-        }
+        ArrowType::Int32 => Array::NumericArray(NumericArray::Int32(Arc::new(
+            IntegerArray::from_vec64(decode_int32_plain(buf)?, mask),
+        ))),
+        ArrowType::UInt32 => Array::NumericArray(NumericArray::UInt32(Arc::new(
+            IntegerArray::from_vec64(decode_uint32_as_int32_plain(buf)?, mask),
+        ))),
+        ArrowType::Int64 => Array::NumericArray(NumericArray::Int64(Arc::new(
+            IntegerArray::from_vec64(decode_int64_plain(buf)?, mask),
+        ))),
+        ArrowType::UInt64 => Array::NumericArray(NumericArray::UInt64(Arc::new(
+            IntegerArray::from_vec64(decode_uint64_as_int64_plain(buf)?, mask),
+        ))),
+        ArrowType::Float32 => Array::NumericArray(NumericArray::Float32(Arc::new(
+            FloatArray::from_vec64(decode_float32_plain(buf)?, mask),
+        ))),
+        ArrowType::Float64 => Array::NumericArray(NumericArray::Float64(Arc::new(
+            FloatArray::from_vec64(decode_float64_plain(buf)?, mask),
+        ))),
 
-        // booleans
-        ArrowType::Boolean if enc == ParquetEncoding::Plain => {
-            Array::BooleanArray(Arc::new(BooleanArray::new(Bitmask::from_bytes(buf, len), mask)))
+        // booleans, one byte per row
+        ArrowType::Boolean => {
+            let bits: Vec<bool> = buf.iter().map(|&b| b != 0).collect();
+            Array::BooleanArray(Arc::new(BooleanArray::new(Bitmask::from_bools(&bits), mask)))
         }
 
         // strings
-        ArrowType::String if enc == ParquetEncoding::Plain => {
+        ArrowType::String => {
             let (offsets, data) = decode_string_plain(buf, len)?;
             Array::TextArray(TextArray::String32(Arc::new(StringArray {
                 offsets: offsets.into(),
@@ -396,7 +681,7 @@ fn decode_column(
             })))
         }
         #[cfg(feature = "large_string")]
-        ArrowType::LargeString if enc == ParquetEncoding::Plain => {
+        ArrowType::LargeString => {
             use crate::models::decoders::parquet::decode_large_string_plain;
 
             let (offsets, data) = decode_large_string_plain(buf, len)?;
@@ -407,84 +692,88 @@ fn decode_column(
             })))
         }
 
-        // dictionary / categoricals
-        ArrowType::Dictionary(key_ty) => {
-            match (key_ty, enc) {
-                // u32 keys
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
-                (CategoricalIndexType::UInt32, ParquetEncoding::RleDictionary) => {
-                    let idx = decode_dictionary_indices_rle(buf, len)?;
-                    build_cat32(idx, dict, mask)
-                }
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
-                (CategoricalIndexType::UInt32, ParquetEncoding::Plain) => {
-                    let idx = decode_uint32_as_int32_plain(buf)?;
-                    build_cat32(idx, dict, mask)
-                }
-
-                // u8 keys (default when default_categorical_8 is enabled)
-                #[cfg(feature = "default_categorical_8")]
-                (CategoricalIndexType::UInt8, ParquetEncoding::RleDictionary) => {
-                    let idx = decode_dictionary_indices_rle(buf, len)?;
-                    build_cat8(idx, dict, mask)
-                }
-                #[cfg(feature = "default_categorical_8")]
-                (CategoricalIndexType::UInt8, ParquetEncoding::Plain) => {
-                    let idx = decode_uint32_as_int32_plain(buf)?;
-                    build_cat8(idx, dict, mask)
-                }
-
-                // optional u64 keys
-                #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
-                (CategoricalIndexType::UInt64, ParquetEncoding::RleDictionary) => {
-                    let idx = decode_dictionary_indices_rle(buf, len)?;
-                    let idx = idx.into_iter().map(|v| v as u64).collect();
-                    build_cat64(idx, dict, mask)
-                }
-                #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
-                (CategoricalIndexType::UInt64, ParquetEncoding::Plain) => {
-                    let idx = decode_uint64_as_int64_plain(buf)?;
-                    build_cat64(idx, dict, mask)
-                }
-
-                _ => {
-                    return Err(IoError::UnsupportedEncoding(format!(
-                        "{:?} + {:?}",
-                        key_ty, enc
-                    )));
-                }
+        // dictionary / categoricals, u32 indices per row
+        ArrowType::Dictionary(key_ty) => match key_ty {
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            CategoricalIndexType::UInt32 => {
+                build_cat32(decode_uint32_as_int32_plain(buf)?, dict, mask)
             }
-        }
+            #[cfg(feature = "default_categorical_8")]
+            CategoricalIndexType::UInt8 => build_cat8(decode_uint32_as_int32_plain(buf)?, dict, mask),
+            #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
+            CategoricalIndexType::UInt64 => {
+                let idx = decode_uint32_as_int32_plain(buf)?
+                    .into_iter()
+                    .map(|v| v as u64)
+                    .collect();
+                build_cat64(idx, dict, mask)
+            }
+            // Which index widths exist depends on minarrow's categorical
+            // feature flags, so this arm is unreachable in some builds.
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(IoError::UnsupportedType(format!(
+                    "dictionary index {:?}",
+                    key_ty
+                )));
+            }
+        },
 
         // temporal
         #[cfg(feature = "datetime")]
-        ArrowType::Date32 if enc == ParquetEncoding::Plain => {
-            Array::TemporalArray(TemporalArray::Datetime32(Arc::new(DatetimeArray {
+        ArrowType::Date32 => Array::TemporalArray(TemporalArray::Datetime32(Arc::new(
+            DatetimeArray {
                 data: decode_datetime32_plain(buf)?.into(),
                 null_mask: mask,
                 time_unit: Default::default(),
-            })))
-        }
+            },
+        ))),
         #[cfg(feature = "datetime")]
-        ArrowType::Date64 if enc == ParquetEncoding::Plain => {
-            Array::TemporalArray(TemporalArray::Datetime64(Arc::new(DatetimeArray {
+        ArrowType::Date64 => Array::TemporalArray(TemporalArray::Datetime64(Arc::new(
+            DatetimeArray {
                 data: decode_datetime64_plain(buf)?.into(),
                 null_mask: mask,
                 time_unit: Default::default(),
+            },
+        ))),
+
+        // decimals
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(precision, scale) => {
+            let data = decode_int32_plain(buf)?;
+            Array::NumericArray(NumericArray::Decimal32(Arc::new(DecimalArray {
+                data: data.into(),
+                null_mask: mask,
+                precision: *precision,
+                scale: *scale,
+            })))
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(precision, scale) => {
+            let data = decode_int64_plain(buf)?;
+            Array::NumericArray(NumericArray::Decimal64(Arc::new(DecimalArray {
+                data: data.into(),
+                null_mask: mask,
+                precision: *precision,
+                scale: *scale,
+            })))
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(precision, scale) => {
+            let data = decode_decimal128_plain(buf)?;
+            Array::NumericArray(NumericArray::Decimal128(Arc::new(DecimalArray {
+                data: data.into(),
+                null_mask: mask,
+                precision: *precision,
+                scale: *scale,
             })))
         }
 
         _ => {
-            return Err(IoError::UnsupportedType(format!(
-                "decode {:?} / {:?}",
-                ty, enc
-            )));
+            return Err(IoError::UnsupportedType(format!("decode {:?}", ty)));
         }
     })
 }
@@ -607,41 +896,29 @@ fn read_uleb128(buf: &[u8]) -> Result<(u64, usize), IoError> {
     Err(IoError::Format("ULEB128 overflow/truncate".into()))
 }
 
-// utility for legacy V1 count heuristic
-fn def_levels_count(buf: &[u8], bw: u8) -> usize {
-    if buf.is_empty() {
-        0
-    } else if buf[0] & 1 == 0 {
-        ((buf[0] as usize) >> 1).min(1 << bw)
-    } else {
-        0
-    }
-}
 
 // Misc helpers
 
-fn map_codec(id: i32) -> Option<Compression> {
+/// Resolve the column chunk's codec id. Uncompressed is `None`. Codecs
+/// outside the enabled compression features are an error, since their
+/// pages cannot be decoded.
+fn map_codec(id: i32) -> Result<Option<Compression>, IoError> {
     match id {
-        0 => None,
+        0 => Ok(None),
         #[cfg(feature = "snappy")]
-        1 => Some(Compression::Snappy),
+        1 => Ok(Some(Compression::Snappy)),
         #[cfg(feature = "zstd")]
-        6 => Some(Compression::Zstd), // spec: ZSTD = 6
-        _ => None,
+        6 => Ok(Some(Compression::Zstd)), // spec: ZSTD = 6
+        other => Err(IoError::Compression(format!(
+            "unsupported parquet compression codec {other}"
+        ))),
     }
 }
 
-fn read_len_prefixed<R: Read>(r: &mut R) -> Result<Vec<u8>, IoError> {
-    let mut l4 = [0u8; 4];
-    r.read_exact(&mut l4)?;
-    let len = u32::from_le_bytes(l4) as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(buf)
-}
 
+/// Split a PLAIN BYTE_ARRAY dictionary page body into its entries.
 fn parse_dictionary_values(buf: &[u8]) -> Result<Vec<Vec<u8>>, IoError> {
-    let mut c = std::io::Cursor::new(buf);
+    let mut c = Cursor::new(buf);
     let mut out = Vec::new();
     while (c.position() as usize) < buf.len() {
         let mut l4 = [0u8; 4];
@@ -889,7 +1166,6 @@ fn parse_column_meta_data<R: Read>(r: &mut R) -> Result<ColumnMetadata, IoError>
         data_page_offset: data_page_offset.unwrap_or(0),
         dictionary_page_offset,
         statistics,
-        definition_level: 0,
     })
 }
 
@@ -1314,14 +1590,12 @@ mod tests {
     fn decode_column_categorical_rle_dictionary() {
         let dict_raw = dict(&["foo", "bar"]);
         let idx: Vec<u32> = vec![0, 1, 1, 0];
-        let mut encoded = Vec::new();
-        encode_dictionary_indices_rle(&idx, &mut encoded).unwrap();
+        let encoded: Vec<u8> = idx.iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let def_levels = vec![true; idx.len()];
 
         let array = super::decode_column(
             &ArrowType::Dictionary(CategoricalIndexType::UInt32),
-            ParquetEncoding::RleDictionary,
             &dict_raw,
             &encoded,
             idx.len(),
@@ -1344,14 +1618,12 @@ mod tests {
     fn decode_column_categorical_rle_dictionary() {
         let dict_raw = dict(&["foo", "bar"]);
         let idx: Vec<u32> = vec![0, 1, 1, 0];
-        let mut encoded = Vec::new();
-        encode_dictionary_indices_rle(&idx, &mut encoded).unwrap();
+        let encoded: Vec<u8> = idx.iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let def_levels = vec![true; idx.len()];
 
         let array = super::decode_column(
             &ArrowType::Dictionary(CategoricalIndexType::UInt8),
-            ParquetEncoding::RleDictionary,
             &dict_raw,
             &encoded,
             idx.len(),
@@ -1379,14 +1651,7 @@ mod tests {
         }
 
         let def_levels = vec![true; values.len()];
-        let array = decode_column(
-            &ArrowType::Int32,
-            ParquetEncoding::Plain,
-            &[],
-            &buf,
-            values.len(),
-            def_levels.clone(),
-        )
+        let array = decode_column(&ArrowType::Int32, &[], &buf, values.len(), def_levels.clone())
         .unwrap();
 
         match array {
@@ -1401,16 +1666,10 @@ mod tests {
     #[test]
     fn decode_column_boolean_plain() {
         let bits = [true, false, true, true, false, false];
-        let data_mask = Bitmask::from_bools(&bits);
-        let def_levels = bits.to_vec(); // no nulls
-        let array = decode_column(
-            &ArrowType::Boolean,
-            ParquetEncoding::Plain,
-            &[],
-            data_mask.as_slice(),
-            bits.len(),
-            def_levels,
-        )
+        // one byte per row, as the page readers unpack boolean pages
+        let bytes: Vec<u8> = bits.iter().map(|&b| b as u8).collect();
+        let def_levels = vec![true; bits.len()];
+        let array = decode_column(&ArrowType::Boolean, &[], &bytes, bits.len(), def_levels)
         .unwrap();
 
         match array {

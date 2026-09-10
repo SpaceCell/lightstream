@@ -33,6 +33,8 @@ pub(crate) enum ParquetPhysicalType {
     Double = 5,
     /// Variable-length byte array (used for strings and binary data).
     ByteArray = 6,
+    /// Fixed-length byte array (used for Decimal128 and other fixed-width types).
+    FixedLenByteArray = 7,
 }
 
 impl ParquetPhysicalType {
@@ -52,6 +54,7 @@ impl ParquetPhysicalType {
             4 => Some(Self::Float),
             5 => Some(Self::Double),
             6 => Some(Self::ByteArray),
+            7 => Some(Self::FixedLenByteArray),
             _ => None,
         }
     }
@@ -97,6 +100,14 @@ pub(crate) enum ParquetLogicalType {
         bit_width: u8,
         /// Whether the type is signed (`true`) or unsigned (`false`).
         is_signed: bool,
+    },
+    /// Fixed-point decimal with precision and scale.
+    #[cfg(feature = "decimal")]
+    DecimalType {
+        /// Total number of significant digits.
+        precision: u8,
+        /// Digits after the decimal point.
+        scale: i8,
     },
 }
 
@@ -363,11 +374,20 @@ pub(crate) fn arrow_type_to_parquet(
         #[cfg(feature = "datetime")]
         ArrowType::Interval(_) => panic!("Interval does not map to a parquet type."),
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal32(_, _)
-        | ArrowType::Decimal64(_, _)
-        | ArrowType::Decimal128(_, _) => {
-            Err(IoError::UnsupportedType(format!("{ty:?}")))
-        }
+        ArrowType::Decimal32(p, s) => Ok((
+            ParquetPhysicalType::Int32,
+            ParquetLogicalType::DecimalType { precision: *p, scale: *s },
+        )),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(p, s) => Ok((
+            ParquetPhysicalType::Int64,
+            ParquetLogicalType::DecimalType { precision: *p, scale: *s },
+        )),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(p, s) => Ok((
+            ParquetPhysicalType::FixedLenByteArray,
+            ParquetLogicalType::DecimalType { precision: *p, scale: *s },
+        )),
         #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
         &minarrow::ArrowType::Dictionary(
             minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt16,
@@ -494,6 +514,23 @@ pub(crate) fn parquet_to_arrow_type(
         (ParquetPhysicalType::Int64, Some(ParquetLogicalType::TimeNanos)) => {
             Ok(ArrowType::Time64(TimeUnit::Nanoseconds))
         }
+
+        // Decimals
+        #[cfg(feature = "decimal")]
+        (
+            ParquetPhysicalType::Int32,
+            Some(ParquetLogicalType::DecimalType { precision, scale }),
+        ) => Ok(ArrowType::Decimal32(precision, scale)),
+        #[cfg(feature = "decimal")]
+        (
+            ParquetPhysicalType::Int64,
+            Some(ParquetLogicalType::DecimalType { precision, scale }),
+        ) => Ok(ArrowType::Decimal64(precision, scale)),
+        #[cfg(feature = "decimal")]
+        (
+            ParquetPhysicalType::FixedLenByteArray,
+            Some(ParquetLogicalType::DecimalType { precision, scale }),
+        ) => Ok(ArrowType::Decimal128(precision, scale)),
 
         // Floats
         (ParquetPhysicalType::Float, _) => Ok(ArrowType::Float32),
