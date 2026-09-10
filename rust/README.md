@@ -200,7 +200,7 @@ cargo run --example uds_arrow --features uds
 | `msgpack`, `protobuf` | Message encodings (enables `protocol`) |
 | `tls` | TLS for TCP, WebSocket, HTTP/2 |
 | `io_uring` | Linux async I/O (experimental) |
-| `datetime`, `large_string`, `extended_numeric_types` | Schema extensions |
+| `datetime`, `decimal`, `large_string`, `extended_numeric_types` | Schema extensions |
 
 ## Buffering and safety
 

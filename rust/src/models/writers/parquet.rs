@@ -46,24 +46,28 @@ use std::io::{Seek, Write};
 
 #[cfg(feature = "datetime")]
 use minarrow::TemporalArray;
+#[cfg(feature = "datetime")]
+use minarrow::ArrowType;
 use minarrow::{Array, NumericArray, Table, TextArray};
 
 use crate::compression::{Compression, compress};
-use crate::constants::PARQUET_MAGIC;
+use crate::constants::{PARQUET_CREATED_BY, PARQUET_MAGIC};
 use crate::error::IoError;
 #[cfg(feature = "large_string")]
 use crate::models::encoders::parquet::data::encode_large_string_plain;
 use crate::models::encoders::parquet::data::{
     encode_bool_bitpacked, encode_float32_plain, encode_float64_plain, encode_int32_plain,
-    encode_int64_plain, encode_string_plain, encode_uint32_as_int32_plain,
-    encode_uint64_as_int64_plain,
+    encode_int64_plain, encode_string_plain, encode_temporal_plain,
+    encode_uint32_as_int32_plain, encode_uint64_as_int64_plain,
 };
 use crate::models::encoders::parquet::metadata::{
     ColumnChunkMeta, ColumnMetadata, DataPageHeaderV2, DictionaryPageHeader, FileMetaData,
     PageHeader, PageType, RowGroupMeta, SchemaElement, Statistics,
 };
 use crate::models::types::parquet::ParquetLogicalType::{self};
-use crate::models::types::parquet::{ParquetEncoding, arrow_type_to_parquet};
+use crate::models::types::parquet::{
+    ParquetEncoding, ParquetPhysicalType, arrow_type_to_parquet, temporal_unit_scale,
+};
 
 // Chunk size for page splitting
 pub const PARQUET_PAGE_CHUNK_SIZE: usize = 32_768;
@@ -110,17 +114,20 @@ pub fn write_parquet_table<W: Write + Seek>(
         scale: None,
         field_id: None,
         num_children: Some(table.cols.len() as i32),
+        logical_type: None,
     });
     for (i, c) in table.cols.iter().enumerate() {
         let (physical, logical) = arrow_type_to_parquet(&c.field.dtype).unwrap();
+        let (precision, scale, type_length) = decimal_schema_fields(&logical, physical);
         schema.push(SchemaElement {
             name: c.field.name.clone(),
             repetition_type: if c.field.nullable { 1 } else { 0 }, // OPTIONAL / REQUIRED
             type_: Some(physical),
             converted_type: logical_to_converted(&logical),
-            type_length: None,
-            precision: None,
-            scale: None,
+            logical_type: Some(logical),
+            type_length,
+            precision,
+            scale,
             field_id: Some(i as i32),
             num_children: None,
         });
@@ -136,6 +143,27 @@ pub fn write_parquet_table<W: Write + Seek>(
 
     // Column loop, multi-page support
     for col in &table.cols {
+        // Temporal columns are stored in the unit and width of their Parquet
+        // annotation, so their values may need scaling or narrowing on the
+        // way out. Every other type is stored as-is.
+        let (phys, _) = arrow_type_to_parquet(&col.field.dtype)?;
+        let temporal = match &col.field.dtype {
+            #[cfg(feature = "datetime")]
+            ArrowType::Date32
+            | ArrowType::Date64
+            | ArrowType::Timestamp(_, _)
+            | ArrowType::Time32(_)
+            | ArrowType::Time64(_) => true,
+            _ => false,
+        };
+        let (unit_mul, unit_div) = temporal_unit_scale(&col.field.dtype);
+        let encode_temporal32 = |data: &[i32], out: &mut Vec<u8>| {
+            encode_temporal_plain(data, unit_mul, unit_div, phys, out)
+        };
+        let encode_temporal64 = |data: &[i64], out: &mut Vec<u8>| {
+            encode_temporal_plain(data, unit_mul, unit_div, phys, out)
+        };
+
         let mut dictionary_page_offset = None;
         let mut encodings = vec![ParquetEncoding::Plain];
 
@@ -193,27 +221,82 @@ pub fn write_parquet_table<W: Write + Seek>(
             let end = usize::min(start + PARQUET_PAGE_CHUNK_SIZE, n);
             let len = end - start;
 
-            // encode the raw values for this slice
+            // rep / def levels for this chunk
+            let def_levels = col.array.null_mask().map_or_else(
+                || vec![true; len],
+                |mask| (start..end).map(|i| mask.get(i)).collect(),
+            );
+            let has_nulls = def_levels.iter().any(|&v| !v);
             let mut values_raw = Vec::new();
+
+            // Encode a fixed-width slice for this page. The Parquet value
+            // section holds non-null values only, so null slots are dropped
+            // before encoding.
+            macro_rules! encode_valid {
+                ($encode:ident, $data:expr) => {
+                    if has_nulls {
+                        let valid: Vec<_> = $data
+                            .iter()
+                            .zip(&def_levels)
+                            .filter(|(_, valid)| **valid)
+                            .map(|(v, _)| *v)
+                            .collect();
+                        $encode(&valid, &mut values_raw)
+                    } else {
+                        $encode($data, &mut values_raw)
+                    }
+                };
+            }
+
+            // encode the raw values for this slice
             match &col.array {
                 Array::NumericArray(n) => match n {
+                    NumericArray::Int32(a) if temporal => {
+                        encode_valid!(encode_temporal32, &a.data[start..end])?
+                    }
                     NumericArray::Int32(a) => {
-                        encode_int32_plain(&a.data[start..end], &mut values_raw)
+                        encode_valid!(encode_int32_plain, &a.data[start..end])
                     }
                     NumericArray::UInt32(a) => {
-                        encode_uint32_as_int32_plain(&a.data[start..end], &mut values_raw)
+                        encode_valid!(encode_uint32_as_int32_plain, &a.data[start..end])
+                    }
+                    NumericArray::Int64(a) if temporal => {
+                        encode_valid!(encode_temporal64, &a.data[start..end])?
                     }
                     NumericArray::Int64(a) => {
-                        encode_int64_plain(&a.data[start..end], &mut values_raw)
+                        encode_valid!(encode_int64_plain, &a.data[start..end])
                     }
                     NumericArray::UInt64(a) => {
-                        encode_uint64_as_int64_plain(&a.data[start..end], &mut values_raw)
+                        encode_valid!(encode_uint64_as_int64_plain, &a.data[start..end])
                     }
                     NumericArray::Float32(a) => {
-                        encode_float32_plain(&a.data[start..end], &mut values_raw)
+                        encode_valid!(encode_float32_plain, &a.data[start..end])
                     }
                     NumericArray::Float64(a) => {
-                        encode_float64_plain(&a.data[start..end], &mut values_raw)
+                        encode_valid!(encode_float64_plain, &a.data[start..end])
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal32(a) => {
+                        encode_valid!(encode_int32_plain, &a.data[start..end])
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal64(a) => {
+                        encode_valid!(encode_int64_plain, &a.data[start..end])
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal128(a) => {
+                        let slice = &a.data[start..end];
+                        if has_nulls {
+                            for (v, valid) in slice.iter().zip(&def_levels) {
+                                if *valid {
+                                    values_raw.extend_from_slice(&v.to_be_bytes());
+                                }
+                            }
+                        } else {
+                            for v in slice {
+                                values_raw.extend_from_slice(&v.to_be_bytes());
+                            }
+                        }
                     }
                     _ => return Err(IoError::UnsupportedType("numeric".into())),
                 },
@@ -251,33 +334,36 @@ pub fn write_parquet_table<W: Write + Seek>(
                 )?,
                 #[cfg(feature = "datetime")]
                 Array::TemporalArray(TemporalArray::Datetime32(a)) => {
-                    use crate::models::encoders::parquet::data::encode_datetime32_plain;
-
-                    encode_datetime32_plain(&a.data[start..end], &mut values_raw)
+                    encode_valid!(encode_temporal32, &a.data[start..end])?
                 }
                 #[cfg(feature = "datetime")]
                 Array::TemporalArray(TemporalArray::Datetime64(a)) => {
-                    use crate::models::encoders::parquet::data::encode_datetime64_plain;
-
-                    encode_datetime64_plain(&a.data[start..end], &mut values_raw)
+                    encode_valid!(encode_temporal64, &a.data[start..end])?
                 }
                 #[cfg(any(
                     not(feature = "default_categorical_8"),
                     feature = "extended_categorical"
                 ))]
                 Array::TextArray(TextArray::Categorical32(a)) => {
-                    encode_dictionary_indices_rle(&a.data[start..end], &mut values_raw)?
+                    encode_valid!(encode_dictionary_indices_rle, &a.data[start..end])?
                 }
                 #[cfg(feature = "default_categorical_8")]
                 Array::TextArray(TextArray::Categorical8(a)) => {
-                    let idx: Vec<u32> = a.data[start..end].iter().map(|&v| v as u32).collect();
+                    let idx: Vec<u32> = a.data[start..end]
+                        .iter()
+                        .zip(&def_levels)
+                        .filter(|(_, valid)| **valid)
+                        .map(|(&v, _)| v as u32)
+                        .collect();
                     encode_dictionary_indices_rle(&idx, &mut values_raw)?
                 }
                 #[cfg(all(feature = "extended_categorical", feature = "large_string"))]
                 Array::TextArray(TextArray::Categorical64(a)) => {
                     let idx: Vec<u32> = a.data[start..end]
                         .iter()
-                        .map(|&v| u32::try_from(v))
+                        .zip(&def_levels)
+                        .filter(|(_, valid)| **valid)
+                        .map(|(&v, _)| u32::try_from(v))
                         .collect::<Result<_, _>>()
                         .map_err(|_| {
                             IoError::Format(
@@ -289,11 +375,6 @@ pub fn write_parquet_table<W: Write + Seek>(
                 _ => return Err(IoError::UnsupportedType(format!("array {:?}", col.array))),
             }
 
-            // rep / def levels for this chunk
-            let def_levels = col.array.null_mask().map_or_else(
-                || vec![true; len],
-                |mask| (start..end).map(|i| mask.get(i)).collect(),
-            );
             let def_buf = encode_levels_rle(&def_levels);
             let rep_buf = encode_levels_rle(&vec![false; len]);
 
@@ -337,7 +418,8 @@ pub fn write_parquet_table<W: Write + Seek>(
                 data_page_header_v2: Some(DataPageHeaderV2 {
                     num_rows: len as i32,
                     num_nulls: def_levels.iter().filter(|&&v| !v).count() as i32,
-                    num_values: (len - def_levels.iter().filter(|&&v| !v).count()) as i32,
+                    // num_values counts every row of the page, nulls included.
+                    num_values: len as i32,
                     encoding: if is_dictionary(&col.array) {
                         ParquetEncoding::RleDictionary
                     } else {
@@ -369,7 +451,6 @@ pub fn write_parquet_table<W: Write + Seek>(
 
         // column-chunk metadata
         let first_data = recorded_data_page_offset.expect("at least one data page must be emitted");
-        let (phys, _) = arrow_type_to_parquet(&col.field.dtype)?;
         columns_meta.push(ColumnChunkMeta {
             file_offset: first_data,
             meta_data: ColumnMetadata {
@@ -389,7 +470,6 @@ pub fn write_parquet_table<W: Write + Seek>(
                 data_page_offset: first_data,
                 dictionary_page_offset,
                 statistics: None,
-                definition_level: if col.field.nullable { 1 } else { 0 },
             },
         });
     }
@@ -408,7 +488,7 @@ pub fn write_parquet_table<W: Write + Seek>(
         num_rows: n_rows_i64,
         row_groups,
         key_value_metadata: None,
-        created_by: Some("parquet_writer-v2".into()),
+        created_by: Some(PARQUET_CREATED_BY.into()),
     }
     .write(&mut out)?;
 
@@ -416,6 +496,25 @@ pub fn write_parquet_table<W: Write + Seek>(
 }
 
 // Helpers
+
+/// Extract precision, scale, and type_length for decimal schema elements.
+/// Non-decimal types return `(None, None, None)`.
+fn decimal_schema_fields(
+    logical: &ParquetLogicalType,
+    #[allow(unused_variables)] physical: ParquetPhysicalType,
+) -> (Option<i32>, Option<i32>, Option<i32>) {
+    #[cfg(feature = "decimal")]
+    if let ParquetLogicalType::Decimal { precision, scale } = logical {
+        let type_length = if matches!(physical, ParquetPhysicalType::FixedLenByteArray) {
+            Some(16)
+        } else {
+            None
+        };
+        return (Some(*precision as i32), Some(*scale as i32), type_length);
+    }
+    let _ = logical;
+    (None, None, None)
+}
 
 /// Add a dictionary page and return its uncompressed and compressed byte
 /// contributions to the column chunk totals, each including the page header.
@@ -560,12 +659,12 @@ fn logical_to_converted(log: &ParquetLogicalType) -> Option<i32> {
         ParquetLogicalType::Utf8 => 0,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::Date32 => 6,
+        // The legacy TIMESTAMP converted types mean UTC instants, so a local
+        // timestamp carries only its LogicalType.
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::Date64 => return None,
+        ParquetLogicalType::TimestampMillis { utc: true } => 9,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimestampMillis => 9,
-        #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimestampMicros => 10,
+        ParquetLogicalType::TimestampMicros { utc: true } => 10,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::TimeMillis => 7,
         #[cfg(feature = "datetime")]
@@ -602,6 +701,8 @@ fn logical_to_converted(log: &ParquetLogicalType) -> Option<i32> {
             bit_width: 64,
             is_signed: true,
         } => 18,
+        #[cfg(feature = "decimal")]
+        ParquetLogicalType::Decimal { .. } => 5,
         _ => return None,
     })
 }

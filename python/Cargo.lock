@@ -662,7 +662,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "lightstream"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "fast-float2",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "lightstream-py"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "futures-core",
  "lightstream",
@@ -734,11 +734,10 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "minarrow"
-version = "0.16.2"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec048e9b7a43abce573068b7f4e220b82a78e44d19c2888e31527efa7a4be109"
+checksum = "e53f5031b7d16aa76bc8671171814419694c687f5160917a3668f010dab2b609"
 dependencies = [
- "libc",
  "log",
  "num-traits",
  "vec64",
@@ -746,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "minarrow-pyo3"
-version = "0.16.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde6692dbbba1430e1205cb65c56420d3ff2440592ce982d98f2794a14a7b8ef"
+checksum = "94e91845f51b0aab761625144ab1c71b989d5237d8cc6159245db07b4b78bc26"
 dependencies = [
  "minarrow",
  "pyo3",
@@ -1674,9 +1673,9 @@ dependencies = [
 
 [[package]]
 name = "vec64"
-version = "0.4.7"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e14d6d15c0dbb3d2929a916fe20a15e7d04e787c9fbc29b3940e0654b11482c6"
+checksum = "1aef6bbef159f21ac387220ebc71141524423f7886afd390bc7b140f12630425"
 
 [[package]]
 name = "version_check"
