@@ -1034,12 +1034,14 @@ fn parse_logical_type<R: Read>(r: &mut R) -> Result<Option<ParquetLogicalType>, 
             7 | 8 => {
                 let mut inner = 0i16;
                 let mut unit = 0i16;
+                let mut utc = false;
                 loop {
                     let (t, f) = thrift_read_field_begin(r, &mut inner)?;
                     if t == 0 {
                         break;
                     }
                     match f {
+                        1 if t == TC_BOOL_TRUE || t == TC_BOOL_FALSE => utc = t == TC_BOOL_TRUE,
                         2 if t == TC_STRUCT => {
                             let mut unit_last = 0i16;
                             loop {
@@ -1058,9 +1060,9 @@ fn parse_logical_type<R: Read>(r: &mut R) -> Result<Option<ParquetLogicalType>, 
                     (7, 1) => Some(ParquetLogicalType::TimeMillis),
                     (7, 2) => Some(ParquetLogicalType::TimeMicros),
                     (7, 3) => Some(ParquetLogicalType::TimeNanos),
-                    (8, 1) => Some(ParquetLogicalType::TimestampMillis),
-                    (8, 2) => Some(ParquetLogicalType::TimestampMicros),
-                    (8, 3) => Some(ParquetLogicalType::TimestampNanos),
+                    (8, 1) => Some(ParquetLogicalType::TimestampMillis { utc }),
+                    (8, 2) => Some(ParquetLogicalType::TimestampMicros { utc }),
+                    (8, 3) => Some(ParquetLogicalType::TimestampNanos { utc }),
                     _ => None,
                 }
             }

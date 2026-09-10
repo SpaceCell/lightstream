@@ -267,6 +267,15 @@ mod pyarrow_parquet_tests {
             temporal64(&table, "ts_ns", TimeUnit::Nanoseconds),
             [Some(0), Some(1_700_000_000_000_000_000), None, Some(-1), Some(1)]
         );
+        // pyarrow writes a zoned timestamp with isAdjustedToUTC set.
+        assert_eq!(
+            column_dtype(&table, "ts_us_utc"),
+            ArrowType::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string()))
+        );
+        assert_eq!(
+            temporal64(&table, "ts_us_utc", TimeUnit::Microseconds),
+            [Some(0), Some(1_700_000_000_000_000), None, Some(-1), Some(1)]
+        );
 
         assert_eq!(column_dtype(&table, "dec32"), ArrowType::Decimal32(7, 2));
         match column(&table, "dec32") {

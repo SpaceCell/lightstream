@@ -266,6 +266,12 @@ mod parquet_nullable_roundtrip_tests {
                 TimeUnit::Nanoseconds,
                 timestamp_value,
             ));
+            cols.push(temporal64(
+                "ts_us_utc",
+                ArrowType::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string())),
+                TimeUnit::Microseconds,
+                timestamp_value,
+            ));
             cols.push(temporal32(
                 "time32_ms",
                 ArrowType::Time32(TimeUnit::Milliseconds),
@@ -473,6 +479,15 @@ mod parquet_nullable_roundtrip_tests {
                 "ts_ns",
                 ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
                 TimeUnit::Nanoseconds,
+                timestamp_value,
+            );
+            // A zoned timestamp is stored as adjusted to UTC and reads back
+            // with the UTC zone.
+            assert_temporal64(
+                out,
+                "ts_us_utc",
+                ArrowType::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string())),
+                TimeUnit::Microseconds,
                 timestamp_value,
             );
             assert_temporal32(

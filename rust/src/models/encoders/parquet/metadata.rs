@@ -454,10 +454,19 @@ impl SchemaElement {
             let mut inner = 0i16;
             match logical {
                 #[cfg(feature = "datetime")]
-                ParquetLogicalType::TimestampMillis
-                | ParquetLogicalType::TimestampMicros
-                | ParquetLogicalType::TimestampNanos
-                | ParquetLogicalType::TimeMillis
+                ParquetLogicalType::TimestampMillis { utc }
+                | ParquetLogicalType::TimestampMicros { utc }
+                | ParquetLogicalType::TimestampNanos { utc } => {
+                    thrift_write_field_bool(&mut w, &mut inner, 1, *utc);
+                    thrift_write_field_struct_begin(&mut w, &mut inner, 2);
+                    let mut unit_last = 0i16;
+                    thrift_write_field_struct_begin(&mut w, &mut unit_last, time_unit_union_id(logical));
+                    thrift_write_field_stop(&mut w);
+                    thrift_write_field_stop(&mut w);
+                }
+                // Time of day has no zone, so isAdjustedToUTC is false.
+                #[cfg(feature = "datetime")]
+                ParquetLogicalType::TimeMillis
                 | ParquetLogicalType::TimeMicros
                 | ParquetLogicalType::TimeNanos => {
                     thrift_write_field_bool(&mut w, &mut inner, 1, false);
@@ -502,9 +511,9 @@ fn logical_type_union_id(logical: &ParquetLogicalType) -> Option<i16> {
         | ParquetLogicalType::TimeMicros
         | ParquetLogicalType::TimeNanos => 7,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimestampMillis
-        | ParquetLogicalType::TimestampMicros
-        | ParquetLogicalType::TimestampNanos => 8,
+        ParquetLogicalType::TimestampMillis { .. }
+        | ParquetLogicalType::TimestampMicros { .. }
+        | ParquetLogicalType::TimestampNanos { .. } => 8,
         ParquetLogicalType::IntType { .. } => 10,
     })
 }
@@ -513,8 +522,8 @@ fn logical_type_union_id(logical: &ParquetLogicalType) -> Option<i16> {
 #[cfg(feature = "datetime")]
 fn time_unit_union_id(logical: &ParquetLogicalType) -> i16 {
     match logical {
-        ParquetLogicalType::TimestampMillis | ParquetLogicalType::TimeMillis => 1,
-        ParquetLogicalType::TimestampMicros | ParquetLogicalType::TimeMicros => 2,
+        ParquetLogicalType::TimestampMillis { .. } | ParquetLogicalType::TimeMillis => 1,
+        ParquetLogicalType::TimestampMicros { .. } | ParquetLogicalType::TimeMicros => 2,
         _ => 3,
     }
 }

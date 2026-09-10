@@ -659,10 +659,12 @@ fn logical_to_converted(log: &ParquetLogicalType) -> Option<i32> {
         ParquetLogicalType::Utf8 => 0,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::Date32 => 6,
+        // The legacy TIMESTAMP converted types mean UTC instants, so a local
+        // timestamp carries only its LogicalType.
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimestampMillis => 9,
+        ParquetLogicalType::TimestampMillis { utc: true } => 9,
         #[cfg(feature = "datetime")]
-        ParquetLogicalType::TimestampMicros => 10,
+        ParquetLogicalType::TimestampMicros { utc: true } => 10,
         #[cfg(feature = "datetime")]
         ParquetLogicalType::TimeMillis => 7,
         #[cfg(feature = "datetime")]

@@ -68,6 +68,7 @@ def temporal_decimal_table() -> pa.Table:
             "ts_ms": pa.array([0, 1_700_000_000_000, None, -1, 86_400_000], type=pa.timestamp("ms")),
             "ts_us": pa.array([0, 1_700_000_000_000_000, None, -1, 1], type=pa.timestamp("us")),
             "ts_ns": pa.array([0, 1_700_000_000_000_000_000, None, -1, 1], type=pa.timestamp("ns")),
+            "ts_us_utc": pa.array([0, 1_700_000_000_000_000, None, -1, 1], type=pa.timestamp("us", tz="UTC")),
             "dec32": pa.array(
                 [Decimal("1.25"), None, Decimal("-3.50"), Decimal("0.01"), Decimal("99999.99")],
                 type=pa.decimal32(7, 2),
