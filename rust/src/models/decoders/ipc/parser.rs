@@ -38,8 +38,6 @@ use log::warn;
 use tracing::debug;
 
 use flatbuffers::Vector;
-#[cfg(feature = "decimal")]
-use minarrow::DecimalArray;
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit as MnTimeUnit;
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
@@ -382,47 +380,6 @@ impl RecordBatchParser {
                         data, null_mask,
                     ))))
                 }
-                // decimal
-                #[cfg(feature = "decimal")]
-                ArrowType::Decimal32(precision, scale) => {
-                    let (slice, _) = Self::extract_buffer_slice(
-                        &fbuf_meta,
-                        &mut buffer_idx,
-                        arrow_buf,
-                        &field.name,
-                        corrections,
-                    )?;
-                    let data =
-                        unsafe { Self::buffer_from_slice::<i32>(slice, field_len, &arc_opt) };
-                    Array::from_decimal32(DecimalArray::new(data, null_mask, *precision, *scale))
-                }
-                #[cfg(feature = "decimal")]
-                ArrowType::Decimal64(precision, scale) => {
-                    let (slice, _) = Self::extract_buffer_slice(
-                        &fbuf_meta,
-                        &mut buffer_idx,
-                        arrow_buf,
-                        &field.name,
-                        corrections,
-                    )?;
-                    let data =
-                        unsafe { Self::buffer_from_slice::<i64>(slice, field_len, &arc_opt) };
-                    Array::from_decimal64(DecimalArray::new(data, null_mask, *precision, *scale))
-                }
-                #[cfg(feature = "decimal")]
-                ArrowType::Decimal128(precision, scale) => {
-                    let (slice, _) = Self::extract_buffer_slice(
-                        &fbuf_meta,
-                        &mut buffer_idx,
-                        arrow_buf,
-                        &field.name,
-                        corrections,
-                    )?;
-                    let data =
-                        unsafe { Self::buffer_from_slice::<i128>(slice, field_len, &arc_opt) };
-                    Array::from_decimal128(DecimalArray::new(data, null_mask, *precision, *scale))
-                }
-
                 // dictionary
                 ArrowType::Dictionary(idx_ty) => {
                     // indices
@@ -513,6 +470,52 @@ impl RecordBatchParser {
                             )))
                         }
                     }
+                }
+
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal32(p, s) => {
+                    let (slice, _) = Self::extract_buffer_slice(
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        arrow_buf,
+                        &field.name,
+                        corrections,
+                    )?;
+                    let data =
+                        unsafe { Self::buffer_from_slice::<i32>(slice, field_len, &arc_opt) };
+                    Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                        DecimalArray { data, null_mask, precision: *p, scale: *s },
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal64(p, s) => {
+                    let (slice, _) = Self::extract_buffer_slice(
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        arrow_buf,
+                        &field.name,
+                        corrections,
+                    )?;
+                    let data =
+                        unsafe { Self::buffer_from_slice::<i64>(slice, field_len, &arc_opt) };
+                    Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                        DecimalArray { data, null_mask, precision: *p, scale: *s },
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal128(p, s) => {
+                    let (slice, _) = Self::extract_buffer_slice(
+                        &fbuf_meta,
+                        &mut buffer_idx,
+                        arrow_buf,
+                        &field.name,
+                        corrections,
+                    )?;
+                    let data =
+                        unsafe { Self::buffer_from_slice::<i128>(slice, field_len, &arc_opt) };
+                    Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                        DecimalArray { data, null_mask, precision: *p, scale: *s },
+                    )))
                 }
 
                 other => {
@@ -1151,61 +1154,6 @@ pub fn decode_record_batch(
                 make_numeric_array(&field.dtype, data, null_mask)?
             }
 
-            #[cfg(feature = "decimal")]
-            ArrowType::Decimal32(precision, scale) => {
-                let (off, len) = consume_buffer(
-                    &buffers,
-                    &mut buffer_idx,
-                    body_start,
-                    body_len,
-                    &field.name,
-                    corrections,
-                )?;
-                let data = shared.slice(off..off + len);
-                Array::from_decimal32(DecimalArray::new(
-                    minarrow::Buffer::from_shared(data),
-                    null_mask,
-                    *precision,
-                    *scale,
-                ))
-            }
-            #[cfg(feature = "decimal")]
-            ArrowType::Decimal64(precision, scale) => {
-                let (off, len) = consume_buffer(
-                    &buffers,
-                    &mut buffer_idx,
-                    body_start,
-                    body_len,
-                    &field.name,
-                    corrections,
-                )?;
-                let data = shared.slice(off..off + len);
-                Array::from_decimal64(DecimalArray::new(
-                    minarrow::Buffer::from_shared(data),
-                    null_mask,
-                    *precision,
-                    *scale,
-                ))
-            }
-            #[cfg(feature = "decimal")]
-            ArrowType::Decimal128(precision, scale) => {
-                let (off, len) = consume_buffer(
-                    &buffers,
-                    &mut buffer_idx,
-                    body_start,
-                    body_len,
-                    &field.name,
-                    corrections,
-                )?;
-                let data = shared.slice(off..off + len);
-                Array::from_decimal128(DecimalArray::new(
-                    minarrow::Buffer::from_shared(data),
-                    null_mask,
-                    *precision,
-                    *scale,
-                ))
-            }
-
             ArrowType::Dictionary(_idx_ty) => {
                 let dict_key = col_idx as i64;
                 let dict_values = dicts.get(&dict_key).ok_or_else(|| {
@@ -1231,6 +1179,61 @@ pub fn decode_record_batch(
                     dict_values,
                     null_mask,
                 )?
+            }
+
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => {
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let data = shared.slice(off..off + len);
+                Array::NumericArray(NumericArray::Decimal32(Arc::new(DecimalArray {
+                    data: minarrow::Buffer::from_shared(data),
+                    null_mask,
+                    precision: *p,
+                    scale: *s,
+                })))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => {
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let data = shared.slice(off..off + len);
+                Array::NumericArray(NumericArray::Decimal64(Arc::new(DecimalArray {
+                    data: minarrow::Buffer::from_shared(data),
+                    null_mask,
+                    precision: *p,
+                    scale: *s,
+                })))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => {
+                let (off, len) = consume_buffer(
+                    &buffers,
+                    &mut buffer_idx,
+                    body_start,
+                    body_len,
+                    &field.name,
+                    corrections,
+                )?;
+                let data = shared.slice(off..off + len);
+                Array::NumericArray(NumericArray::Decimal128(Arc::new(DecimalArray {
+                    data: minarrow::Buffer::from_shared(data),
+                    null_mask,
+                    precision: *p,
+                    scale: *s,
+                })))
             }
 
             other => {
@@ -1265,8 +1268,6 @@ fn data_buffer_count(dtype: &ArrowType) -> usize {
         ArrowType::String => 2,
         #[cfg(feature = "large_string")]
         ArrowType::LargeString => 2,
-        #[cfg(feature = "decimal")]
-        ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => 1,
         _ => 1,
     }
 }
@@ -1861,20 +1862,24 @@ fn extract_base_type(fb_field: &fb::Field) -> io::Result<ArrowType> {
             })?;
             Ok(ArrowType::Duration64(convert_time_unit_fb(d.unit())?))
         }
+        fb::Type::Bool => Ok(ArrowType::Boolean),
         #[cfg(feature = "decimal")]
         fb::Type::Decimal => {
-            let d = fb_field
-                .type__as_decimal()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Decimal type"))?;
+            let d = fb_field.type__as_decimal().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing Decimal type")
+            })?;
             let precision = d.precision() as u8;
             let scale = d.scale() as i8;
             match d.bitWidth() {
                 32 => Ok(ArrowType::Decimal32(precision, scale)),
                 64 => Ok(ArrowType::Decimal64(precision, scale)),
-                _ => Ok(ArrowType::Decimal128(precision, scale)),
+                128 => Ok(ArrowType::Decimal128(precision, scale)),
+                w => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported Decimal bit width {w}"),
+                )),
             }
         }
-        fb::Type::Bool => Ok(ArrowType::Boolean),
         other => {
             if let Some(dict) = fb_field.dictionary() {
                 let idx_ty = extract_categorical_index_type(dict.indexType().as_ref())?;
@@ -2086,7 +2091,13 @@ pub fn convert_fb_field_to_arrow(
                 match d.bitWidth() {
                     32 => ArrowType::Decimal32(precision, scale),
                     64 => ArrowType::Decimal64(precision, scale),
-                    _ => ArrowType::Decimal128(precision, scale),
+                    128 => ArrowType::Decimal128(precision, scale),
+                    w => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unsupported Decimal bit width {w}"),
+                        ));
+                    }
                 }
             }
             other => {

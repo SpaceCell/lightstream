@@ -74,7 +74,7 @@ fn logical_type_from_schema(se: &SchemaElement) -> Option<ParquetLogicalType> {
     if se.converted_type == Some(5) {
         let precision = se.precision.unwrap_or(0) as u8;
         let scale = se.scale.unwrap_or(0) as i8;
-        return Some(ParquetLogicalType::DecimalType { precision, scale });
+        return Some(ParquetLogicalType::Decimal { precision, scale });
     }
     ParquetLogicalType::from_converted_type(se.converted_type)
 }

@@ -318,40 +318,40 @@ fn build_flatbuf_field<'fbb>(
             (fbm::Type::Duration, Some(duration.as_union_value()), None)
         }
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal32(precision, scale) => {
-            let decimal = fbm::Decimal::create(
+        ArrowType::Decimal32(p, s) => {
+            let dec = fbm::Decimal::create(
                 fbb,
                 &fbm::DecimalArgs {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
+                    precision: *p as i32,
+                    scale: *s as i32,
                     bitWidth: 32,
                 },
             );
-            (fbm::Type::Decimal, Some(decimal.as_union_value()), None)
+            (fbm::Type::Decimal, Some(dec.as_union_value()), None)
         }
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal64(precision, scale) => {
-            let decimal = fbm::Decimal::create(
+        ArrowType::Decimal64(p, s) => {
+            let dec = fbm::Decimal::create(
                 fbb,
                 &fbm::DecimalArgs {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
+                    precision: *p as i32,
+                    scale: *s as i32,
                     bitWidth: 64,
                 },
             );
-            (fbm::Type::Decimal, Some(decimal.as_union_value()), None)
+            (fbm::Type::Decimal, Some(dec.as_union_value()), None)
         }
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal128(precision, scale) => {
-            let decimal = fbm::Decimal::create(
+        ArrowType::Decimal128(p, s) => {
+            let dec = fbm::Decimal::create(
                 fbb,
                 &fbm::DecimalArgs {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
+                    precision: *p as i32,
+                    scale: *s as i32,
                     bitWidth: 128,
                 },
             );
-            (fbm::Type::Decimal, Some(decimal.as_union_value()), None)
+            (fbm::Type::Decimal, Some(dec.as_union_value()), None)
         }
         ArrowType::Dictionary(idx_ty) => {
             // Build index type for dictionary
@@ -847,40 +847,40 @@ fn build_flatbuf_field_file<'fbb>(
             (fbf::Type::Duration, Some(duration.as_union_value()), None)
         }
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal32(precision, scale) => {
-            let decimal = fbf::Decimal::create(
+        ArrowType::Decimal32(p, s) => {
+            let dec = fbf::Decimal::create(
                 fbb,
                 &fbf::DecimalArgs {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
+                    precision: *p as i32,
+                    scale: *s as i32,
                     bitWidth: 32,
                 },
             );
-            (fbf::Type::Decimal, Some(decimal.as_union_value()), None)
+            (fbf::Type::Decimal, Some(dec.as_union_value()), None)
         }
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal64(precision, scale) => {
-            let decimal = fbf::Decimal::create(
+        ArrowType::Decimal64(p, s) => {
+            let dec = fbf::Decimal::create(
                 fbb,
                 &fbf::DecimalArgs {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
+                    precision: *p as i32,
+                    scale: *s as i32,
                     bitWidth: 64,
                 },
             );
-            (fbf::Type::Decimal, Some(decimal.as_union_value()), None)
+            (fbf::Type::Decimal, Some(dec.as_union_value()), None)
         }
         #[cfg(feature = "decimal")]
-        ArrowType::Decimal128(precision, scale) => {
-            let decimal = fbf::Decimal::create(
+        ArrowType::Decimal128(p, s) => {
+            let dec = fbf::Decimal::create(
                 fbb,
                 &fbf::DecimalArgs {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
+                    precision: *p as i32,
+                    scale: *s as i32,
                     bitWidth: 128,
                 },
             );
-            (fbf::Type::Decimal, Some(decimal.as_union_value()), None)
+            (fbf::Type::Decimal, Some(dec.as_union_value()), None)
         }
         ArrowType::Dictionary(idx_ty) => {
             let idx_width = match idx_ty {

@@ -476,7 +476,7 @@ fn decimal_schema_fields(
     #[allow(unused_variables)] physical: ParquetPhysicalType,
 ) -> (Option<i32>, Option<i32>, Option<i32>) {
     #[cfg(feature = "decimal")]
-    if let ParquetLogicalType::DecimalType { precision, scale } = logical {
+    if let ParquetLogicalType::Decimal { precision, scale } = logical {
         let type_length = if matches!(physical, ParquetPhysicalType::FixedLenByteArray) {
             Some(16)
         } else {
@@ -674,7 +674,7 @@ fn logical_to_converted(log: &ParquetLogicalType) -> Option<i32> {
             is_signed: true,
         } => 18,
         #[cfg(feature = "decimal")]
-        ParquetLogicalType::DecimalType { .. } => 5,
+        ParquetLogicalType::Decimal { .. } => 5,
         _ => return None,
     })
 }

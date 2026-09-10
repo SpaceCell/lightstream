@@ -94,20 +94,20 @@ pub(crate) enum ParquetLogicalType {
     /// 64-bit time - nanoseconds since midnight
     #[cfg(feature = "datetime")]
     TimeNanos,
+    /// Fixed-point decimal with precision and scale.
+    #[cfg(feature = "decimal")]
+    Decimal {
+        /// Total number of significant digits.
+        precision: u8,
+        /// Digits after the decimal point.
+        scale: i8,
+    },
     /// Integer type with specified bit width and sign.
     IntType {
         /// Number of bits (8, 16, 32, 64).
         bit_width: u8,
         /// Whether the type is signed (`true`) or unsigned (`false`).
         is_signed: bool,
-    },
-    /// Fixed-point decimal with precision and scale.
-    #[cfg(feature = "decimal")]
-    DecimalType {
-        /// Total number of significant digits.
-        precision: u8,
-        /// Digits after the decimal point.
-        scale: i8,
     },
 }
 
@@ -129,6 +129,9 @@ impl ParquetLogicalType {
             Some(2) => None, // MAP_KEY_VALUE (unsupported)
             Some(3) => None, // LIST (unsupported)
             Some(4) => None, // ENUM (unsupported)
+            #[cfg(feature = "decimal")]
+            Some(5) => None, // DECIMAL - precision/scale come from the schema element, not the converted type
+            #[cfg(not(feature = "decimal"))]
             Some(5) => None, // DECIMAL (unsupported)
             #[cfg(feature = "datetime")]
             Some(6) => Some(ParquetLogicalType::Date32),
@@ -306,6 +309,21 @@ pub(crate) fn arrow_type_to_parquet(
         ArrowType::Dictionary(CategoricalIndexType::UInt8) => {
             Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8))
         }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(p, s) => Ok((
+            ParquetPhysicalType::Int32,
+            ParquetLogicalType::Decimal { precision: *p, scale: *s },
+        )),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(p, s) => Ok((
+            ParquetPhysicalType::Int64,
+            ParquetLogicalType::Decimal { precision: *p, scale: *s },
+        )),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(p, s) => Ok((
+            ParquetPhysicalType::FixedLenByteArray,
+            ParquetLogicalType::Decimal { precision: *p, scale: *s },
+        )),
         ArrowType::Float32 => Ok((ParquetPhysicalType::Float, ParquetLogicalType::NoneType)),
         ArrowType::Float64 => Ok((ParquetPhysicalType::Double, ParquetLogicalType::NoneType)),
         ArrowType::String => Ok((ParquetPhysicalType::ByteArray, ParquetLogicalType::Utf8)),
@@ -373,21 +391,6 @@ pub(crate) fn arrow_type_to_parquet(
         ArrowType::Duration64(_) => panic!("Duration does not map to a parquet type."),
         #[cfg(feature = "datetime")]
         ArrowType::Interval(_) => panic!("Interval does not map to a parquet type."),
-        #[cfg(feature = "decimal")]
-        ArrowType::Decimal32(p, s) => Ok((
-            ParquetPhysicalType::Int32,
-            ParquetLogicalType::DecimalType { precision: *p, scale: *s },
-        )),
-        #[cfg(feature = "decimal")]
-        ArrowType::Decimal64(p, s) => Ok((
-            ParquetPhysicalType::Int64,
-            ParquetLogicalType::DecimalType { precision: *p, scale: *s },
-        )),
-        #[cfg(feature = "decimal")]
-        ArrowType::Decimal128(p, s) => Ok((
-            ParquetPhysicalType::FixedLenByteArray,
-            ParquetLogicalType::DecimalType { precision: *p, scale: *s },
-        )),
         #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
         &minarrow::ArrowType::Dictionary(
             minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt16,
@@ -519,17 +522,17 @@ pub(crate) fn parquet_to_arrow_type(
         #[cfg(feature = "decimal")]
         (
             ParquetPhysicalType::Int32,
-            Some(ParquetLogicalType::DecimalType { precision, scale }),
+            Some(ParquetLogicalType::Decimal { precision, scale }),
         ) => Ok(ArrowType::Decimal32(precision, scale)),
         #[cfg(feature = "decimal")]
         (
             ParquetPhysicalType::Int64,
-            Some(ParquetLogicalType::DecimalType { precision, scale }),
+            Some(ParquetLogicalType::Decimal { precision, scale }),
         ) => Ok(ArrowType::Decimal64(precision, scale)),
         #[cfg(feature = "decimal")]
         (
             ParquetPhysicalType::FixedLenByteArray,
-            Some(ParquetLogicalType::DecimalType { precision, scale }),
+            Some(ParquetLogicalType::Decimal { precision, scale }),
         ) => Ok(ArrowType::Decimal128(precision, scale)),
 
         // Floats
@@ -553,5 +556,43 @@ pub(crate) fn parquet_to_arrow_type(
             "Parquet type {:?} + logical {:?} not supported",
             physical, logical
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal32_maps_to_int32_physical() {
+        let (phys, logical) = arrow_type_to_parquet(&ArrowType::Decimal32(7, 2)).unwrap();
+        assert_eq!(phys, ParquetPhysicalType::Int32);
+        assert_eq!(
+            logical,
+            ParquetLogicalType::Decimal { precision: 7, scale: 2 }
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal64_maps_to_int64_physical() {
+        let (phys, logical) = arrow_type_to_parquet(&ArrowType::Decimal64(18, 4)).unwrap();
+        assert_eq!(phys, ParquetPhysicalType::Int64);
+        assert_eq!(
+            logical,
+            ParquetLogicalType::Decimal { precision: 18, scale: 4 }
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal128_maps_to_fixed_len_byte_array_physical() {
+        let (phys, logical) = arrow_type_to_parquet(&ArrowType::Decimal128(38, 6)).unwrap();
+        assert_eq!(phys, ParquetPhysicalType::FixedLenByteArray);
+        assert_eq!(
+            logical,
+            ParquetLogicalType::Decimal { precision: 38, scale: 6 }
+        );
     }
 }

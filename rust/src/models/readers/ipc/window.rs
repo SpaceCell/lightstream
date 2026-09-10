@@ -18,10 +18,10 @@ use minarrow::{
     Array, Bitmask, BooleanArray, Buffer, CategoricalArray, FieldArray, FloatArray, Integer,
     IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
 };
-#[cfg(feature = "datetime")]
-use minarrow::{DatetimeArray, TemporalArray};
 #[cfg(feature = "decimal")]
 use minarrow::DecimalArray;
+#[cfg(feature = "datetime")]
+use minarrow::{DatetimeArray, TemporalArray};
 
 /// Build a standalone table for the row window `[offset, offset + len)`
 /// of a decoded batch. A window covering the whole table returns a
