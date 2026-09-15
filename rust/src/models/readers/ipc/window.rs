@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use minarrow::{
     Array, Bitmask, BooleanArray, Buffer, CategoricalArray, FieldArray, FloatArray, Integer,
-    IntegerArray, NumericArray, StringArray, Table, TextArray, Vec64,
+    IntegerArray, MaskedArray, NumericArray, StringArray, Table, TextArray, Vec64,
 };
 #[cfg(feature = "datetime")]
 use minarrow::{DatetimeArray, TemporalArray};
@@ -223,11 +223,7 @@ fn window_categorical<T: Integer>(
     offset: usize,
     len: usize,
 ) -> CategoricalArray<T> {
-    CategoricalArray {
-        data: window_buffer(&arr.data, offset, len),
-        unique_values: arr.unique_values.clone(),
-        null_mask: window_mask(arr.null_mask.as_ref(), offset, len),
-    }
+    arr.slice_clone(offset, len)
 }
 
 /// Window a buffer to elements `[offset, offset + len)`. Shared-backed

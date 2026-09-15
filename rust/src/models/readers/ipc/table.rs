@@ -105,12 +105,10 @@ impl<B: StreamBuffer + Unpin + 'static> TableReader<B> {
                     break;
                 }
         }
-        Ok(SuperTable {
+        Ok(SuperTable::from_batches(
             batches,
-            schema: schema.unwrap_or_default(),
-            n_rows,
-            name: name.unwrap_or_else(|| "SuperTable".to_string()),
-        })
+            Some(name.unwrap_or_else(|| "SuperTable".to_string())),
+        ))
     }
 
     /// Read all batches and concatenate into a single `Table` row-wise.

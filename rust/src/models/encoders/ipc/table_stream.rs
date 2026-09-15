@@ -273,11 +273,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u32, 0, 2, 1])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, false, true, true])),
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[1u32, 0, 2, 1])),
+            Vec64::from(dict_strs()),
+            Some(make_bitmask(&[true, false, true, true])),
+        );
 
         writer.register_dictionary(0, dict_strs());
 
@@ -322,11 +322,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, false, true, true])),
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
+            Vec64::from(dict_strs()),
+            Some(make_bitmask(&[true, false, true, true])),
+        );
 
         writer.register_dictionary(0, dict_strs());
 
@@ -371,11 +371,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, true, false, true])),
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[1u8, 0, 2, 1])),
+            Vec64::from(dict_strs()),
+            Some(make_bitmask(&[true, true, false, true])),
+        );
 
         writer.register_dictionary(0, dict_strs());
 
@@ -416,11 +416,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[2u16, 1, 0, 2])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: None,
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[2u16, 1, 0, 2])),
+            Vec64::from(dict_strs()),
+            None,
+        );
 
         writer.register_dictionary(0, dict_strs());
 
@@ -461,11 +461,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[0u64, 2, 1, 0])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: None,
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[0u64, 2, 1, 0])),
+            Vec64::from(dict_strs()),
+            None,
+        );
 
         writer.register_dictionary(0, dict_strs());
 
@@ -506,11 +506,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[0u32, 1, 1, 2])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, false, true, true])),
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[0u32, 1, 1, 2])),
+            Vec64::from(dict_strs()),
+            Some(make_bitmask(&[true, false, true, true])),
+        );
 
         writer.register_dictionary(0, dict_strs());
 
@@ -570,11 +570,11 @@ mod tests {
             None,
         );
 
-        let arr = CategoricalArray {
-            data: Buffer::from(Vec64::from_slice(&[0u8, 1, 1, 2])),
-            unique_values: Vec64::from(dict_strs()),
-            null_mask: Some(make_bitmask(&[true, false, true, true])),
-        };
+        let arr = CategoricalArray::new(
+            Buffer::from(Vec64::from_slice(&[0u8, 1, 1, 2])),
+            Vec64::from(dict_strs()),
+            Some(make_bitmask(&[true, false, true, true])),
+        );
 
         writer.register_dictionary(0, dict_strs());
 

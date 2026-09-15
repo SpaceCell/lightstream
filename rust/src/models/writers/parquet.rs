@@ -158,7 +158,7 @@ pub fn write_parquet_table<W: Write + Seek>(
                     let (dict_uncomp, dict_comp) = write_dictionary_page(
                         &mut out,
                         &mut offset,
-                        a.unique_values.iter().map(|s| s.as_bytes()),
+                        a.unique_values().iter().map(|s| s.as_bytes()),
                         compression,
                     )?;
                     total_uncompressed_size += dict_uncomp;
@@ -169,7 +169,7 @@ pub fn write_parquet_table<W: Write + Seek>(
                     let (dict_uncomp, dict_comp) = write_dictionary_page(
                         &mut out,
                         &mut offset,
-                        a.unique_values.iter().map(|s| s.as_bytes()),
+                        a.unique_values().iter().map(|s| s.as_bytes()),
                         compression,
                     )?;
                     total_uncompressed_size += dict_uncomp;

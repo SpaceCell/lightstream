@@ -503,7 +503,7 @@ mod tests {
         ));
         match &fa.array {
             Array::TextArray(TextArray::Categorical8(arr)) => {
-                assert_eq!(arr.unique_values.len(), 3);
+                assert_eq!(arr.unique_values().len(), 3);
                 assert_eq!(arr.data.as_ref(), &[0u8, 1, 0, 2, 1, 0]);
             }
             _ => panic!(),
