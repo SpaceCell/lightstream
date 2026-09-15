@@ -326,7 +326,7 @@ pub fn encode_table_csv<W: Write>(
                     // dictionary lookup - always clean UTF-8
                     let idx = arr.data.as_ref()[row] as usize;
                     let s = arr
-                        .unique_values
+                        .unique_values()
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
@@ -336,7 +336,7 @@ pub fn encode_table_csv<W: Write>(
                 Array::TextArray(TextArray::Categorical8(arr)) => {
                     let idx = arr.data.as_ref()[row] as usize;
                     let s = arr
-                        .unique_values
+                        .unique_values()
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
@@ -346,7 +346,7 @@ pub fn encode_table_csv<W: Write>(
                 Array::TextArray(TextArray::Categorical16(arr)) => {
                     let idx = arr.data.as_ref()[row] as usize;
                     let s = arr
-                        .unique_values
+                        .unique_values()
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
@@ -356,7 +356,7 @@ pub fn encode_table_csv<W: Write>(
                 Array::TextArray(TextArray::Categorical64(arr)) => {
                     let idx = arr.data.as_ref()[row] as usize;
                     let s = arr
-                        .unique_values
+                        .unique_values()
                         .get(idx)
                         .map(String::as_str)
                         .unwrap_or("<invalid>");
