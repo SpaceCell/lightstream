@@ -10,6 +10,8 @@ Covers the three IPC read variants, the routing between them, the
 Table / ChunkedTable output split, and the error surface.
 """
 
+import sys
+
 import gc
 from decimal import Decimal
 
@@ -77,6 +79,7 @@ def test_read_all_after_drain_returns_empty_table(tmp_path):
     assert result.n_rows == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="mmap is Unix-only")
 def test_mmap_route_matches_buffered_route(tmp_path):
     path = str(tmp_path / "quotes.arrow")
     original = sample_table()
@@ -427,3 +430,16 @@ def test_batch_size_on_ipc_raises(tmp_path):
 def test_multichar_delimiter_raises(tmp_path):
     with pytest.raises(ValueError, match="single ASCII character"):
         ls.read(str(tmp_path / "quotes.csv"), delimiter="::")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows platform behavior")
+def test_windows_mmap_rejected_and_buffered_reads_work(tmp_path):
+    path = str(tmp_path / "quotes.arrow")
+    original = sample_table()
+    with ls.write(path) as writer:
+        writer.write(original)
+    for options in ({}, {"mmap": False}, {"out_of_core": True}):
+        with ls.read(path, **options) as reader:
+            assert pa.table(reader.read_all()).equals(original)
+    with pytest.raises(ls.FormatError, match="mmap is not supported on this platform"):
+        ls.read(path, mmap=True)

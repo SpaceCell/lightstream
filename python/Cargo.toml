@@ -19,7 +19,7 @@ name = "lightstream_py"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-lightstream = { version = "0.7", path = "../rust", features = ["csv", "datetime", "decimal", "extended_categorical", "extended_numeric_types", "json", "mmap", "http", "parquet", "protocol", "quic", "snappy", "stdio", "tcp", "tls", "uds", "webtransport", "websocket", "zstd"] }
+lightstream = { version = "0.7", path = "../rust", features = ["csv", "datetime", "decimal", "extended_categorical", "extended_numeric_types", "json", "http", "parquet", "protocol", "quic", "snappy", "stdio", "tcp", "tls", "webtransport", "websocket", "zstd"] }
 # The categorical and numeric feature set mirrors the minarrow-py build.
 # minarrow-pyo3's dictionary-index conversion needs the extended features,
 # and they flow through lightstream's flags so its match arms gate in step
@@ -37,6 +37,10 @@ rustls-pki-types = { version = "1", features = ["std"] }
 tokio = { version = "1", features = ["fs", "io-std", "net", "rt-multi-thread", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 wtransport = "0.7"
+
+# Unix-only transports stay out of Windows wheels.
+[target.'cfg(unix)'.dependencies]
+lightstream = { version = "0.7", path = "../rust", features = ["mmap", "uds"] }
 
 [features]
 default = []

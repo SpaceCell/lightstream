@@ -13,6 +13,8 @@ the connecting side only retries across server startup. A retry never
 steals the accept, because a refused connection consumes nothing.
 """
 
+import sys
+
 import socket
 import threading
 import time
@@ -102,10 +104,12 @@ def test_tcp_arrow_accepting_reader():
     run_accepting_reader(f"tcp://127.0.0.1:{free_port()}")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets are Unix-only")
 def test_uds_arrow_accepting_writer(tmp_path):
     run_accepting_writer(f"uds://{tmp_path / 'writer.sock'}")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets are Unix-only")
 def test_uds_arrow_accepting_reader(tmp_path):
     run_accepting_reader(f"uds://{tmp_path / 'reader.sock'}")
 
@@ -153,6 +157,7 @@ def test_tcp_lightstream_accepting_reader():
     assert frames[1].payload == b"\x07"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets are Unix-only")
 def test_uds_lightstream_accepting_writer(tmp_path):
     uri = f"uds://{tmp_path / 'tlv.sock'}"
 
@@ -226,6 +231,7 @@ def test_http_lightstream_accepting_writer():
     assert frames[1].payload == b"\x09"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets are Unix-only")
 def test_accepting_writer_serves_requests_back_to_back(tmp_path):
     uri = f"uds://{tmp_path / 'serve.sock'}"
 
@@ -249,6 +255,7 @@ def test_accepting_writer_serves_requests_back_to_back(tmp_path):
     assert not thread.is_alive()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets are Unix-only")
 def test_clients_queue_while_the_listener_is_busy(tmp_path):
     uri = f"uds://{tmp_path / 'queue.sock'}"
 

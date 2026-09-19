@@ -27,6 +27,7 @@ use lightstream::models::readers::chunked::csv::{ChunkedCsvReadOptions, ChunkedC
 use lightstream::models::readers::chunked::parquet::ChunkedParquetReader;
 use lightstream::models::readers::csv::CsvReader;
 use lightstream::models::readers::ipc::file_table::FileTableReader;
+#[cfg(unix)]
 use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 use lightstream::models::readers::http::HttpTableReader;
 use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
@@ -34,6 +35,7 @@ use lightstream::models::readers::json::JsonReader;
 use lightstream::models::readers::lightstream::LightstreamReader;
 use lightstream::models::readers::stdio::StdinTableReader;
 use lightstream::models::readers::tcp::TcpTableReader;
+#[cfg(unix)]
 use lightstream::models::readers::uds::UdsTableReader;
 use lightstream::models::readers::quic::QuicTableReader;
 use lightstream::enums::IPCMessageProtocol;
@@ -43,6 +45,7 @@ use lightstream::models::streams::websocket::{WsRead, WsWrite};
 use lightstream::models::transports::http::HttpTransport;
 use lightstream::models::transports::quic::QuicTransport;
 use lightstream::models::transports::tcp::TcpTransport;
+#[cfg(unix)]
 use lightstream::models::transports::uds::UdsTransport;
 use lightstream::models::transports::webtransport::WebTransport;
 use lightstream::models::transports::websocket::WebSocketTransport;
@@ -63,6 +66,7 @@ use crate::{input, output};
 /// Files at or above this size default to the mmap IPC reader. Smaller
 /// files default to the buffered reader, where the mapping overhead
 /// outweighs the zero-copy gain.
+#[cfg(unix)]
 const MMAP_DEFAULT_THRESHOLD: u64 = 64 * 1024 * 1024;
 
 /// Default row count per decoded batch for the CSV and JSON readers.
@@ -134,6 +138,7 @@ enum Endpoint {
     Wss(String),
     Http(String),
     Https(String),
+    #[cfg(unix)]
     Uds(PathBuf),
     Quic(String),
     Wt(String),
@@ -149,7 +154,12 @@ fn resolve_endpoint(uri: &str) -> PyResult<Endpoint> {
             "tcp" => Ok(Endpoint::Tcp(rest.to_string())),
             "ws" => Ok(Endpoint::Ws(uri.to_string())),
             "http" => Ok(Endpoint::Http(uri.to_string())),
+            #[cfg(unix)]
             "uds" => Ok(Endpoint::Uds(PathBuf::from(rest))),
+            #[cfg(not(unix))]
+            "uds" => Err(TransportError::new_err(
+                "Unix-domain sockets are not supported on this platform",
+            )),
             "quic" => Ok(Endpoint::Quic(rest.to_string())),
             "wt" => Ok(Endpoint::Wt(rest.to_string())),
             "wss" => Ok(Endpoint::Wss(uri.to_string())),
@@ -524,6 +534,7 @@ pub fn resolve_source(
                                     .map_err(|e| to_py_err(IoError::Io(e)))?
                             }
                         }
+                        #[cfg(unix)]
                         Endpoint::Uds(path) => {
                             if accept {
                                 let listener = {
@@ -784,6 +795,7 @@ pub fn resolve_source(
                             .map(input::ArrowIO::Tcp)
                             .map_err(|e| to_py_err(IoError::Io(e)))?
                         }
+                        #[cfg(unix)]
                         Endpoint::Uds(path) => {
                             if accept {
                                 let listener = {
@@ -968,6 +980,12 @@ pub fn resolve_source(
             "out_of_core reads through the buffered reader, so it cannot combine with mmap=True",
         ));
     }
+    #[cfg(not(unix))]
+    if mmap == Some(true) {
+        return Err(FormatError::new_err(
+            "mmap is not supported on this platform; use buffered file reads",
+        ));
+    }
     let delimiter_byte = resolve_delimiter(delimiter)?;
 
     if path.is_dir() {
@@ -1015,22 +1033,25 @@ pub fn resolve_source(
     reject_inapplicable(resolved_format, delimiter, header, batch_size)?;
     let file_io = match resolved_format {
         Format::Ipc => {
-            let size = fs::metadata(&path)
-                .map_err(|e| FormatError::new_err(e.to_string()))?
-                .len();
-            // `out_of_core` routes to the buffered reader, which keeps its pages
-            // reclaimable for datasets larger than RAM.
-            // TODO: select the mmap reader here once it regains out-of-core streaming.
-            let use_mmap = mmap.unwrap_or(size >= MMAP_DEFAULT_THRESHOLD) && !out_of_core;
-            if use_mmap {
-                let reader = MmapTableReader::open(&path)
-                    .map_err(|e| FormatError::new_err(e.to_string()))?;
-                input::FileIO::IpcMmap { reader, cursor: 0 }
-            } else {
-                let reader = FileTableReader::open(&path)
-                    .map_err(|e| FormatError::new_err(e.to_string()))?;
-                input::FileIO::Ipc { reader, cursor: 0 }
+            #[cfg(unix)]
+            {
+                let size = fs::metadata(&path)
+                    .map_err(|e| FormatError::new_err(e.to_string()))?
+                    .len();
+                // Out-of-core reads use the buffered reader to keep pages reclaimable.
+                let use_mmap = mmap.unwrap_or(size >= MMAP_DEFAULT_THRESHOLD) && !out_of_core;
+                if use_mmap {
+                    let reader = MmapTableReader::open(&path)
+                        .map_err(|e| FormatError::new_err(e.to_string()))?;
+                    return Ok(input::Source::File(input::FileIO::IpcMmap {
+                        reader,
+                        cursor: 0,
+                    }));
+                }
             }
+            let reader = FileTableReader::open(&path)
+                .map_err(|e| FormatError::new_err(e.to_string()))?;
+            input::FileIO::Ipc { reader, cursor: 0 }
         }
         Format::Parquet => input::FileIO::Parquet { path, done: false },
         Format::Csv => {
@@ -1231,6 +1252,7 @@ pub fn resolve_target(
                                     .map_err(|e| to_py_err(IoError::Io(e)))?
                             }
                         }
+                        #[cfg(unix)]
                         Endpoint::Uds(path) => {
                             if accept {
                                 let listener = {
@@ -1506,6 +1528,7 @@ pub fn resolve_target(
                                 writer: None,
                             }
                         }
+                        #[cfg(unix)]
                         Endpoint::Uds(path) => {
                             let link = if accept {
                                 let listener = {

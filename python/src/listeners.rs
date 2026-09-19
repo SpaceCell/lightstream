@@ -18,15 +18,20 @@
 //! and later accepting calls on the endpoint reuse that identity.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::fs;
 use std::io;
 use std::net;
 use std::net::ToSocketAddrs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::PyResult;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use wtransport::endpoint::endpoint_side::Server;
 
 use crate::errors::{TransportError, to_py_err};
@@ -43,6 +48,7 @@ enum ListenerKey {
     Wss(String),
     Http(String),
     Https(String),
+    #[cfg(unix)]
     Uds(PathBuf),
     Quic(String),
     Wt(String),
@@ -50,6 +56,7 @@ enum ListenerKey {
 
 enum BoundListener {
     Tcp(Arc<TcpListener>),
+    #[cfg(unix)]
     Uds(Arc<UnixListener>),
     Quic(Arc<quinn::Endpoint>),
     Wt(Arc<wtransport::Endpoint<Server>>),
@@ -100,6 +107,7 @@ pub fn https(url: &str) -> PyResult<Arc<TcpListener>> {
 /// it on the first call. A stale socket file left by an earlier
 /// process is removed before the bind. Call within the runtime
 /// context.
+#[cfg(unix)]
 pub fn uds(path: &Path) -> PyResult<Arc<UnixListener>> {
     let mut map = registry().lock().expect("listener registry lock");
     if let Some(BoundListener::Uds(listener)) = map.get(&ListenerKey::Uds(path.to_path_buf())) {

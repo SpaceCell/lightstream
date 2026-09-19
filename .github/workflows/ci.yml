@@ -105,6 +105,57 @@ jobs:
       - name: cargo test --all-targets
         run: cargo test --all-targets --features "tcp,uds,stdio,websocket,http,quic,webtransport,mmap,csv,json,parquet,zstd,snappy,protocol,msgpack,protobuf,tls"
 
+  test-native-platforms:
+    name: Native Rust and Python tests (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+            unix-features: ",uds,mmap"
+          - platform: macos-x86_64
+            runner: macos-15-intel
+            unix-features: ",uds,mmap"
+          - platform: macos-aarch64
+            runner: macos-14
+            unix-features: ",uds,mmap"
+          - platform: windows-x86_64
+            runner: windows-latest
+            unix-features: ""
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust
+            python
+      - name: Test native Rust library
+        working-directory: rust
+        env:
+          FEATURES: tcp,tls,http,websocket,quic,webtransport,stdio,csv,json,parquet,zstd,snappy,protocol,msgpack,protobuf,datetime,decimal,extended_categorical,extended_numeric_types${{ matrix.unix-features }}
+        run: cargo test --lib --features "$FEATURES"
+      - name: Install Python build and test dependencies
+        run: python -m pip install maturin pytest pyarrow polars duckdb
+      - name: Build Python wheel
+        run: python -m maturin build -m python/Cargo.toml --out dist --interpreter python
+      - name: Install Python wheel
+        run: python -m pip install dist/*.whl
+      - name: Test Python API (Unix)
+        if: runner.os != 'Windows'
+        run: python -m pytest python/tests/ -v --basetemp=/tmp/ls-py-tests
+      - name: Test Python API (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest python/tests/ -v
+
   doc:
     name: cargo doc
     runs-on: ubuntu-latest

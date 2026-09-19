@@ -292,4 +292,4 @@ def test_tls_arguments_rejected_on_plain_wires(tls_pair):
     with pytest.raises(ls.TransportError, match="apply to the quic, wt, wss, and https"):
         ls.read("tcp://127.0.0.1:9", tls_ca=cert)
     with pytest.raises(ls.TransportError, match="apply to the quic, wt, wss, and https"):
-        ls.write("uds:///tmp/none.sock", accept=True, tls_cert=cert, tls_key=key)
+        ls.write("tcp://127.0.0.1:9", accept=True, tls_cert=cert, tls_key=key)
