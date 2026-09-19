@@ -106,6 +106,43 @@ fn append_str_cell<T: Integer>(
     append_csv_string(out, &data[start..end], delimiter, quote);
 }
 
+/// Format one decimal storage integer with its scale into the CSV output
+/// buffer, placing the decimal point at the position determined by scale.
+#[cfg(feature = "decimal")]
+fn write_decimal_cell(out: &mut Vec<u8>, raw: i128, scale: i8) {
+    use std::fmt::Write as _;
+    let mut buf = String::with_capacity(48);
+    if scale == 0 {
+        let _ = write!(buf, "{}", raw);
+    } else if scale < 0 {
+        let _ = write!(buf, "{}", raw);
+        for _ in 0..(-scale) {
+            buf.push('0');
+        }
+    } else {
+        let s = scale as usize;
+        let raw_str = format!("{}", raw);
+        let (is_negative, digits) = if raw_str.starts_with('-') {
+            (true, &raw_str[1..])
+        } else {
+            (false, raw_str.as_str())
+        };
+        let padded = if digits.len() <= s {
+            format!("{:0>width$}", digits, width = s + 1)
+        } else {
+            digits.to_string()
+        };
+        let (integer_part, frac_part) = padded.split_at(padded.len() - s);
+        if is_negative {
+            buf.push('-');
+        }
+        buf.push_str(integer_part);
+        buf.push('.');
+        buf.push_str(frac_part);
+    }
+    out.extend_from_slice(buf.as_bytes());
+}
+
 /// Average bytes per cell heuristic per column type; used to size the
 /// scratch buffer up front so the encode loop hits no Vec growth.
 fn estimate_cell_width(arr: &Array, n_rows: usize) -> usize {
@@ -289,6 +326,18 @@ pub fn encode_table_csv<W: Write>(
                     }
                     NumericArray::Float64(arr) => {
                         out.extend_from_slice(ryu_buf.format(arr.data.as_ref()[row]).as_bytes());
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal32(arr) => {
+                        write_decimal_cell(&mut out, arr.data.as_ref()[row] as i128, arr.scale);
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal64(arr) => {
+                        write_decimal_cell(&mut out, arr.data.as_ref()[row] as i128, arr.scale);
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal128(arr) => {
+                        write_decimal_cell(&mut out, arr.data.as_ref()[row], arr.scale);
                     }
                     _ => {
                         out.extend_from_slice(b"<unsupported>");

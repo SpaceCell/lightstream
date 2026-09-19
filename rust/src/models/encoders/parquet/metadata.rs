@@ -18,7 +18,7 @@ use std::io::{Seek, Write};
 
 use crate::constants::PARQUET_MAGIC;
 use crate::error::IoError;
-use crate::models::types::parquet::{ParquetEncoding, ParquetPhysicalType};
+use crate::models::types::parquet::{ParquetEncoding, ParquetLogicalType, ParquetPhysicalType};
 
 // --------------------- Structs ------------------------------------ //
 
@@ -50,6 +50,10 @@ pub(crate) struct SchemaElement {
     pub type_: Option<ParquetPhysicalType>,
     /// Legacy converted type ID (if any).
     pub converted_type: Option<i32>,
+    /// `LogicalType` annotation (field 10). Written alongside the converted
+    /// type so readers of either generation see the annotation. Nanosecond
+    /// units exist only here.
+    pub logical_type: Option<ParquetLogicalType>,
     /// Type length (e.g. for FIXED_LEN_BYTE_ARRAY).
     pub type_length: Option<i32>,
     /// Decimal precision (if applicable).
@@ -106,8 +110,6 @@ pub(crate) struct ColumnMetadata {
     pub dictionary_page_offset: Option<i64>,
     /// Optional per-column statistics.
     pub statistics: Option<Statistics>,
-    /// Definition level (REQUIRED/OPTIONAL/REPEATED encoded level).
-    pub definition_level: i32,
 }
 
 /// Parquet statistics for a column (min/max, null/unique counts).
@@ -438,8 +440,91 @@ impl SchemaElement {
             thrift_write_field_i32(&mut w, &mut last, 9, id);
         }
 
+        // [10] LogicalType - a union struct whose single set field selects
+        // the annotation. Empty structs mark STRING and DATE. TIME and
+        // TIMESTAMP carry isAdjustedToUTC and a TimeUnit union. INTEGER
+        // carries the bit width and sign. DECIMAL carries scale then
+        // precision.
+        if let Some(logical) = &self.logical_type
+            && let Some(union_id) = logical_type_union_id(logical)
+        {
+            thrift_write_field_struct_begin(&mut w, &mut last, 10);
+            let mut union_last = 0i16;
+            thrift_write_field_struct_begin(&mut w, &mut union_last, union_id);
+            let mut inner = 0i16;
+            match logical {
+                #[cfg(feature = "datetime")]
+                ParquetLogicalType::TimestampMillis { utc }
+                | ParquetLogicalType::TimestampMicros { utc }
+                | ParquetLogicalType::TimestampNanos { utc } => {
+                    thrift_write_field_bool(&mut w, &mut inner, 1, *utc);
+                    thrift_write_field_struct_begin(&mut w, &mut inner, 2);
+                    let mut unit_last = 0i16;
+                    thrift_write_field_struct_begin(&mut w, &mut unit_last, time_unit_union_id(logical));
+                    thrift_write_field_stop(&mut w);
+                    thrift_write_field_stop(&mut w);
+                }
+                // Time of day has no zone, so isAdjustedToUTC is false.
+                #[cfg(feature = "datetime")]
+                ParquetLogicalType::TimeMillis
+                | ParquetLogicalType::TimeMicros
+                | ParquetLogicalType::TimeNanos => {
+                    thrift_write_field_bool(&mut w, &mut inner, 1, false);
+                    thrift_write_field_struct_begin(&mut w, &mut inner, 2);
+                    let mut unit_last = 0i16;
+                    thrift_write_field_struct_begin(&mut w, &mut unit_last, time_unit_union_id(logical));
+                    thrift_write_field_stop(&mut w);
+                    thrift_write_field_stop(&mut w);
+                }
+                ParquetLogicalType::IntType { bit_width, is_signed } => {
+                    thrift_write_field_i8(&mut w, &mut inner, 1, *bit_width as i8);
+                    thrift_write_field_bool(&mut w, &mut inner, 2, *is_signed);
+                }
+                #[cfg(feature = "decimal")]
+                ParquetLogicalType::Decimal { precision, scale } => {
+                    thrift_write_field_i32(&mut w, &mut inner, 1, *scale as i32);
+                    thrift_write_field_i32(&mut w, &mut inner, 2, *precision as i32);
+                }
+                _ => {}
+            }
+            thrift_write_field_stop(&mut w);
+            thrift_write_field_stop(&mut w);
+        }
+
         thrift_write_field_stop(&mut w);
         Ok(())
+    }
+}
+
+/// Field id of the `LogicalType` union member for a logical annotation.
+/// `None` for annotations with no `LogicalType` form.
+fn logical_type_union_id(logical: &ParquetLogicalType) -> Option<i16> {
+    Some(match logical {
+        ParquetLogicalType::NoneType => return None,
+        ParquetLogicalType::Utf8 => 1,
+        #[cfg(feature = "decimal")]
+        ParquetLogicalType::Decimal { .. } => 5,
+        #[cfg(feature = "datetime")]
+        ParquetLogicalType::Date32 => 6,
+        #[cfg(feature = "datetime")]
+        ParquetLogicalType::TimeMillis
+        | ParquetLogicalType::TimeMicros
+        | ParquetLogicalType::TimeNanos => 7,
+        #[cfg(feature = "datetime")]
+        ParquetLogicalType::TimestampMillis { .. }
+        | ParquetLogicalType::TimestampMicros { .. }
+        | ParquetLogicalType::TimestampNanos { .. } => 8,
+        ParquetLogicalType::IntType { .. } => 10,
+    })
+}
+
+/// Field id of the `TimeUnit` union member: MILLIS 1, MICROS 2, NANOS 3.
+#[cfg(feature = "datetime")]
+fn time_unit_union_id(logical: &ParquetLogicalType) -> i16 {
+    match logical {
+        ParquetLogicalType::TimestampMillis { .. } | ParquetLogicalType::TimeMillis => 1,
+        ParquetLogicalType::TimestampMicros { .. } | ParquetLogicalType::TimeMicros => 2,
+        _ => 3,
     }
 }
 
@@ -575,6 +660,7 @@ impl Statistics {
 /// Compact-protocol element and field type identifiers from the Thrift spec.
 const TC_BOOL_TRUE: u8 = 1;
 const TC_BOOL_FALSE: u8 = 2;
+const TC_BYTE: u8 = 3;
 const TC_I32: u8 = 5;
 const TC_I64: u8 = 6;
 const TC_BINARY: u8 = 8;
@@ -636,6 +722,11 @@ fn thrift_write_list_header<W: Write>(w: &mut W, elem_type: u8, len: usize) {
 /// Write the compact field-stop byte.
 fn thrift_write_field_stop<W: Write>(w: &mut W) {
     w.write_all(&[0]).unwrap();
+}
+/// Write a byte field as one raw byte.
+fn thrift_write_field_i8<W: Write>(w: &mut W, last: &mut i16, id: i16, v: i8) {
+    thrift_write_field_header(w, last, id, TC_BYTE);
+    w.write_all(&[v as u8]).unwrap();
 }
 /// Write an i32 field as a zigzag varint.
 fn thrift_write_field_i32<W: Write>(w: &mut W, last: &mut i16, id: i16, v: i32) {

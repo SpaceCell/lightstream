@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn categorical_column_roundtrips_via_dictionary_page() {
+    fn categorical_column_reads_back_as_utf8_strings() {
         // Regression: the reader's DictionaryPageHeader inner parser used
         // to consume raw i32 values without the Thrift type/id prefixes
         // the writer emits. That left the cursor 3 bytes shy of the
@@ -164,11 +164,15 @@ mod tests {
         // length prefix was parsed as garbage - causing
         // `parse_dictionary_values` to ask for ~50 MB and fail with
         // `UnexpectedEof`. This test exercises the round-trip end-to-end.
+        //
+        // Parquet has no dictionary type, so the categorical column is a
+        // UTF8 string column with dictionary-encoded pages and reads back
+        // as strings.
         use crate::models::readers::parquet::load_parquet_table;
         use crate::models::writers::parquet::write_parquet_table;
         use minarrow::{
-            Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, TextArray,
-            Vec64, ffi::arrow_dtype::CategoricalIndexType,
+            Array, ArrowType, Bitmask, Buffer, CategoricalArray, Field, FieldArray, MaskedArray,
+            TextArray, Vec64, ffi::arrow_dtype::CategoricalIndexType,
         };
         use std::sync::Arc;
 
@@ -228,6 +232,15 @@ mod tests {
             .expect("categorical column must round-trip via Parquet");
         assert_eq!(got.n_rows, n_rows);
         assert_eq!(got.cols.len(), 1);
+        assert_eq!(got.cols[0].field.dtype, ArrowType::String);
+        match &got.cols[0].array {
+            Array::TextArray(TextArray::String32(strings)) => {
+                let expected: Vec<Option<&str>> =
+                    (0..n_rows).map(|i| Some(["red", "green", "blue"][i % 3])).collect();
+                assert_eq!((0..n_rows).map(|i| strings.get(i)).collect::<Vec<_>>(), expected);
+            }
+            other => panic!("expected a String column, got {other:?}"),
+        }
 
         let _ = std::fs::remove_file(&path);
     }

@@ -142,3 +142,6 @@ pub const METADATA_SIZE_PREFIX: usize = 4;
 
 /// Required “PAR1” marker written at Parquet file head and tail.
 pub const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
+
+/// Writer identity recorded in the `created_by` field of the Parquet footer.
+pub const PARQUET_CREATED_BY: &str = "parquet_writer-v2";
