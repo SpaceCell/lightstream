@@ -19,7 +19,6 @@ categories = [
 ]
 description = "Composable, zero-copy Arrow IPC and native data streaming for Rust with SIMD-aligned I/O, async support, and memory-mapping."
 repository = "https://github.com/SpaceCell/lightstream"
-homepage = "https://github.com/SpaceCell/lightstream"
 documentation = "https://docs.rs/lightstream"
 # Deployment infrastructure for the cross-host benchmarks.
 exclude = [
@@ -42,8 +41,8 @@ flatbuffers = "25.12.19"
 libc = { version = "0.2.183", optional = true }
 futures-sink = "0.3.32"
 log = "0.4"
-minarrow = { version = "0.18.1", features = ["chunked", "views", "select", "size"], default-features = false }
-vec64 = { version = "0.5.1" }
+minarrow = { version = "0.18.2", features = ["chunked", "views", "select", "size"], default-features = false }
+vec64 = { version = "0.5.2" }
 snap = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 zstd = { version = "0.13", optional = true }
