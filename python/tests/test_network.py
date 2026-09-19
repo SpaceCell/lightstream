@@ -64,6 +64,8 @@ def tcp_relay():
 
 @pytest.fixture
 def uds_relay(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("Unix-domain sockets are Unix-only")
     sock_path = str(tmp_path / "relay.sock")
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(sock_path)
@@ -156,6 +158,7 @@ def test_stdio_pipeline():
     assert reader_proc.stdout.strip() == "5"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX sed")
 def test_stdio_csv_pipeline_through_sed():
     producer_code = (
         "import lightstream as ls, pyarrow as pa\n"
@@ -173,7 +176,7 @@ def test_stdio_csv_pipeline_through_sed():
         [sys.executable, "-c", producer_code], stdout=subprocess.PIPE
     )
     sed = subprocess.Popen(
-        ["sed", "-u", "s/a/A/"], stdin=producer.stdout, stdout=subprocess.PIPE
+        ["sed", "s/a/A/"], stdin=producer.stdout, stdout=subprocess.PIPE
     )
     consumer = subprocess.run(
         [sys.executable, "-c", consumer_code],
@@ -265,3 +268,10 @@ def test_lightstream_over_ws_and_http_reaches_connection():
             ls.read(uri, protocol="lightstream")
         with pytest.raises(ls.LightstreamError):
             ls.write(uri, protocol="lightstream")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows platform behavior")
+@pytest.mark.parametrize("opener", [ls.read, ls.write])
+def test_windows_uds_rejected(opener):
+    with pytest.raises(ls.TransportError, match="Unix-domain sockets are not supported"):
+        opener("uds:///unsupported.sock")

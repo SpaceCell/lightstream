@@ -87,12 +87,16 @@ pub fn inmemory_chunk_size() -> usize {
 
 /// Default stream arena capacity.
 ///
-/// 2 GiB of virtual address space per arena.
-/// With Vec64/MAllocPg64 backing, physical memory is committed
-/// only as bytes are written, so the reservation is cheap under normal
-/// Linux overcommit. Each stream decoder and, under the `arena` feature,
-/// each file reader holds one arena.
-pub const DEFAULT_ARENA_CAPACITY: usize = 2 * 1024 * 1024 * 1024;
+/// Linux uses 2 GiB per arena to take advantage of normal overcommit.
+/// Other platforms use 64 MiB: a large allocation can consume commit
+/// budget even before its pages are touched, particularly on Windows.
+/// Each stream decoder and, under the `arena` feature, each file reader
+/// holds one arena. Larger frames grow a dedicated generation on demand.
+pub const DEFAULT_ARENA_CAPACITY: usize = if cfg!(target_os = "linux") {
+    2 * 1024 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
 
 /// Stream arena capacity in bytes. Override with
 /// `LIGHTSTREAM_ARENA_CAPACITY` on hosts where per-stream virtual

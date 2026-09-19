@@ -10,6 +10,9 @@ Move Arrow tables between processes, services and storage from Python without ad
 pip install lightstream-io
 ```
 
+Unix-domain sockets and memory-mapped reads are available on Linux and macOS.
+Windows uses buffered file reads; `uds://` and explicit `mmap=True` requests are unsupported.
+
 ## Usage
 
 Everything is `read` or `write`.

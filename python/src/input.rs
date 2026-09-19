@@ -27,6 +27,7 @@ use lightstream::models::readers::chunked::csv::ChunkedCsvReader;
 use lightstream::models::readers::chunked::parquet::ChunkedParquetReader;
 use lightstream::models::readers::csv::CsvReader;
 use lightstream::models::readers::ipc::file_table::FileTableReader;
+#[cfg(unix)]
 use lightstream::models::readers::ipc::mmap_table::MmapTableReader;
 use lightstream::models::readers::http::HttpTableReader;
 use lightstream::models::readers::parallel::tcp::TcpParallelTableReader;
@@ -35,6 +36,7 @@ use lightstream::models::readers::parquet::load_parquet_table;
 use lightstream::models::readers::quic::QuicTableReader;
 use lightstream::models::readers::stdio::StdinTableReader;
 use lightstream::models::readers::tcp::TcpTableReader;
+#[cfg(unix)]
 use lightstream::models::readers::uds::UdsTableReader;
 use lightstream::models::readers::websocket::WebSocketTableReader;
 use lightstream::models::readers::webtransport::WebTransportTableReader;
@@ -79,6 +81,7 @@ pub enum FileIO {
         reader: FileTableReader,
         cursor: usize,
     },
+    #[cfg(unix)]
     IpcMmap {
         reader: MmapTableReader,
         cursor: usize,
@@ -118,6 +121,7 @@ pub enum ArrowIO {
     TcpParallel(TcpParallelTableReader),
     Ws(WebSocketTableReader),
     Http(HttpTableReader),
+    #[cfg(unix)]
     Uds(UdsTableReader),
     Quic(QuicTableReader),
     Wt(WebTransportTableReader),
@@ -139,6 +143,7 @@ impl ArrowIO {
             }
             ArrowIO::Ws(reader) => runtime().block_on(reader.read_next()),
             ArrowIO::Http(reader) => runtime().block_on(reader.read_next()),
+            #[cfg(unix)]
             ArrowIO::Uds(reader) => runtime().block_on(reader.read_next()),
             ArrowIO::Quic(reader) => runtime().block_on(reader.read_next()),
             ArrowIO::Wt(reader) => runtime().block_on(reader.read_next()),
@@ -227,6 +232,7 @@ impl FileIO {
                 *cursor += 1;
                 Ok(Some(table))
             }
+            #[cfg(unix)]
             FileIO::IpcMmap { reader, cursor } => {
                 if *cursor >= reader.num_batches() {
                     return Ok(None);

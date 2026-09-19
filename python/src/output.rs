@@ -32,6 +32,7 @@ use lightstream::models::writers::parquet::write_parquet_table;
 use lightstream::models::writers::http::HttpTableWriter;
 use lightstream::models::writers::stdio::StdoutTableWriter;
 use lightstream::models::writers::tcp::TcpTableWriter;
+#[cfg(unix)]
 use lightstream::models::writers::uds::UdsTableWriter;
 use lightstream::models::writers::websocket::WebSocketTableWriter;
 use lightstream::traits::parallel_transport_writer::ParallelTransportWriter;
@@ -48,6 +49,7 @@ use pyo3::exceptions::PyValueError;
 use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
+#[cfg(unix)]
 use tokio::net::unix::OwnedWriteHalf as UdsOwnedWriteHalf;
 use tokio_rustls::server::TlsStream as ServerTlsStream;
 
@@ -188,6 +190,7 @@ pub enum ArrowIO {
         compression: Option<Compression>,
         writer: Option<HttpTableWriter>,
     },
+    #[cfg(unix)]
     Uds {
         link: Link<PathBuf, UdsOwnedWriteHalf>,
         compression: Option<Compression>,
@@ -402,6 +405,7 @@ impl ArrowIO {
                             .write_table(table.clone())
                             .await
                     }
+                    #[cfg(unix)]
                     ArrowIO::Uds {
                         link,
                         compression,
@@ -533,6 +537,7 @@ impl ArrowIO {
                         Some(writer) => writer.finish().await,
                         None => Ok(()),
                     },
+                    #[cfg(unix)]
                     ArrowIO::Uds { writer, .. } => match writer.as_mut() {
                         Some(writer) => writer.finish().await,
                         None => Ok(()),
