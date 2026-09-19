@@ -58,7 +58,7 @@ use crate::models::types::parquet::{
     ParquetEncoding, ParquetLogicalType, ParquetPhysicalType, parquet_to_arrow_type,
 };
 use minarrow::{
-    Array, ArrowType, Bitmask, BooleanArray, Field, FieldArray, FloatArray, IntegerArray,
+    Array, ArrowType, Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray, IntegerArray,
     NumericArray, StringArray, Table, TextArray, Vec64, vec64,
 };
 #[cfg(feature = "decimal")]
@@ -747,6 +747,53 @@ fn decode_column(
             return Err(IoError::UnsupportedType(format!("decode {:?}", ty)));
         }
     })
+}
+
+// categorical builders
+
+#[cfg(any(
+    not(feature = "default_categorical_8"),
+    feature = "extended_categorical"
+))]
+fn build_cat32(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> Array {
+    let dict = dict_raw
+        .iter()
+        .map(|b| String::from_utf8(b.clone()).unwrap())
+        .collect::<Vec64<_>>()
+        .into();
+    Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::new(
+        idx,
+        dict,
+        mask,
+    ))))
+}
+
+#[cfg(feature = "default_categorical_8")]
+fn build_cat8(idx: Vec64<u32>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> Array {
+    let dict = dict_raw
+        .iter()
+        .map(|b| String::from_utf8(b.clone()).unwrap())
+        .collect::<Vec64<_>>();
+    let idx8: Vec64<u8> = idx.iter().map(|&v| v as u8).collect();
+    Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::new(
+        idx8,
+        dict,
+        mask,
+    ))))
+}
+
+#[cfg(all(feature = "extended_categorical", feature = "large_string"))]
+fn build_cat64(idx: Vec64<u64>, dict_raw: &[Vec<u8>], mask: Option<Bitmask>) -> Array {
+    let dict = dict_raw
+        .iter()
+        .map(|b| String::from_utf8(b.clone()).unwrap())
+        .collect::<Vec64<_>>()
+        .into();
+    Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray::new(
+        idx,
+        dict,
+        mask,
+    ))))
 }
 
 // RLE/bit-packed Hybrid decoder
@@ -1629,6 +1676,32 @@ mod tests {
         let buf = &tmp[1..]; // hybrid wants stream after bitWidth
         let out = super::decode_hybrid(buf, bit_width, expect.len()).unwrap();
         assert_eq!(out.as_slice(), expect.as_slice());
+    }
+  
+    // Dictionary encoding is a page storage detail: the reader expands it
+    // before decode_column and preserves the schema's UTF8 column type.
+    #[cfg(feature = "snappy")]
+    #[test]
+    fn read_dictionary_encoded_strings() {
+        use minarrow::MaskedArray;
+
+        let bytes = include_bytes!("../../../pyarrow-roundtrip/pyarrow_simple.parquet");
+        let table = load_parquet_table(Cursor::new(bytes.as_slice())).unwrap();
+        assert_eq!(table.n_rows, 5);
+        let column = &table.cols[1];
+        assert_eq!(column.field.name, "name");
+        assert_eq!(column.field.dtype, ArrowType::String);
+        match &column.array {
+            Array::TextArray(TextArray::String32(values)) => {
+                let decoded: Vec<_> = (0..table.n_rows).map(|i| values.get(i)).collect();
+                assert_eq!(
+                    decoded,
+                    [Some("Alice"), Some("Bob"), Some("Charlie"), Some("Diana"), Some("Eve")]
+                );
+                assert_eq!(column.null_count, 0);
+            }
+            other => panic!("expected decoded UTF8 strings, got {other:?}"),
+        }
     }
 
     #[test]

@@ -1553,35 +1553,35 @@ fn make_categorical_array(
             feature = "extended_categorical"
         ))]
         CategoricalIndexType::UInt32 => {
-            Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
+            Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::new(
+                minarrow::Buffer::from_shared(idx_data),
                 unique_values,
                 null_mask,
-            })))
+            ))))
         }
         #[cfg(feature = "default_categorical_8")]
         CategoricalIndexType::UInt8 => {
-            Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
+            Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::new(
+                minarrow::Buffer::from_shared(idx_data),
                 unique_values,
                 null_mask,
-            })))
+            ))))
         }
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt16 => {
-            Array::TextArray(TextArray::Categorical16(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
+            Array::TextArray(TextArray::Categorical16(Arc::new(CategoricalArray::new(
+                minarrow::Buffer::from_shared(idx_data),
                 unique_values,
                 null_mask,
-            })))
+            ))))
         }
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt64 => {
-            Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray {
-                data: minarrow::Buffer::from_shared(idx_data),
+            Array::TextArray(TextArray::Categorical64(Arc::new(CategoricalArray::new(
+                minarrow::Buffer::from_shared(idx_data),
                 unique_values,
                 null_mask,
-            })))
+            ))))
         }
         #[allow(unreachable_patterns)]
         _ => {

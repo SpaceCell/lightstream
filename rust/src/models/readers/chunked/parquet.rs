@@ -189,11 +189,11 @@ mod tests {
             let indices: Vec64<u8> = (0..n_rows).map(|i| (i % 3) as u8).collect();
             (
                 ArrowType::Dictionary(CategoricalIndexType::UInt8),
-                Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray {
-                    data: Buffer::from(indices),
+                Array::TextArray(TextArray::Categorical8(Arc::new(CategoricalArray::new(
+                    Buffer::from(indices),
                     unique_values,
-                    null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-                }))),
+                    Some(Bitmask::new_set_all(n_rows, true)),
+                )))),
             )
         };
         #[cfg(not(feature = "default_categorical_8"))]
@@ -201,11 +201,11 @@ mod tests {
             let indices: Vec64<u32> = (0..n_rows).map(|i| (i % 3) as u32).collect();
             (
                 ArrowType::Dictionary(CategoricalIndexType::UInt32),
-                Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray {
-                    data: Buffer::from(indices),
+                Array::TextArray(TextArray::Categorical32(Arc::new(CategoricalArray::new(
+                    Buffer::from(indices),
                     unique_values,
-                    null_mask: Some(Bitmask::new_set_all(n_rows, true)),
-                }))),
+                    Some(Bitmask::new_set_all(n_rows, true)),
+                )))),
             )
         };
         let dict_col = FieldArray::new(
