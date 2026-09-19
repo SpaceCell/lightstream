@@ -58,7 +58,7 @@ use crate::models::types::parquet::{
     ParquetEncoding, ParquetLogicalType, ParquetPhysicalType, parquet_to_arrow_type,
 };
 use minarrow::{
-    Array, ArrowType, Bitmask, BooleanArray, Field, FieldArray, FloatArray, IntegerArray,
+    Array, ArrowType, Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray, IntegerArray,
     NumericArray, StringArray, Table, TextArray, Vec64, vec64,
 };
 #[cfg(feature = "decimal")]

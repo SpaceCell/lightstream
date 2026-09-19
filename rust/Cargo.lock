@@ -2048,9 +2048,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minarrow"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e53f5031b7d16aa76bc8671171814419694c687f5160917a3668f010dab2b609"
+version = "0.18.2"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -4412,9 +4410,9 @@ dependencies = [
 
 [[package]]
 name = "vec64"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aef6bbef159f21ac387220ebc71141524423f7886afd390bc7b140f12630425"
+checksum = "54db55dbf75205d7a52f11a60aa6742d0ce6a9eb3ed97346556f26aec246f139"
 dependencies = [
  "libc",
 ]
