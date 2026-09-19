@@ -1678,63 +1678,29 @@ mod tests {
         assert_eq!(out.as_slice(), expect.as_slice());
     }
   
-    #[cfg(not(feature = "default_categorical_8"))]
+    // Dictionary encoding is a page storage detail: the reader expands it
+    // before decode_column and preserves the schema's UTF8 column type.
+    #[cfg(feature = "snappy")]
     #[test]
-    fn decode_column_categorical_rle_dictionary() {
-        let dict_raw = dict(&["foo", "bar"]);
-        let idx: Vec<u32> = vec![0, 1, 1, 0];
-        let mut encoded = Vec::new();
-        encode_dictionary_indices_rle(&idx, &mut encoded).unwrap();
+    fn read_dictionary_encoded_strings() {
+        use minarrow::MaskedArray;
 
-        let def_levels = vec![true; idx.len()];
-
-        let array = super::decode_column(
-            &ArrowType::Dictionary(CategoricalIndexType::UInt32),
-            ParquetEncoding::RleDictionary,
-            &dict_raw,
-            &encoded,
-            idx.len(),
-            def_levels,
-        )
-        .expect("decode_column failed");
-
-        match array {
-            Array::TextArray(TextArray::Categorical32(cat)) => {
-                assert_eq!(cat.data.as_slice(), idx.as_slice());
-                let uniq: Vec<_> = cat.unique_values().iter().collect();
-                assert_eq!(uniq, vec!["foo", "bar"]);
+        let bytes = include_bytes!("../../../pyarrow-roundtrip/pyarrow_simple.parquet");
+        let table = load_parquet_table(Cursor::new(bytes.as_slice())).unwrap();
+        assert_eq!(table.n_rows, 5);
+        let column = &table.cols[1];
+        assert_eq!(column.field.name, "name");
+        assert_eq!(column.field.dtype, ArrowType::String);
+        match &column.array {
+            Array::TextArray(TextArray::String32(values)) => {
+                let decoded: Vec<_> = (0..table.n_rows).map(|i| values.get(i)).collect();
+                assert_eq!(
+                    decoded,
+                    [Some("Alice"), Some("Bob"), Some("Charlie"), Some("Diana"), Some("Eve")]
+                );
+                assert_eq!(column.null_count, 0);
             }
-            _ => panic!("unexpected array variant {:?}", array),
-        }
-    }
-
-    #[cfg(feature = "default_categorical_8")]
-    #[test]
-    fn decode_column_categorical_rle_dictionary() {
-        let dict_raw = dict(&["foo", "bar"]);
-        let idx: Vec<u32> = vec![0, 1, 1, 0];
-        let mut encoded = Vec::new();
-        encode_dictionary_indices_rle(&idx, &mut encoded).unwrap();
-
-        let def_levels = vec![true; idx.len()];
-
-        let array = super::decode_column(
-            &ArrowType::Dictionary(CategoricalIndexType::UInt8),
-            ParquetEncoding::RleDictionary,
-            &dict_raw,
-            &encoded,
-            idx.len(),
-            def_levels,
-        )
-        .expect("decode_column failed");
-
-        match array {
-            Array::TextArray(TextArray::Categorical8(cat)) => {
-                assert_eq!(cat.data.as_slice(), &[0u8, 1, 1, 0]);
-                let uniq: Vec<_> = cat.unique_values().iter().collect();
-                assert_eq!(uniq, vec!["foo", "bar"]);
-            }
-            _ => panic!("unexpected array variant {:?}", array),
+            other => panic!("expected decoded UTF8 strings, got {other:?}"),
         }
     }
 
