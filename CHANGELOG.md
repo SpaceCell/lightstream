@@ -7,6 +7,8 @@ Notable changes are recorded from 0.5.0 onward.
 ### Enhancements
 
 - New `decimal` feature forwarding minarrow's `decimal` feature. Decimal32, Decimal64 and Decimal128 columns are supported in Arrow IPC and in Parquet, where they map to the DECIMAL logical type over INT32, INT64 and FIXED_LEN_BYTE_ARRAY.
+- Improved Windows + Mac compatibility
+- Added Windows + Mac + Python CI
 - Parquet writer improvements:
   - The Parquet writer follows the Parquet value layout for nullable columns.
   - Several improvements in categorical, time, and date roundtripping.
