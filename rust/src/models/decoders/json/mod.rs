@@ -10,17 +10,17 @@
 //! - **Array-of-objects**: `[{"col_a": 1, "col_b": "x"}, ...]`
 //! - **NDJSON** (newline-delimited): `{"col_a": 1, "col_b": "x"}\n...`
 //!
-//! Backed by `simd-json` via the [`simd`](crate::models::decoders::json::simd) module. Cells dispatch
-//! directly into pre-allocated [`builder::ColumnBuilder`](crate::models::decoders::json::builder::ColumnBuilder) buffers - no
+//! Backed by `simd-json` via the [`simd`] module. Cells dispatch
+//! directly into pre-allocated [`builder::ColumnBuilder`] buffers - no
 //! intermediate `Value` tree or per-cell allocations except when copying
 //! string bytes into the column's data buffer.
 //!
 //! ## Schema
-//! Schema is **required** - pass it via [`JsonDecodeOptions::schema`](crate::models::decoders::json::JsonDecodeOptions::schema). Schema
+//! Schema is **required** - pass it via [`JsonDecodeOptions::schema`]. Schema
 //! inference from sampled rows is a planned follow-up.
 //!
 //! ## Type mismatch handling
-//! See [`builder::TypeMismatchPolicy`](crate::models::decoders::json::builder::TypeMismatchPolicy).
+//! See [`builder::TypeMismatchPolicy`].
 
 pub mod row_decoder;
 pub mod value;

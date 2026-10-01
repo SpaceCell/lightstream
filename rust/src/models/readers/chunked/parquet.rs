@@ -17,7 +17,7 @@
 //! The default [`Iterator`] path is sync and serial. Per-file Parquet
 //! decode is CPU-heavy (decompression, page parsing, dictionary
 //! resolution), so across files the gain from parallel reads is larger
-//! than for raw IPC. [`ChunkedTableReader::par_load_batched`](crate::traits::chunked_table_reader::ChunkedTableReader::par_load_batched) (inherited from
+//! than for raw IPC. [`ChunkedTableReader::par_load_batched`] (inherited from
 //! the trait) uses `std::thread::scope` to fan per-chunk work end-to-end
 //! across worker threads and returns a `SuperTable` with batches in
 //! write order.

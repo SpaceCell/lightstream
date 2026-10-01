@@ -8,12 +8,12 @@
 //!
 //! ## Arrow IPC
 //!
-//! The [`ipc`](crate::models::protocol::ipc) module re-exports the Arrow IPC codec, readers, writers, and
+//! The [`ipc`] module re-exports the Arrow IPC codec, readers, writers, and
 //! sinks. Always available - no feature gate required.
 //!
 //! ## Lightstream
 //!
-//! The [`lightstream`](crate::models::protocol::lightstream) module provides multiplexed typed messages and Arrow
+//! The [`lightstream`] module provides multiplexed typed messages and Arrow
 //! tables over a single async stream using TLV framing on top of Arrow IPC.
 //! Requires the `protocol` feature.
 //!

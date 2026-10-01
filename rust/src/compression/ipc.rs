@@ -10,7 +10,7 @@
 //! body is prefixed with an 8-byte i64 uncompressed length (-1 means the
 //! buffer was stored uncompressed), followed by the compressed or raw data.
 //!
-//! [`decompress_ipc_body`](crate::compression::ipc::decompress_ipc_body) produces a new `Vec64<u8>` with all buffers placed
+//! [`decompress_ipc_body`] produces a new `Vec64<u8>` with all buffers placed
 //! at `B::ALIGN` offsets, consistent with the uncompressed wire layout. A
 //! corrections Vec maps each buffer index to its (offset, length) within the
 //! decompressed buffer, since the flatbuffer metadata still references the

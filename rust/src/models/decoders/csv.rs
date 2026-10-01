@@ -6,11 +6,11 @@
 
 //! # CSV Decoder for Minarrow Tables
 //!
-//! - Accepts a CSV byte slice or any [`BufRead`](std::io::BufRead).
+//! - Accepts a CSV byte slice or any [`BufRead`].
 //! - Infers schema or uses a provided schema (optional).
 //! - Supports: `Int32`, `Int64`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Boolean`, `String32`, `Categorical32`, `Categorical8`.
 //! - Custom delimiter, nulls, quoting, and dictionary mapping for categoricals.
-//! - Produces a single [`Table`](minarrow::Table) via [`decode_csv`](crate::models::decoders::csv::decode_csv), or multiple batches via repeated calls to [`decode_csv_batch`](crate::models::decoders::csv::decode_csv_batch).
+//! - Produces a single [`Table`] via [`decode_csv`], or multiple batches via repeated calls to [`decode_csv_batch`].
 //!
 //! ## Fast path
 //!
@@ -23,7 +23,7 @@
 //!
 //! Notes:
 //! - Input is treated as UTF-8; invalid byte sequences are lossily decoded via `String::from_utf8_lossy`.
-//! - See [`CsvDecodeOptions`](crate::models::decoders::csv::CsvDecodeOptions) for configurable delimiter, quoting, header handling, and schema control.
+//! - See [`CsvDecodeOptions`] for configurable delimiter, quoting, header handling, and schema control.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};

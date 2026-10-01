@@ -6,14 +6,14 @@
 
 //! # WebSocket byte stream adapters
 //!
-//! Provides [`WsRead`](crate::models::streams::websocket::WsRead) and [`WsWrite`](crate::models::streams::websocket::WsWrite) for WebSocket I/O over a raw TCP
+//! Provides [`WsRead`] and [`WsWrite`] for WebSocket I/O over a raw TCP
 //! stream extracted after the tungstenite handshake.
 //!
 //! WS frame parsing and construction happens inline with zero intermediate
 //! allocations. Payload bytes flow between the TCP socket and the caller's
-//! buffer via the standard [`AsyncRead`](tokio::io::AsyncRead) / [`AsyncWrite`](tokio::io::AsyncWrite) traits.
+//! buffer via the standard [`AsyncRead`] / [`AsyncWrite`] traits.
 //!
-//! [`WsRead`](crate::models::streams::websocket::WsRead) also implements [`Stream`](futures_core::Stream) yielding arena-backed [`SharedBuffer`](minarrow::structs::shared_buffer::SharedBuffer)
+//! [`WsRead`] also implements [`Stream`] yielding arena-backed [`SharedBuffer`]
 //! windows for consumers that prefer the StreamExt API.
 
 use std::io;
