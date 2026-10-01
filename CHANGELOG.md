@@ -2,7 +2,7 @@
 
 Notable changes are recorded from 0.5.0 onward.
 
-## Unreleased
+## v0.7.1 1 Oct 2026
 
 ### Maintenance
 - Compatibility with the 2026-09-30 Rust nightly, where `Vec::drain` on custom allocators requires the new `allocator_ext` feature (due to Rust planning to stabilise a lot of the allocator trait in the upcoming stable release).
