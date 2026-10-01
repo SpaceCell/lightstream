@@ -2,7 +2,7 @@ cargo-features = ["trim-paths"]
 
 [package]
 name = "lightstream-py"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 authors = ["Peter G. Bower"]
 license = "MPL-2.0"
