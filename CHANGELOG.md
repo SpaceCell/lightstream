@@ -8,6 +8,7 @@ Notable changes are recorded from 0.5.0 onward.
 - Compatibility with the 2026-09-30 Rust nightly, where `Vec::drain` on custom allocators requires the new `allocator_ext` feature (due to Rust planning to stabilise a lot of the allocator trait in the upcoming stable release).
 Therefore, `Vec64` stream buffers now use `Vec64::delete_range` to avoid the feature gate.
 - vec64 upgraded to 0.5.3.
+- Minarrow upgraded to 0.18.3. The Python package pins minarrow and minarrow-pyo3 at 0.18.3.
 
 ## v0.7.0 19 Sep 2026
 
