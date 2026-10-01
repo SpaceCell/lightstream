@@ -734,9 +734,9 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "minarrow"
-version = "0.18.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e53f5031b7d16aa76bc8671171814419694c687f5160917a3668f010dab2b609"
+checksum = "885753483fe92043ff3257745d8ef24e80113ac80505fc13ce371b21ee9e81d8"
 dependencies = [
  "log",
  "num-traits",
@@ -745,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "minarrow-pyo3"
-version = "0.18.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94e91845f51b0aab761625144ab1c71b989d5237d8cc6159245db07b4b78bc26"
+checksum = "a17c639624fdc0e7feaec53d01954a96298b0b697f97458077659bc346d75b53"
 dependencies = [
  "minarrow",
  "pyo3",
@@ -1673,9 +1673,9 @@ dependencies = [
 
 [[package]]
 name = "vec64"
-version = "0.5.1"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aef6bbef159f21ac387220ebc71141524423f7886afd390bc7b140f12630425"
+checksum = "662d4c3c6fe8d14a8b4a0b97155a0b22dd6d9b6626f42224be6987b0e0f1ca2b"
 
 [[package]]
 name = "version_check"

@@ -181,7 +181,7 @@ impl StreamBuffer for Vec64<u8> {
 
     #[inline]
     fn drain(&mut self, range: std::ops::Range<usize>) {
-        self.0.drain(range);
+        self.delete_range(range.start, range.end);
     }
 
     #[inline]
