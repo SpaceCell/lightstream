@@ -51,7 +51,7 @@ pub enum ReadAs {
 }
 
 /// A target schema that maps each upstream JSON record into typed
-/// columns. Built column by column with [`column`](Self::column), then
+/// columns. Built column by column with [`column`], then
 /// executed by
 /// [`JsonInterface`](crate::models::interfaces::json::JsonInterface).
 #[derive(Debug, Clone, Default)]
@@ -63,7 +63,7 @@ pub struct JsonSchema {
 }
 
 impl JsonSchema {
-    /// An empty schema. Add columns with [`column`](Self::column).
+    /// An empty schema. Add columns with [`column`].
     pub fn new() -> Self {
         Self::default()
     }

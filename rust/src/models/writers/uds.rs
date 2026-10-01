@@ -9,7 +9,7 @@
 //! High-level async writer that connects to a UDS endpoint and sends
 //! Arrow IPC encoded tables over the wire.
 //!
-//! Wraps a [`TableSink64`](crate::models::sinks::table_sink::TableSink64) over a UDS write half, hiding the wiring
+//! Wraps a [`TableSink64`] over a UDS write half, hiding the wiring
 //! so callers get a one-liner API.
 //!
 //! Uses `Vec64<u8>` for 64-byte SIMD aligned encoding, matching the

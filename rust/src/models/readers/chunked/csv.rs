@@ -12,7 +12,7 @@
 //! rows). The reader sorts files by their numeric index so consumers see
 //! batches in write order.
 //!
-//! Inherits [`ChunkedTableReader::par_load_batched`](crate::traits::chunked_table_reader::ChunkedTableReader::par_load_batched) for sync parallel
+//! Inherits [`ChunkedTableReader::par_load_batched`] for sync parallel
 //! decode across chunk files.
 
 use std::fs::{self, File};

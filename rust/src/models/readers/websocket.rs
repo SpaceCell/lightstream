@@ -10,7 +10,7 @@
 //! Arrow IPC data and decodes it into MinArrow tables.
 //!
 //! Extracts the raw TCP stream after the tungstenite handshake and uses
-//! [`WsRead`](crate::models::streams::websocket::WsRead) for zero-copy WebSocket frame parsing on the data path.
+//! [`WsRead`] for zero-copy WebSocket frame parsing on the data path.
 //!
 //! ## Security
 //!
@@ -20,7 +20,7 @@
 //! that integration is compiled in.
 //!
 //! For pinned roots, a custom verifier, or client-auth keys, use
-//! [`WebSocketTableReader::connect_tls`](crate::models::readers::websocket::WebSocketTableReader::connect_tls) - it takes an
+//! [`WebSocketTableReader::connect_tls`] - it takes an
 //! `Arc<rustls::ClientConfig>` directly and bypasses the bundled
 //! verifier. The library does not enforce a transport policy; if a
 //! deployment requires TLS, that is the caller's deployment decision.

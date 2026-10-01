@@ -8,7 +8,7 @@
 //!
 //! Fans one frame sequence across several concurrent Lightstream protocol
 //! connections to a single endpoint. Each connection runs its own
-//! [`LightstreamWriter`](crate::models::writers::lightstream::LightstreamWriter) driven by a dedicated task, so the connections send
+//! [`LightstreamWriter`] driven by a dedicated task, so the connections send
 //! in parallel and aggregate throughput is the sum across them.
 //!
 //! Message types and table types are registered on every connection at

@@ -1942,7 +1942,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "lightstream"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -2066,7 +2066,9 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minarrow"
-version = "0.18.2"
+version = "0.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b272b619741fbb23ed37c0079a7b8dde4bd66239672b201752cef93fe13c05b"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -4444,9 +4446,9 @@ dependencies = [
 
 [[package]]
 name = "vec64"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54db55dbf75205d7a52f11a60aa6742d0ce6a9eb3ed97346556f26aec246f139"
+checksum = "662d4c3c6fe8d14a8b4a0b97155a0b22dd6d9b6626f42224be6987b0e0f1ca2b"
 dependencies = [
  "libc",
 ]

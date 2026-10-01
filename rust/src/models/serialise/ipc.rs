@@ -6,14 +6,14 @@
 
 //! Arrow IPC serialisation for minarrow value types.
 //!
-//! [`Table`](minarrow::Table) provides the base implementation. Other value types are converted
+//! [`Table`] provides the base implementation. Other value types are converted
 //! to a table-compatible representation before encoding and converted back
 //! after decoding.
 //!
-//! [`SuperTable`](minarrow::SuperTable) and [`SuperArray`](minarrow::SuperArray) use the streaming codec API to encode and
+//! [`SuperTable`] and [`SuperArray`] use the streaming codec API to encode and
 //! decode multiple batches in one IPC stream.
 //!
-//! [`IpcSerialise`](crate::models::serialise::ipc::IpcSerialise) can be used as a generic bound for types that support this
+//! [`IpcSerialise`] can be used as a generic bound for types that support this
 //! Arrow IPC round trip.
 
 use std::sync::Arc;
