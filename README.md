@@ -152,51 +152,78 @@ for frame in reader:
         on_health(frame.payload)
 ```
 
-## The problem
+## Why Lightstream exists
 
-**TLDR**: *At the time of writing, there wasn't a (at least well-known) 'all-in-one' data transport that makes it effortless to send data and metadata at highly optimised speeds between services and processes, whilst maintaining a dual-sided typing contract compatible with the major data ecosystem.*
+Moving bytes between processes is easy. Sending and receiving **typed tabular data, typed messages and metadata together, at high throughput, across interchangeable transports** typically needs many custom engineering hours, and it is work that’s difficult to get right.
 
-**Movement Friction**: Right now, moving Arrow data *(the common tabular interface standard)* between high-throughput services is not as easy as it could be.
+A typical high-performance data path therefore ends up combining several independent pieces:
 
-You pick a transport such as gRPC, HTTP, TCP or WebSocket. If strongly typed metadata like Protobuf needs to accompany the Arrow data, you often end up writing both onto the wire as adjacent bytes to avoid additional serialisation overhead.
+- Arrow IPC for tabular data
+- Protobuf for strongly typed messages and metadata
+- TCP, HTTP, WebSocket, QUIC or another transport
+- custom framing to multiplex them onto the same connection
+- custom ordering and reconstruction when parallel connections are used
+- separate implementations for files, streams and memory-mapped data
 
-Spinning up a whole Apache Arrow Flight service *(which is otherwise a great and well-engineered system)* can also be infrastructure- and time-intensive. You need to understand the system and implement its architectural contract before getting started. It also only sends Arrow, so your strongly typed metadata contract is lost unless you like attaching strings to your tabular data instead *(which forfeits the dual-sided compilation contract)*.
+At that point, the application has effectively acquired its own transport protocol.
 
-**Tax**: You end up writing and maintaining your own semi-protocol anyway, to get what you need onto the wire and out the other side. Alternatively, you accept the risk that the typing contract on one side drifts from the other, causing bugs - highly common, when separate teams and/or agents maintain those services.
+That protocol becomes another thing to implement, benchmark and maintain. More importantly, when independently deployed producers and consumers need to agree on metadata, relying on loosely typed fields or application-specific conventions makes contract drift easy.
 
-## The solution
+So why not bake that in?
 
-1. Decouple encoding, reading, writing and transports, making them interchangeable.
-2. Optimise and ship standard Arrow IPC readers/writers, plus Parquet.
-3. Support Arrow (tabular data), Protobuf (metadata) and MessagePack (key/value data) on one connection.
-4. Make the Lightstream protocol support globally ordered streams across parallel connections.
-5. Make it fast by industry standards.
-6. Build it in Rust and bind it in Python (to start).
-7. Maintain 64-byte alignment for SIMD across all readers, writers and transports, as supported by Minarrow, without forfeiting the performance gains when reading or writing to disk or the wire.
-8. Make it open source.
+Lightstream provides that layer highly optimised, out of the box reusable and interchangeable. Don’t like the bread? It’s composable, so you can pick it up at the layer that works for your problem.
 
-## The outcome
+## What Lightstream does
 
-"Native streaming" becomes straightforward.
+Lightstream separates **data encoding**, **reading and writing**, and **transport**, so each can be switched independently without rebuilding the data path.
 
-The same interface streams raw Arrow IPC over TCP, Unix domain sockets, WebSocket, HTTP, QUIC, WebTransport and standard I/O.
+It gives you:
 
-Benefits:
+- **Arrow, Protobuf and MessagePack on the same stream** - tabular data, strongly typed messages and key/value data can share one protocol.
+- **Plus other protocols** - You still get Arrow IPC
+- **Interchangeable transports** - TCP, HTTP, WebSocket, WebTransport, QUIC, Unix domain sockets and standard I/O use the same interface.
+- **Globally ordered parallel streams** - Lightstream protocol connections can be parallelised for throughput while presenting a single ordered stream to the application.
+- **High-performance Arrow I/O** - Arrow IPC and Parquet readers and writers, including memory-mapped Arrow.
+- **64-byte alignment end to end** - SIMD friendly alignment is preserved across readers, writers, files and network transports.
+- **Composable abstractions** - new transports, readers or writers can be implemented and/or tweaked without reproducing the protocol or data layer.
+- **Rust performance with Python bindings** - pick your poison.
 
-1. Effortlessly send Arrow, Protobuf and MessagePack over the wire via the open Lightstream protocol.
-2. Swap between TCP, HTTP, WebSocket, WebTransport, QUIC, UDS and standard I/O trivially.
-3. Use 64-byte-aligned Arrow/Parquet stream and file readers and writers, plus Arrow mmap.
-4. Stream data batches across processes, or pipe typed data into the terminal *(for example, into Claude Code to monitor exceptions)*.
-5. Extensible: implementing a new transport can take only a handful of lines of code.
-6. Ergonomic: Tight, declarative syntax.
+## Easy to use data from disk to network
+
+The result is a highly optimised data path that makes it dead simple to send/receive data over networks or local IPC.
+
+The same interface can read an Arrow or Parquet file, memory-map Arrow IPC, stream batches between local processes, send them over TCP or QUIC, or pipe them through standard I/O.
+
+And when the stream needs more than tabular data, the same connection can transport strongly typed Protobuf messages or MessagePack alongside it.
+
+```python
+for batch in ls.read("tcp://feed.example.com:9000"):
+    process(batch)
+```
+
+Consider changing the URI instead of your architecture:
+
+```text
+quotes.arrow
+large.parquet
+uds:///tmp/feed.sock
+tcp://feed.example.com:9000
+quic://feed.example.com:9000
+wss://feed.example.com/stream
+stdio://
+```
+
+In summary, Lightstream is **one typed, high-performance streaming layer across files, processes and networks** without complicated systems in-between.
+
+For the killer compute layer that pairs with it, checkout [SpaceCell Lightning](http://www.spacecell.com).
 
 ## Performance
 
-Lightstream performed faster than the industry-standard alternative in every measured comparison on open AWS EC2 benchmarks (see `benchmarks/`). This is despite returning a single globally ordered stream after parallelising connections for delivery, which the other measured framework does not offer natively, and wearing that cost in the reported figures.
+Lightstream performed faster than an industry-standard alternative in every measured comparison on open AWS EC2 benchmarks (see `benchmarks/`). This includes returning a single globally ordered stream after parallelising connections for delivery, which the other measured framework does not offer natively, and wearing that cost in the reported figures.
 
 ![Throughput across levels of core-based streaming parallelism against a variety of tabular workload shapes. Lightstream leads Arrow Flight in every combination.](assets/throughput-vs-parallelism.png)
 
-Its p99 was within 1% of p50: consistent, low-jitter performance.
+It’s p99 landed within 1% of p50. I.e., consistent, low-jitter performance.
 
 ![Delivery steadiness. Lightstream's p99 sits within 1% of its p50 on every schema, with a tighter per-batch delivery-time tail than Arrow Flight.](assets/delivery-consistency.png)
 
@@ -228,7 +255,7 @@ See the individual Rust or Python READMEs, or dive straight into the repository 
 
 ## Like what you see?
 
-Please consider leaving a star on the repository or sharing it. It helps others find it.
+Please consider leaving a star on the repository or sharing it, as it helps others find it.
 
 ## Licence
 
@@ -236,4 +263,4 @@ Mozilla Public License 2.0. © 2025–2026 Peter Garfield Bower.
 
 See [MPL 2.0 FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/) if you are unfamiliar with this open-source licence.
 
-Maintained by **SpaceCell**. Check out the [latest data technology](https://spacecell.com).
+**Lightstream** is maintained by ***SpaceCell***. Check out some of the [latest data technology](https://spacecell.com).
