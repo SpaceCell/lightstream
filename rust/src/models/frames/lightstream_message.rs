@@ -12,7 +12,7 @@
 //! [type_tag: u8][payload_len: u32 LE][payload: N bytes]
 //! ```
 //!
-//! After decoding, frames are represented as [`LightstreamMessage`](crate::models::frames::lightstream_message::LightstreamMessage) variants
+//! After decoding, frames are represented as [`LightstreamMessage`] variants
 //! - either an opaque message or a decoded Arrow table.
 //!
 //! With the `protobuf` feature enabled, message variants gain typed decode

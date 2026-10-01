@@ -8,8 +8,8 @@
 //!
 //! A json frame can hold many records under one envelope, so the
 //! [`JsonInterface`](crate::models::interfaces::json::JsonInterface) parses
-//! it once and returns a [`JsonFrame`](crate::models::frames::json::JsonFrame) to read the records. Each
-//! [`JsonRecord`](crate::models::frames::json::JsonRecord) gives its columns as [`JsonValueRef`](crate::models::decoders::json::value::JsonValueRef)s borrowed
+//! it once and returns a [`JsonFrame`] to read the records. Each
+//! [`JsonRecord`] gives its columns as [`JsonValueRef`]s borrowed
 //! from the parsed buffer for the destination to handle and/or convert.
 
 use std::io;

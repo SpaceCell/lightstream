@@ -6,7 +6,7 @@
 
 //! Async Lightstream protocol writer.
 //!
-//! Wraps a [`LightstreamCodec`](crate::models::codecs::lightstream::LightstreamCodec) and an [`AsyncWrite`](tokio::io::AsyncWrite) destination, providing
+//! Wraps a [`LightstreamCodec`] and an [`AsyncWrite`] destination, providing
 //! methods to send messages and Arrow tables over a single connection.
 //!
 //! Tables are encoded using the Arrow IPC streaming protocol - schema is

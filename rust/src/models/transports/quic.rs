@@ -8,7 +8,7 @@
 //!
 //! Connection establishment for QUIC in both peer roles. QUIC requires
 //! TLS, so each role carries its own quinn configuration through
-//! [`QuicEndpoint`](crate::models::transports::quic::QuicEndpoint).
+//! [`QuicEndpoint`].
 //! Each established connection opens one
 //! bidirectional stream whose receive and send sides are the returned
 //! halves.

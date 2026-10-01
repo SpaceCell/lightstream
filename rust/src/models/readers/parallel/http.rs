@@ -14,9 +14,9 @@
 //!
 //! The h2 server connection is the I/O driver for the in-flight request
 //! bodies, so a background task keeps it polled while the accepted streams
-//! decode. Under [`SortBehaviour::None`](crate::traits::parallel_transport_reader::SortBehaviour::None) and [`SortBehaviour::RequestKeys`](crate::traits::parallel_transport_reader::SortBehaviour::RequestKeys)
+//! decode. Under [`SortBehaviour::None`] and [`SortBehaviour::RequestKeys`]
 //! tables surface in the order the streams produce them. Under
-//! [`SortBehaviour::Ordered`](crate::traits::parallel_transport_reader::SortBehaviour::Ordered) the reader pulls the streams in the writer's
+//! [`SortBehaviour::Ordered`] the reader pulls the streams in the writer's
 //! round-robin rotation, so tables surface in global write order.
 
 use std::io;

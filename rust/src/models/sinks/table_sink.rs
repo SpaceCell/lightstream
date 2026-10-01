@@ -11,7 +11,7 @@
 //! ## Overview:
 //! - Supports Stream or File protocol
 //! - Handles schema emission, optional compression, dictionary batches, record batches, and end-of-stream/footer generation.
-//! - Supports both 8-byte (`Vec<u8>`) and 64-byte SIMD-aligned (`Vec64<u8>`) buffers via [`TableSink`](crate::models::sinks::table_sink::TableSink) and [`TableSink64`](crate::models::sinks::table_sink::TableSink64) type aliases.
+//! - Supports both 8-byte (`Vec<u8>`) and 64-byte SIMD-aligned (`Vec64<u8>`) buffers via [`TableSink`] and [`TableSink64`] type aliases.
 //! - Supports backpressure-friendly, chunked writes with partial-write handling in async runtimes (e.g. Tokio).
 
 use crate::compression::Compression;

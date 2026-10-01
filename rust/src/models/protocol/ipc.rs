@@ -12,20 +12,20 @@
 //!
 //! ## Codec
 //!
-//! [`ArrowIpcCodec`](crate::models::codecs::ipc::ArrowIpcCodec) is the central codec for Arrow IPC encode and decode.
+//! [`ArrowIpcCodec`] is the central codec for Arrow IPC encode and decode.
 //! It owns the encoder state machine, decoded schema, dictionary registry,
 //! and SharedBuffer cache for zero-copy buffer recycling.
 //!
 //! ## Readers
 //!
-//! [`TableReader`](crate::models::readers::ipc::table::TableReader) wraps the streaming decoder and reads Arrow IPC tables
+//! [`TableReader`] wraps the streaming decoder and reads Arrow IPC tables
 //! from any `AsyncRead` source. Transport-specific readers (TCP, UDS, etc.)
 //! delegate to it internally.
 //!
 //! ## Writers
 //!
-//! - [`TableWriter`](crate::models::writers::ipc::table::TableWriter) - async writer to files or streams via the Sink trait
-//! - [`TableStreamWriter`](crate::models::writers::ipc::table_stream::TableStreamWriter) - synchronous frame-by-frame writer for pipes
+//! - [`TableWriter`] - async writer to files or streams via the Sink trait
+//! - [`TableStreamWriter`] - synchronous frame-by-frame writer for pipes
 //!   and custom protocols
 //!
 //! ## Sinks

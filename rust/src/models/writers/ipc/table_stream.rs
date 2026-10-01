@@ -16,8 +16,8 @@
 //! - Frames can be pulled incrementally (`next_frame`) or drained all at once
 //!
 //! ## Async Helpers
-//! - [`write_tables_to_stream`](crate::models::writers::ipc::table_stream::write_tables_to_stream) - write a sequence of tables to an async sink.
-//! - [`write_table_to_stream`](crate::models::writers::ipc::table_stream::write_table_to_stream) - write a single table to an async sink.
+//! - [`write_tables_to_stream`] - write a sequence of tables to an async sink.
+//! - [`write_table_to_stream`] - write a single table to an async sink.
 //!
 //! ## Usage
 //! ```ignore
