@@ -100,7 +100,9 @@ impl Default for DecodeLimits {
             // 4 GiB total decompressed body. Larger than max_frame_bytes so a
             // legitimately compressed frame at the frame cap still has headroom
             // to expand, while refusing the unbounded-expansion zip-bomb shape.
-            max_decompressed_bytes: 4 * 1024 * 1024 * 1024,
+            // On 32-bit targets the cap is the whole address space.
+            max_decompressed_bytes: usize::try_from(4_u64 * 1024 * 1024 * 1024)
+                .unwrap_or(usize::MAX),
         }
     }
 }
