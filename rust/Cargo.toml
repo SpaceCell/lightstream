@@ -34,7 +34,7 @@ exclude = [
 ]
 
 [dependencies]
-tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"] }
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["sink"] }
 flatbuffers = "25.12.19"
@@ -88,6 +88,11 @@ polars = { version = "0.55.2", optional = true, default-features = false, featur
 # `decoders::int_ascii` module instead of the `atoi` crate.
 fast-float2 = { version = "0.2", optional = true }
 env_logger = { version = "0.11", optional = true }
+
+# Tokio's filesystem and multi-threaded runtime are not available on
+# WebAssembly targets.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1", features = ["fs", "rt-multi-thread"] }
 
 [dev-dependencies]
 tempfile = "3.26.0"

@@ -26,9 +26,11 @@ use std::io;
 use crate::compression::Compression;
 use crate::enums::IPCMessageProtocol;
 use crate::models::sinks::table_sink::GTableSink;
+#[cfg(not(target_family = "wasm"))]
 use crate::utils::dict_values;
 use futures_util::sink::SinkExt;
 use minarrow::{Field, Table, TableV};
+#[cfg(not(target_family = "wasm"))]
 use tokio::fs::File;
 use tokio::io::AsyncWrite;
 
@@ -128,6 +130,7 @@ where
 /// * `tables`      - the batches to write (each a `Table`)  
 /// * `schema`      - the common schema (must match each `Table`)  
 /// * `protocol`    - usually `IPCMessageProtocol::File`  
+#[cfg(not(target_family = "wasm"))]
 pub async fn write_tables_to_file(
     file_path: &str,
     tables: &[Table],
@@ -149,6 +152,7 @@ pub async fn write_tables_to_file(
 }
 
 /// Writes a single table to a file
+#[cfg(not(target_family = "wasm"))]
 pub async fn write_table_to_file(
     file_path: &str,
     table: &Table,

@@ -111,6 +111,24 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Positional file reads are available on Unix and Windows. Other targets,
+/// such as WebAssembly in the browser, report `ErrorKind::Unsupported`.
+#[cfg(not(any(unix, windows)))]
+fn read_at(_file: &File, _buf: &mut [u8], _offset: u64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "positional file reads are not supported on this target",
+    ))
+}
+
+#[cfg(all(not(any(unix, windows)), feature = "arena"))]
+fn read_at_uninit(_file: &File, _buf: &mut [MaybeUninit<u8>], _offset: u64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "positional file reads are not supported on this target",
+    ))
+}
+
 use flatbuffers::Vector;
 use minarrow::{Field, SuperTable, Table};
 
