@@ -444,6 +444,7 @@ pub mod models {
         pub mod async_read;
 
         /// Async disk-to-buffer stream.
+        #[cfg(not(target_family = "wasm"))]
         pub mod disk;
 
         /// Framed byte stream adapter.
